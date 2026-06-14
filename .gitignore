@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / Vite
+node_modules/
+dist/
+
+# Runtime / local state (deckcore is a library — runtime lives in the host app)
+runtime/
+*.log
