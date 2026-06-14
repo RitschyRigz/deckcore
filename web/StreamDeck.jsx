@@ -66,6 +66,26 @@ const OP_LABELS = {
 }
 const L_DEF = DECK_LAYOUT_DEF
 
+// Registry-Options robust machen: in schlanken Hüllen (z. B. RigzDeck standalone) fehlen Felder
+// wie `processes`/`manual_event_types` komplett. Ohne Defaults wirft der Funktions-Editor schon
+// beim Aufklappen (options.processes.find(...)) → die Karte öffnet nicht + ein Geister-Duplikat
+// bleibt (weg nach Reload). Darum EINMAL zentral säubern, bevor options nach unten gereicht wird.
+function normOptions(o) {
+  o = o || {}
+  const arr = (x) => (Array.isArray(x) ? x : [])
+  return {
+    ...o,
+    processes: arr(o.processes),
+    action_types: arr(o.action_types).length ? o.action_types : ['none'],
+    monitor_types: arr(o.monitor_types).length ? o.monitor_types : ['none'],
+    manual_event_types: arr(o.manual_event_types),
+    alert_types: arr(o.alert_types),
+    known_flags: arr(o.known_flags),
+    match_ops: arr(o.match_ops),
+    sse_topics: arr(o.sse_topics),
+  }
+}
+
 function blankButton() {
   return {
     id: '', label: '',
@@ -108,9 +128,9 @@ function InlineEdit({ value, onSave, title, trigger }) {
     </span>
   )
 }
-function ConfirmX({ onConfirm, title, label }) {
+function ConfirmX({ onConfirm, title, label, cls }) {
   const [armed, setArmed] = useState(false)
-  if (!armed) return <button class="sd-order-eye" title={title || 'löschen'} onClick={() => setArmed(true)}>{label || '✕'}</button>
+  if (!armed) return <button class={cls || 'sd-order-eye'} title={title || 'löschen'} onClick={() => setArmed(true)}>{label || '✕'}</button>
   return (
     <span class="sd-inline">
       <button class="btn ghost small danger" onClick={() => { onConfirm(); setArmed(false) }}>löschen?</button>
@@ -249,7 +269,9 @@ function DeckBar({ decks, active, defaultDeck, onSelect, onReload }) {
         <button class="sd-order-eye" title="nach links" disabled={idx <= 0} onClick={() => move(-1)}>◀</button>
         <button class="sd-order-eye" title="nach rechts" disabled={idx < 0 || idx >= decks.length - 1} onClick={() => move(1)}>▶</button>
         <button class="btn ghost small" title="Deck mit Layout+Kategorien+Buttons duplizieren" onClick={dupDeck}>⎘ Duplizieren</button>
-        {active !== defaultDeck && <ConfirmX title="Deck löschen (Buttons bleiben im Pool)" onConfirm={delDeck} />}
+        {active !== defaultDeck
+          ? <ConfirmX cls="btn ghost small danger" label="🗑 Deck löschen" title="Deck löschen (Buttons bleiben im Pool)" onConfirm={delDeck} />
+          : <span class="muted" style="font-size:12px">· Standard-Deck (nicht löschbar)</span>}
       </div>
     </div>
   )
@@ -541,18 +563,20 @@ function PoolCard({ b, vis, options, allIds, onChanged }) {
   const mType = (b.monitor || {}).type
   return (
     <div class={'card content-card mode-static' + (open ? ' open' : '')}>
-      <button class="card-toggle" onClick={() => setOpen(!open)}>
-        <span class="caret">{open ? '▾' : '▸'}</span>
-        <Swatch vis={vis} />
-        <span class="card-title">{b.label || b.id}</span>
-        <span class="muted conn-id">⚡{ACTION_LABELS[aType] ? aType : 'none'} · 👁{mType}</span>
-      </button>
+      <div class="sd-pool-head" style="display:flex;align-items:center;gap:6px;padding-right:8px">
+        <button class="card-toggle" style="flex:1;min-width:0" onClick={() => setOpen(!open)}>
+          <span class="caret">{open ? '▾' : '▸'}</span>
+          <Swatch vis={vis} />
+          <span class="card-title">{b.label || b.id}</span>
+          <span class="muted conn-id">⚡{ACTION_LABELS[aType] ? aType : 'none'} · 👁{mType}</span>
+        </button>
+        <ConfirmX cls="btn ghost small danger" label="🗑" title="Button löschen (aus Pool + allen Decks)" onConfirm={del} />
+      </div>
       {open && (
         <div class="card-body">
           <div class="card-foot row" style="margin-bottom:6px">
             <button class="btn ghost small" onClick={press}>▶ Test-Druck</button>
             <button class="btn ghost small" onClick={clone} title="1:1-Kopie dieser Funktion">⎘ Klonen</button>
-            <ConfirmX title="Button aus dem Pool löschen (auch von allen Decks)" label="Löschen" onConfirm={del} />
             {msg && <span class={'msg ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
           </div>
           <FunctionEditor button={b} options={options} onSaved={onChanged} />
@@ -668,6 +692,7 @@ export function StreamDeck() {
 
   const decks = data.decks || []
   const deck = decks.find((d) => d.id === activeDeck) || decks[0]
+  const options = normOptions(data.options)
 
   return (
     <div>
@@ -693,12 +718,12 @@ export function StreamDeck() {
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
               <DeckLayout deck={deck} onReload={load} />
               <DeckGrid deck={deck} pool={data.buttons || []} resolved={resolved} onReload={load}
-                        dfAvailable={(data.options || {}).displayfusion_available} />
+                        dfAvailable={options.displayfusion_available} />
             </div>
           )}
         </>
       ) : (
-        <PoolList buttons={data.buttons || []} resolved={resolved} options={data.options} onReload={load} />
+        <PoolList buttons={data.buttons || []} resolved={resolved} options={options} onReload={load} />
       )}
     </div>
   )
@@ -707,7 +732,7 @@ export function StreamDeck() {
 // ── Funktions-Editor-Bausteine (Aktion / Überwachung / Zustände) ─────────────
 function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const t = action.type || 'none'
-  const proc = options.processes.find((p) => p.key === action.process)
+  const proc = (options.processes || []).find((p) => p.key === action.process)
   const [obsScenes, setObsScenes] = useState([])
   const [obsSources, setObsSources] = useState([])
   const [eaActions, setEaActions] = useState([])
@@ -742,7 +767,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       <div class="reward-row">
         <span class="muted conn-label">Typ</span>
         <select class="reward-input" value={t} onChange={(e) => replace({ type: e.currentTarget.value })}>
-          {options.action_types.map((k) => <option value={k}>{ACTION_LABELS[k] || k}</option>)}
+          {(options.action_types || []).map((k) => <option value={k}>{ACTION_LABELS[k] || k}</option>)}
         </select>
       </div>
       {t === 'events_action' && (
@@ -958,7 +983,7 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
       <div class="reward-row">
         <span class="muted conn-label">Typ</span>
         <select class="reward-input" value={t} onChange={(e) => replace({ type: e.currentTarget.value })}>
-          {options.monitor_types.map((k) => <option value={k}>{MONITOR_LABELS[k] || k}</option>)}
+          {(options.monitor_types || []).map((k) => <option value={k}>{MONITOR_LABELS[k] || k}</option>)}
         </select>
       </div>
       {info && <p class="muted sd-help">{info.text}</p>}
@@ -1043,7 +1068,7 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
       <span class="muted sd-when">Wenn Wert</span>
       <select class="so-delay" value={op}
               onChange={(e) => onChange({ ...st, when: { ...st.when, op: e.currentTarget.value } })}>
-        {options.match_ops.map((o) => <option value={o}>{OP_LABELS[o] || o}</option>)}
+        {(options.match_ops || []).map((o) => <option value={o}>{OP_LABELS[o] || o}</option>)}
       </select>
       {needsValue && (knownValues && knownValues.length ? (
         <select class="so-delay" style="width:110px"
