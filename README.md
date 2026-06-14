@@ -6,12 +6,9 @@ panel). deckcore is a *library*, not a standalone app: a host application embeds
 `DeckCoreService`, injects its own capabilities/paths, seeds its own buttons, and serves
 the UI.
 
-It is the shared core behind two apps:
-
-- **RigzDeck** — a lightweight standalone stream-deck app (turn any tablet into a deck).
-- **RitschyBot Cockpit** — a streaming control center (private).
-
-One engine, two apps, no double development.
+It powers **RigzDeck** — a lightweight standalone stream-deck app (turn any tablet into a
+deck) — and can be embedded in any host application: register your own capabilities, seed
+your own buttons, serve the UI.
 
 ## What's inside
 
@@ -44,7 +41,7 @@ svc.register_action("my_thing", lambda action, btn: {"success": True, "message":
 
 ## Status
 
-v0.1.0 — extracted from the RitschyBot project as a clean, shared core.
+v0.1.0 — early but functional.
 
 ## License
 

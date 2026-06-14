@@ -1,8 +1,8 @@
 /* deck.css - geteilte Stream-Deck-CSS (DeckCore).
-   Genutzt vom Cockpit (Deck-Tab + Touch-Panel) UND von RigzDeck. Importiert von
+   Genutzt von jeder DeckCore-Hülle (Editor + Touch-Panel). Importiert von
    deckcore/web/StreamDeck.jsx (Editor, .sd-*) + deckcore/web/TouchDeck.jsx (Touch, .t-*).
    Theme-Variablen (--bg/--bg2/--bg3/--fg/--line/--accent/--accent2/--muted/--ok/--err ...)
-   liefert die Host-App (Cockpit: styles.css :root; RigzDeck: eigene base.css). */
+   liefert die Host-App (z.B. RigzDeck: eigene base.css). */
 
 /* ===== Editor + Desktop-Vorschau (.sd-*) ===== */
 /* 🎛 Stream Deck — physische Tasten-Vorschau + Editor */

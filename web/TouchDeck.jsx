@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
-import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — Cockpit + RigzDeck
+import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
 // live aufgelöst (Farbe/Icon/Bild/Titel) und per Tipp ausgelöst.

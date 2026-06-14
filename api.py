@@ -1,7 +1,7 @@
 """
 Shared FastAPI route layer for DeckCore.
 
-A host (RitschyBot Cockpit, RigzDeck, …) calls ``build_streamdeck_router(...)`` and mounts the
+A host application (e.g. RigzDeck) calls ``build_streamdeck_router(...)`` and mounts the
 returned ``APIRouter`` — so every host exposes the SAME deck API (registry / resolved / stream /
 press / buttons / decks + per-deck CRUD / displayfusion / icon helpers) without re-implementing
 the HTTP glue. The actual logic lives in ``DeckCoreService``.

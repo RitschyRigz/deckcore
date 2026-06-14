@@ -1,14 +1,14 @@
 """
-StreamDeck-Service — config-getriebene Button-Registry für das eigene
-Stream-Deck-Plugin (``com.ritschybot.cockpit``).
+StreamDeck-Service — config-getriebene Button-Registry für ein eigenes
+Elgato-Stream-Deck-Plugin.
 
 Philosophie (identisch zu ``bots.py`` / ``monitors.py``): **Registry =
 Single-Source-of-Truth**. Das Stream-Deck-Plugin ist absichtlich *dumm* — es
-kennt keinen einzigen konkreten Button. Es rendert nur, was das Cockpit ihm
+kennt keinen einzigen konkreten Button. Es rendert nur, was die Host-App ihm
 über SSE pusht, und feuert beim Tastendruck ``POST /api/streamdeck/press/{id}``.
 Die GESAMTE Logik (welche Aktion, welche Überwachung, welcher Zustand →
 welche Farbe) liegt hier. Neuer Button = ein Eintrag in
-``runtime/streamdeck_buttons.json`` (per „🎛 Stream Deck"-Tab anlegbar) — KEINE
+``runtime/streamdeck_buttons.json`` (per Editor anlegbar) — KEINE
 Plugin-Änderung, kein Stream-Deck-Reinstall.
 
 Lifecycle wie die anderen Services: ``async start()`` / ``async stop()``,
@@ -21,8 +21,8 @@ Datenmodell (2026-06-13/v2 — Shared-Pool): ZWEI getrennte Ebenen.
     Deck-Belang. Eine Liste davon in der Registry-JSON:
 
     {
-      "id":     "vision",                  # stabiler Schlüssel, eindeutig
-      "label":  "Vision",                  # Anzeigename (Fallback-/Pool-Name)
+      "id":     "obs_rec",                 # stabiler Schlüssel, eindeutig
+      "label":  "Aufnahme",                # Anzeigename (Fallback-/Pool-Name)
       "action": { "type": "...", ... },    # was bei Tastendruck passiert
       "monitor":{ "type": "...", ... },    # was die Darstellung treibt
       "states": [ {"when": {...}, "title","icon","image","color"} ], # Wert → Look
@@ -36,7 +36,7 @@ Datenmodell (2026-06-13/v2 — Shared-Pool): ZWEI getrennte Ebenen.
       "layout":     { cols, button_size, gap, font_scale, show_label, label_pos,
                       show_title, frame, show_category_titles },   # PRO DECK
       "categories": ["Steuerung", ...],                            # PRO DECK
-      "items":      [ {"button":"vision","category":"Wahrnehmung",
+      "items":      [ {"button":"obs_rec","category":"OBS",
                        "style":{frame,label,label_pos,title}, "hidden":false} ] }
       #  Reihenfolge der items = Render-Reihenfolge; Vorhandensein = Mitgliedschaft.
 
@@ -51,35 +51,33 @@ Override nur so oft wie angegeben (kann schneller ODER langsamer als global sein
 die Loop-Granularität passt sich ans kürzeste Intervall an). poll-Monitore haben
 zusätzlich ihr eigenes HTTP-Cache-``interval`` (wie oft die URL neu geholt wird).
 
-Pro State optional ein ``image`` (z.B. ``/static/sd_icons/bruno-state-afk.png``):
-ein fertiges, vom Cockpit ausgeliefertes PNG, das das Plugin bildschirmfüllend
+Pro State optional ein ``image`` (z.B. ``/static/sd_icons/mic-muted.png``):
+ein fertiges, von der Host-App ausgeliefertes PNG, das das Plugin bildschirmfüllend
 auf die Taste rendert (Text+Label gebacken). Ohne ``image`` fällt das Plugin auf
 das Emoji+Titel-Canvas-Compositing (``icon``/``title``/``color``) zurück.
 
-Aktions-Typen (``action.type``):
-  • process_action  {"process":"vision","action":"toggle"}  → ProcessService.execute
-  • flag_toggle     {"flag":"bruno_muted.flag"}             → Flag im ROOT-runtime an/aus
-  • flag_set        {"flag":"bruno_manual_trigger.flag"}    → Flag IMMER setzen (Daemon
-                                                              löscht es selbst; kein Toggle)
-  • http            {"method":"POST","url":"...","body":{}} → beliebiger HTTP-Call
-  • manual_event    {"event_type":"death","offset":0}       → ManualEventsService.record
-  • none                                                     → reiner Anzeige-Button
+GENERISCHE Aktions-Typen (``action.type``) im Kern:
+  • launch        {"path":"C:/…/app.exe","args":"…"}      → Programm/Datei/Verknüpfung starten
+  • http          {"method":"POST","url":"...","body":{}} → beliebiger HTTP-Call
+  • flag_toggle   {"flag":"do_not_disturb.flag"}          → Flag im runtime-Verzeichnis an/aus
+  • flag_set      {"flag":"trigger.flag"}                 → Flag IMMER setzen (Konsument löscht es)
+  • displayfusion {"profile":"3 Monitore"}                → DisplayFusion-Monitorprofil laden
+  • media         {"action":"playpause"}                  → Media-Taste (playpause/next/prev/
+                                                            volup/voldown/mute), Windows-nativ
+  • hotkey        {"keys":"ctrl+shift+m"}                 → beliebige Tastenkombo senden
+  • none                                                   → reiner Anzeige-Button
 
-Monitor-Typen (``monitor.type``) — was die Button-Darstellung treibt:
-  • process_alive   {"process":"vision"}                    → bool (Prozess lebt)
-  • flag            {"flag":"bruno_muted.flag"}             → bool (Flag existiert)
-  • bot_mode        {target: <bot_id>}                       → "off"|"running"|"muted"
-  • bot_state       {target: <bot_id>}                       → "off"|"ready"|"followup"|"afk"
-    (generisch für JEDEN Bot: Prozess + runtime/<bot>_muted.flag + <bot>_state.json.
-     Legacy-Typen bruno_mode/bruno_state werden beim Laden migriert — 2026-06-12.)
-  • file_field      {"file":"stream_memory/stream_info.json","path":"is_live"}
-                                                            → Wert aus lokaler JSON
-  • sse_field       {"topic":"health","path":"level"}       → letztes Bus-Event
-  • poll            {"url":"http://...","path":"a.b","interval":10}
-                                                            → JSON von URL (periodisch)
-  • obs_scene       {}                                       → Name der aktiven OBS-Szene
-    (für Szenen-Buttons: State {"op":"eq","value":"<Szene>"} = hebt die aktive Szene hervor)
-  • none                                                     → zustandslos
+GENERISCHE Monitor-Typen (``monitor.type``) — was die Button-Darstellung treibt:
+  • flag          {"flag":"do_not_disturb.flag"}          → bool (Flag existiert)
+  • file_field    {"file":"state.json","path":"is_live"}  → Wert aus lokaler JSON
+  • sse_field     {"topic":"health","path":"level"}       → letztes Bus-Event
+  • poll          {"url":"http://...","path":"a.b","interval":10}
+                                                          → JSON von URL (periodisch)
+  • displayfusion_profile {}                              → Name des aktiven DF-Profils
+  • none                                                   → zustandslos
+
+Eine Host-App kann über ``register_action`` / ``register_monitor`` (bzw. den Hook
+``_register_extra_handlers``) weitere, app-spezifische Typen ergänzen.
 
 State-Match (``states[].when.op``): any | truthy | falsy | eq | ne |
   gt | lt | gte | lte | contains. Erster passender State gewinnt, sonst
@@ -97,7 +95,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("deckcore")
 
-# DeckCore ist standalone-fähig: KEINE Annahme über eine RitschyBot-Verzeichnisstruktur.
+# DeckCore ist standalone-fähig: KEINE Annahme über eine bestimmte Host-Verzeichnisstruktur.
 # Basis-Pfade kommen über den Konstruktor (runtime_dir / flags_dir / files_base).
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -156,8 +154,8 @@ def _clamp_refresh(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-# Fertige State-Icons (288×288-PNG mit gebackenem Text+Label), ausgeliefert vom
-# Cockpit unter /static/sd_icons/. Das Plugin lädt das Bild und rendert es
+# Fertige State-Icons (288×288-PNG mit gebackenem Text+Label), ausgeliefert von
+# der Host-App unter /static/sd_icons/. Das Plugin lädt das Bild und rendert es
 # bildschirmfüllend auf die Taste (ersetzt das Emoji+Titel-Canvas-Compositing).
 _ICON = "/static/sd_icons/"   # + "<name>.png"
 
@@ -255,9 +253,8 @@ def _slug(s: str) -> str:
     return "".join(out).strip("_") or "x"
 
 
-# Default-Buttons sind HÜLLEN-Sache: die Hülle (z.B. das RitschyBot-Cockpit) übergibt ihre eigenen
-# über ``default_buttons=`` an den Konstruktor. Der generische Kern bringt KEINE mit
-# (RitschyBot-Defaults: siehe cockpit/services/streamdeck.py).
+# Default-Buttons sind HÜLLEN-Sache: die Hülle übergibt ihre eigenen über
+# ``default_buttons=`` an den Konstruktor. Der generische Kern bringt KEINE mit.
 
 
 def _dig(obj: Any, path: str) -> Any:
@@ -379,9 +376,9 @@ def _send_vk_combo(vks: list) -> bool:
 
 class DeckCoreService:
     """Generischer Stream-Deck-Kern: Registry + Monitor-Evaluation + Aktions-Ausführung.
-    Eine Hülle (RitschyBot-Cockpit / RigzDeck-Standalone) erbt davon und registriert über
+    Eine Hülle (z.B. die RigzDeck-App) erbt davon und registriert über
     ``_register_extra_handlers`` / ``_extra_options`` ihre eigenen Capabilities + seedet ihre
-    Default-Buttons (``default_buttons=``). Der Kern selbst kennt KEIN RitschyBot."""
+    Default-Buttons (``default_buttons=``). Der Kern selbst kennt keine konkrete Host-App."""
 
     def __init__(self, bus, *, runtime_dir: Path | None = None,
                  flags_dir: Path | None = None, files_base: Path | None = None,
@@ -459,6 +456,12 @@ class DeckCoreService:
         Im reinen Kern ein No-op — die generische Teilmenge kommt über _register_core_handlers()."""
         pass
 
+    def _migrate_buttons(self, data: list) -> bool:
+        """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
+        (z.B. umbenannte Monitor-Typen). Im reinen Kern ein No-op. Rückgabe True, wenn
+        etwas geändert wurde (dann wird die Registry neu gespeichert)."""
+        return False
+
     # ── Registry-Persistenz ──────────────────────────────────────────────
     def _load(self) -> None:
         data: list = []
@@ -505,14 +508,9 @@ class DeckCoreService:
                         if keep in cur and keep not in fresh:
                             fresh[keep] = cur[keep]
                     data[by_id[d["id"]]] = fresh; seeded = True
-        # Legacy-Migration (2026-06-12): bot-exklusive Monitor-Typen bruno_mode/bruno_state →
-        # generische bot_mode/bot_state mit target=bruno (gilt auch für User-Klone der Buttons).
-        for b in data:
-            mon = b.get("monitor") or {}
-            if mon.get("type") in ("bruno_mode", "bruno_state"):
-                mon["target"] = mon.get("target") or "bruno"
-                mon["type"] = "bot_mode" if mon["type"] == "bruno_mode" else "bot_state"
-                b["monitor"] = mon; seeded = True
+        # Hüllen-spezifische Legacy-Migrationen am rohen Pool (Hook; Kern = No-op).
+        if self._migrate_buttons(data):
+            seeded = True
 
         # Platzierungs-Felder (deck/group/style) VOR dem Strippen für die Migration sichern.
         order = [b.get("id") for b in data if b.get("id")]
@@ -1115,8 +1113,8 @@ class DeckCoreService:
         return self._toggle_flag(action["flag"])
 
     def _act_flag_set(self, action: dict, btn: dict) -> dict:
-        # Flag IMMER setzen (kein Toggle) — für „Signal an Daemon"-Buttons wie Brunos
-        # Direkttrigger, wo der Daemon das Flag selbst wieder löscht, nachdem er es konsumiert hat.
+        # Flag IMMER setzen (kein Toggle) — für „Signal an Daemon"-Buttons, wo ein Daemon
+        # das Flag selbst wieder löscht, nachdem er es konsumiert hat.
         return self._set_flag(action["flag"], action.get("value", "on"))
 
     def _act_http_action(self, action: dict, btn: dict) -> dict:
@@ -1147,8 +1145,8 @@ class DeckCoreService:
         ok = _send_vk_combo(vks)
         return {"success": ok, "message": f"Hotkey: {spec}" if ok else "Hotkey nur unter Windows"}
 
-    # (cockpit-spezifische Aktions-Handler — process_action/manual_event/alert/obs/events_action —
-    #  leben in der Hülle und werden über _register_extra_handlers() registriert.)
+    # (host-spezifische Aktions-Handler leben in der Hülle und werden
+    #  über _register_extra_handlers() registriert.)
 
     def options(self) -> dict:
         """Auswahllisten für den Editor/Property-Inspector. ``action_types``/``monitor_types`` = die
@@ -1292,8 +1290,6 @@ class DeckCoreService:
         (``monitor.type`` → registrierter Handler). Unbekannter/nicht verfügbarer Typ → None."""
         mon = btn.get("monitor") or {}
         mtype = mon.get("type", "none")
-        # Legacy-Sicherheitsnetz für ungespeicherte Alt-Defs (_load migriert gespeicherte sonst).
-        mtype = {"bruno_mode": "bot_mode", "bruno_state": "bot_state"}.get(mtype, mtype)
         handler = self._monitor_handlers.get(mtype)
         if handler is None:
             return None
@@ -1328,8 +1324,8 @@ class DeckCoreService:
         # Aktives (zuletzt geladenes) DisplayFusion-Profil — für Profil-Buttons.
         return self._df_active_profile()
 
-    # (cockpit-spezifische Monitor-Handler — process_alive/manual_count/bot_mode/bot_state/
-    #  obs_scene/obs_source_visible + _proc_status/_obs_current_scene — leben in der Hülle.)
+    # (host-spezifische Monitor-Handler leben in der Hülle und werden
+    #  über _register_extra_handlers() registriert.)
 
     def _poll_value(self, bid: str, mon: dict) -> Any:
         interval = float(mon.get("interval", 10))
@@ -1438,7 +1434,7 @@ class DeckCoreService:
             try:
                 # WICHTIG: _recompute macht blockierendes IO (poll-HTTP, File-Reads,
                 # tasklist via processes.status). Das MUSS off-loop laufen — sonst
-                # blockiert der poll-Self-Call (Cockpit ruft sich selbst) den Event-
+                # blockiert der poll-Self-Call (die Host-App ruft sich selbst) den Event-
                 # Loop → Deadlock/Timeout → Monitor liefert None.
                 new = await asyncio.to_thread(self._recompute)
                 if new != self._resolved:

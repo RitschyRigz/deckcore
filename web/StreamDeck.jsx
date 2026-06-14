@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — Cockpit + RigzDeck
+import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Stream Deck — config-getriebene Button-Registry. Datenmodell v2 (Shared-Pool):
 //
@@ -613,7 +613,7 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
         {isNew && <h3 class="section-h">Neuer Button (Funktion)</h3>}
         <div class="reward-row">
           <span class="muted conn-label">ID</span>
-          <input class="reward-input" placeholder="z.B. vision" value={b.id}
+          <input class="reward-input" placeholder="z.B. obs_rec" value={b.id}
                  disabled={!isNew} onInput={(e) => set({ id: e.currentTarget.value })} />
           <span class="muted conn-label">Name</span>
           <input class="reward-input" placeholder="Anzeigename" value={b.label}
@@ -846,7 +846,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       {t === 'flag_toggle' && (
         <div class="reward-row">
           <span class="muted conn-label">Flag-Datei</span>
-          <input class="reward-input" list="sd-flags" placeholder="z.B. bruno_muted.flag"
+          <input class="reward-input" list="sd-flags" placeholder="z.B. do_not_disturb.flag"
                  value={action.flag || ''} onInput={(e) => onChange({ flag: e.currentTarget.value })} />
           <datalist id="sd-flags">{options.known_flags.map((f) => <option value={f} />)}</datalist>
         </div>
@@ -974,7 +974,7 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
       {(t === 'bot_mode' || t === 'bot_state') && (
         <div class="reward-row">
           <span class="muted conn-label">Bot</span>
-          <select class="reward-input" value={monitor.target || 'bruno'} onChange={(e) => onChange({ target: e.currentTarget.value })}>
+          <select class="reward-input" value={monitor.target || ''} onChange={(e) => onChange({ target: e.currentTarget.value })}>
             {options.processes.map((p) => <option value={p.key}>{p.label}</option>)}
           </select>
         </div>
@@ -982,14 +982,14 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
       {t === 'flag' && (
         <div class="reward-row">
           <span class="muted conn-label">Flag-Datei</span>
-          <input class="reward-input" list="sd-flags" placeholder="z.B. vision_disabled.flag"
+          <input class="reward-input" list="sd-flags" placeholder="z.B. do_not_disturb.flag"
                  value={monitor.flag || ''} onInput={(e) => onChange({ flag: e.currentTarget.value })} />
         </div>
       )}
       {t === 'file_field' && (
         <div class="reward-row">
-          <span class="muted conn-label">Datei (rel. zu RitschyBot)</span>
-          <input class="reward-input" placeholder="stream_memory/stream_info.json"
+          <span class="muted conn-label">Datei (rel. zum App-Ordner)</span>
+          <input class="reward-input" placeholder="z.B. status.json"
                  value={monitor.file || ''} onInput={(e) => onChange({ file: e.currentTarget.value })} />
           <span class="muted conn-label">Pfad</span>
           <input class="so-delay" style="width:120px" placeholder="is_live"

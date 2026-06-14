@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'preact/hooks'
 
-// Gemeinsame SSE-Anbindung ans Cockpit (/api/events) für Live-Topics (Transkripte, Audio-VU,
+// Gemeinsame SSE-Anbindung an die Host-App (/api/events) für Live-Topics (Transkripte, Audio-VU,
 // Health, Activity, Musik …). Pro Mount EINE EventSource mit genau den gebrauchten Topics
 // (?topics=) → respektiert das Browser-6-Connection-Limit: nur die gerade sichtbare Seite
 // hält Verbindungen, beim Verlassen werden sie geschlossen. handlers = { "<topic>": (data) => … }.

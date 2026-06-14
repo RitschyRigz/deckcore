@@ -1,5 +1,5 @@
-// Dünne Fetch-Helfer fürs Cockpit-v2-Frontend.
-// Alle Calls gehen an das FastAPI-Cockpit (im Dev via vite-Proxy, in Prod same-origin).
+// Dünne Fetch-Helfer fürs Deck-Frontend.
+// Alle Calls gehen an die FastAPI-Host-App (im Dev via vite-Proxy, in Prod same-origin).
 
 export async function getJSON(path) {
   const r = await fetch(path, { headers: { Accept: 'application/json' } })
