@@ -94,6 +94,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Import bleibt schlank)
+from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
 
 log = logging.getLogger("deckcore")
 
@@ -412,6 +413,7 @@ class DeckCoreService:
         # Eine Hülle kann obs/obs_scene/obs_source_visible über _register_extra_handlers überschreiben
         # (z.B. eine größere Host-App mit EINER geteilten OBS-Verbindung) — dann bleibt dieser ungenutzt.
         self._obs = ObsDirect(obs_host, obs_port, obs_password)
+        self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -461,6 +463,7 @@ class DeckCoreService:
         M("displayfusion_profile", self._mon_displayfusion_profile)
         M("obs_scene", self._mon_obs_scene)
         M("obs_source_visible", self._mon_obs_source_visible)
+        M("hwinfo", self._mon_hwinfo)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1039,6 +1042,11 @@ class DeckCoreService:
         self._poll_cache.clear()
         return self._obs.status(probe=True)
 
+    # ── HWiNFO-Sensoren (generische Kern-Quelle) — für Host-Endpoint + Editor-Dropdown ──
+    def hwinfo_sensors(self) -> dict:
+        """HWiNFO-Sensorliste {available, source, sensors:[{key,label,value,unit,sensor}]}."""
+        return self._hwinfo.sensors()
+
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button im POOL (Funktion) + Item im Ziel-Deck.
@@ -1290,7 +1298,7 @@ class DeckCoreService:
                          "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "obs_source_visible", "obs_scene",
+                          "file_field", "sse_field", "poll", "hwinfo", "obs_source_visible", "obs_scene",
                           "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
@@ -1479,6 +1487,11 @@ class DeckCoreService:
         val = self._obs.source_visible(mon.get("source", ""), mon.get("scene", ""))
         self._poll_cache[bid] = (val, now)
         return val
+
+    def _mon_hwinfo(self, mon: dict, btn: dict) -> Any:
+        # HWiNFO-Sensorwert (per Label-Key). Der Reader cached ALLE Sensoren ~1s → pro Button billig;
+        # der Wert landet via {value} im Titel, States können nach Schwellwert einfärben (gt/lt).
+        return self._hwinfo.value(mon.get("sensor", ""))
 
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)

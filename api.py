@@ -189,6 +189,11 @@ def build_streamdeck_router(
     def displayfusion_profiles(request: Request) -> JSONResponse:
         return JSONResponse(get_service(request).displayfusion_profiles())
 
+    @r.get("/api/hwinfo/sensors")
+    def hwinfo_sensors(request: Request) -> JSONResponse:
+        """HWiNFO-Sensorliste fürs Editor-Dropdown (leer, wenn HWiNFO/Quelle nicht verfügbar)."""
+        return JSONResponse(get_service(request).hwinfo_sensors())
+
     @r.post("/api/streamdeck/deck/{deck_id}/populate_displayfusion")
     def streamdeck_deck_populate_df(deck_id: str, request: Request) -> JSONResponse:
         res = get_service(request).populate_displayfusion_profiles(deck_id)
