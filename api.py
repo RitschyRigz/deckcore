@@ -172,7 +172,7 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/deck/{deck_id}/item/{button_id}")
     def streamdeck_deck_item_patch(deck_id: str, button_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
-        """Item EINES Decks ändern: beliebige Kombination aus category / style / hidden / Größe (w/h, Panel-Span)."""
+        """Item EINES Decks ändern: beliebige Kombination aus category / style / hidden / Größe (w/h) / Position (x/y)."""
         svc = get_service(request)
         b = body or {}
         res = {"ok": True}
@@ -184,7 +184,14 @@ def build_streamdeck_router(
             res = svc.set_item_hidden(deck_id, button_id, bool(b.get("hidden")))
         if "w" in b or "h" in b:
             res = svc.set_item_size(deck_id, button_id, b.get("w"), b.get("h"))
+        if "x" in b or "y" in b:
+            res = svc.set_item_pos(deck_id, button_id, b.get("x"), b.get("y"))
         return JSONResponse(res)
+
+    @r.post("/api/streamdeck/deck/{deck_id}/positions")
+    def streamdeck_deck_positions(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Bulk-Positionen aus dem gridstack-Editor (ein Save): {positions:[{button,x,y,w,h}, …]}."""
+        return JSONResponse(get_service(request).set_deck_positions(deck_id, (body or {}).get("positions") or []))
 
     # ── DisplayFusion ─────────────────────────────────────────────────────
     @r.get("/api/displayfusion/profiles")

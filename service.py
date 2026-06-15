@@ -149,6 +149,20 @@ def _clamp_span(v, hi: int) -> int:
     return 1 if n < 1 else (hi if n > hi else n)
 
 
+# Freie Kachel-POSITION (x/y im Raster) — OPTIONAL. Nur gesetzt, wenn im Editor frei platziert; fehlt sie,
+# rendert das Panel das Item per Auto-Flow (= bisheriges Verhalten). ⚠ Wie w/h: reine Panel-Eigenschaft.
+_POS_MAX = 50
+
+
+def _clamp_pos(v):
+    """Rasterposition → int in [0, _POS_MAX] oder None (= keine Position gesetzt → Auto-Flow)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return 0 if n < 0 else (_POS_MAX if n > _POS_MAX else n)
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -673,6 +687,11 @@ class DeckCoreService:
             out["w"] = w
         if h > 1:
             out["h"] = h
+        x = _clamp_pos((it or {}).get("x"))                 # freie Position (nur wenn x UND y gesetzt)
+        y = _clamp_pos((it or {}).get("y"))
+        if x is not None and y is not None:
+            out["x"] = x
+            out["y"] = y
         return out
 
     def _sanitize_deck(self, d, valid_ids: set) -> Optional[dict]:
@@ -918,6 +937,48 @@ class DeckCoreService:
                 it.pop(key, None)
         self._save(); self._publish_cfg()
         return {"ok": True, "w": it.get("w", 1), "h": it.get("h", 1)}
+
+    def set_item_pos(self, deck_id: str, button_id: str, x=None, y=None) -> dict:
+        """Freie Rasterposition eines Items setzen (x/y). None/ungültig → zurück zu Auto-Flow. NUR Panel."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        it = next((i for i in deck["items"] if i["button"] == button_id), None)
+        if it is None:
+            return {"ok": False, "reason": "not_in_deck"}
+        px, py = _clamp_pos(x), _clamp_pos(y)
+        if px is not None and py is not None:
+            it["x"], it["y"] = px, py
+        else:
+            it.pop("x", None); it.pop("y", None)
+        self._save(); self._publish_cfg()
+        return {"ok": True, "x": it.get("x"), "y": it.get("y")}
+
+    def set_deck_positions(self, deck_id: str, positions) -> dict:
+        """Bulk aus dem gridstack-Editor: [{button,x,y,w,h}, …] → Position+Größe aller gelisteten Items in
+        EINEM Speichervorgang (ein Drag/Resize-Save). Items ohne gültige x/y behalten ihren Zustand."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        by_id = {i["button"]: i for i in deck["items"]}
+        n = 0
+        for p in (positions or []):
+            it = by_id.get(str((p or {}).get("button") or ""))
+            if not it:
+                continue
+            px, py = _clamp_pos((p or {}).get("x")), _clamp_pos((p or {}).get("y"))
+            if px is not None and py is not None:
+                it["x"], it["y"] = px, py
+            for key, hi in (("w", _SPAN_W_MAX), ("h", _SPAN_H_MAX)):
+                if key in (p or {}):
+                    nv = _clamp_span(p.get(key), hi)
+                    if nv > 1:
+                        it[key] = nv
+                    else:
+                        it.pop(key, None)
+            n += 1
+        self._save(); self._publish_cfg()
+        return {"ok": True, "updated": n}
 
     def add_item(self, deck_id: str, button_id: str, category: str = "",
                  index: Optional[int] = None) -> dict:

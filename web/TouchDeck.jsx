@@ -242,6 +242,48 @@ export function TouchDeck() {
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
   const visibleDecks = decks.filter((d) => !d.folder)   // Ordner NICHT in der Tableiste (nur per open_deck)
 
+  // Freie Platzierung: hat IRGENDEIN Item eine Position (x/y), rendert das Deck als FESTES Quadrat-Raster mit
+  // freien Positionen (un-platzierte Items fließen in die Lücken). Sonst = bisheriges responsives Kategorie-
+  // Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt"). x/y kommen aus dem Editor.
+  const freeMode = (active.items || []).some((it) => Number.isInteger(it.x) && Number.isInteger(it.y))
+  const freeCols = layout.cols > 0 ? layout.cols : 6
+  const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${layout.gap || 12}px;justify-content:start`
+  const tile = (it) => {
+    const id = it.button
+    const v = vis[id] || {}
+    const eff = resolveStyle(it.style, layout)
+    const folder = (actionById[id] || {}).type === 'open_deck'
+    const isGraph = renderById[id] === 'graph'
+    const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
+    const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
+    const positioned = Number.isInteger(it.x) && Number.isInteger(it.y)
+    const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
+      : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
+    return (
+      <button key={id}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222')) + place}
+              onClick={(e) => onTap(id, e)}>
+        {isGraph ? (
+          <>
+            {v.title ? <span class="t-key-title">{v.title}</span> : null}
+            {['fps', 'frametime'].includes((monById[id] || {}).type)
+              ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
+              : <Sparkline data={histRef.current[id]} color={v.color} />}
+          </>
+        ) : (
+          <>
+            {v.image ? <img class="t-key-img" src={v.image} alt="" />
+              : <span class="t-key-icon">{v.icon || '•'}</span>}
+            {v.title ? <span class="t-key-title">{v.title}</span> : null}
+          </>
+        )}
+        <span class="t-key-label">{v.label || id}</span>
+        {folder && <span class="t-folder-badge">⋯</span>}
+      </button>
+    )
+  }
+
   return (
     <div class="t-deck" style={deckStyle}>
       {navStack.length > 0 ? (
@@ -260,47 +302,22 @@ export function TouchDeck() {
           ))}
         </div>
       ))}
-      {!groups.length
+      {!(active.items || []).length
         ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
-        : groups.map((g) => (
-          <section class="t-deck-grp" key={g.name}>
-            {showCatTitles && <h2 class="t-col-h">{g.name}</h2>}
-            <div class="t-deck-grid" style={gridStyle}>
-              {g.items.map((it) => {
-                const id = it.button
-                const v = vis[id] || {}
-                const eff = resolveStyle(it.style, layout)
-                const folder = (actionById[id] || {}).type === 'open_deck'
-                const isGraph = renderById[id] === 'graph'
-                const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
-                const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
-                return (
-                  <button key={id}
-                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-                          style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222')) + (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')}
-                          onClick={(e) => onTap(id, e)}>
-                    {isGraph ? (
-                      <>
-                        {v.title ? <span class="t-key-title">{v.title}</span> : null}
-                        {['fps', 'frametime'].includes((monById[id] || {}).type)
-                          ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
-                          : <Sparkline data={histRef.current[id]} color={v.color} />}
-                      </>
-                    ) : (
-                      <>
-                        {v.image ? <img class="t-key-img" src={v.image} alt="" />
-                          : <span class="t-key-icon">{v.icon || '•'}</span>}
-                        {v.title ? <span class="t-key-title">{v.title}</span> : null}
-                      </>
-                    )}
-                    <span class="t-key-label">{v.label || id}</span>
-                    {folder && <span class="t-folder-badge">⋯</span>}
-                  </button>
-                )
-              })}
-            </div>
-          </section>
-        ))}
+        : freeMode ? (
+          <div class="t-deck-grid t-deck-free" style={freeStyle}>
+            {(active.items || []).filter((it) => !it.hidden).map((it) => tile(it))}
+          </div>
+        ) : (
+          groups.map((g) => (
+            <section class="t-deck-grp" key={g.name}>
+              {showCatTitles && <h2 class="t-col-h">{g.name}</h2>}
+              <div class="t-deck-grid" style={gridStyle}>
+                {g.items.map((it) => tile(it))}
+              </div>
+            </section>
+          ))
+        )}
       {overlay && overlayDeck && (
         <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById}
                     anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />
