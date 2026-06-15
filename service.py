@@ -164,9 +164,8 @@ def _clamp_pos(v):
     return 0 if n < 0 else (_POS_MAX if n > _POS_MAX else n)
 
 
-# Frei-Widgets (Text/Label + Uhr) — KEINE Pool-Buttons (erreichen das physische Deck nie). opts =
-# Darstellungs-Settings (Schrift/Farbe/Uhr-Modus), serverseitig auf erlaubte Werte begrenzt.
-_WIDGET_TYPES = ("label", "clock")
+# Widget-Button-Darstellung (render=text|clock) — opts = Schrift/Farbe/Uhr-Modus + Größe, serverseitig auf
+# erlaubte Werte begrenzt (_sanitize_opts). ⚠ reine Panel-Darstellung; das physische Plugin rendert resolved[button].
 _WIDGET_FONTS = ("sans", "serif", "mono", "condensed", "rounded")
 _CLOCK_MODES = ("digital", "analog")
 
@@ -1017,57 +1016,6 @@ class DeckCoreService:
             n += 1
         self._save(); self._publish_cfg()
         return {"ok": True, "updated": n}
-
-    def add_widget(self, deck_id: str, wtype: str = "label", text: str = "", x=None, y=None) -> dict:
-        """Freie Widget-Kachel (Text/Label ODER Uhr — kein Pool-Button) ins Deck legen. Eindeutige ID + Default-Größe."""
-        if wtype not in _WIDGET_TYPES:
-            wtype = "label"
-        deck = self._deck(deck_id)
-        if not deck:
-            return {"ok": False, "reason": "unknown_deck"}
-        existing = {i["button"] for i in deck["items"]}
-        pref = "__clk_" if wtype == "clock" else "__lbl_"
-        n = 1
-        while f"{pref}{n}" in existing:
-            n += 1
-        bid = f"{pref}{n}"
-        if wtype == "clock":
-            item = {"button": bid, "type": "clock", "w": 2, "h": 2, "opts": {"mode": "digital"}}
-        else:
-            item = {"button": bid, "type": "label", "text": str(text or "Text")[:240], "w": 2}
-        px, py = _clamp_pos(x), _clamp_pos(y)
-        if px is not None and py is not None:
-            item["x"], item["y"] = px, py
-        deck["items"].append(item)
-        self._save(); self._publish_cfg()
-        return {"ok": True, "id": bid}
-
-    def add_label(self, deck_id: str, text: str = "", x=None, y=None) -> dict:
-        return self.add_widget(deck_id, "label", text, x, y)
-
-    def set_item_text(self, deck_id: str, button_id: str, text) -> dict:
-        """Text einer Label-Kachel ändern (nur für type=label)."""
-        deck = self._deck(deck_id)
-        if not deck:
-            return {"ok": False, "reason": "unknown_deck"}
-        it = next((i for i in deck["items"] if i["button"] == button_id), None)
-        if it is None or it.get("type") != "label":
-            return {"ok": False, "reason": "not_a_label"}
-        it["text"] = str(text or "")[:240]
-        self._save(); self._publish_cfg()
-        return {"ok": True, "text": it["text"]}
-
-    def set_item_opts(self, deck_id: str, button_id: str, opts) -> dict:
-        """Darstellungs-Settings (Schrift/Farbe/Uhr-Modus) einer Widget-Kachel mergen (nur Label/Uhr)."""
-        deck = self._deck(deck_id)
-        if not deck:
-            return {"ok": False, "reason": "unknown_deck"}
-        it = next((i for i in deck["items"] if i["button"] == button_id), None)
-        if it is None or it.get("type") not in _WIDGET_TYPES:
-            return {"ok": False, "reason": "not_a_widget"}
-        it["opts"] = {**(it.get("opts") or {}), **_sanitize_opts(opts)}
-        self._save(); self._publish_cfg()
-        return {"ok": True, "opts": it["opts"]}
 
     def add_item(self, deck_id: str, button_id: str, category: str = "",
                  index: Optional[int] = None) -> dict:
