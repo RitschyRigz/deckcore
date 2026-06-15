@@ -164,6 +164,40 @@ def _clamp_pos(v):
     return 0 if n < 0 else (_POS_MAX if n > _POS_MAX else n)
 
 
+# Frei-Widgets (Text/Label + Uhr) — KEINE Pool-Buttons (erreichen das physische Deck nie). opts =
+# Darstellungs-Settings (Schrift/Farbe/Uhr-Modus), serverseitig auf erlaubte Werte begrenzt.
+_WIDGET_TYPES = ("label", "clock")
+_WIDGET_FONTS = ("sans", "serif", "mono", "condensed", "rounded")
+_CLOCK_MODES = ("digital", "analog")
+
+
+def _is_hex_color(c) -> bool:
+    c = str(c or "")
+    if len(c) != 7 or c[0] != "#":
+        return False
+    try:
+        int(c[1:], 16)
+        return True
+    except ValueError:
+        return False
+
+
+def _sanitize_opts(o) -> dict:
+    o = o if isinstance(o, dict) else {}
+    out = {}
+    if o.get("font") in _WIDGET_FONTS:
+        out["font"] = o["font"]
+    if _is_hex_color(o.get("color")):
+        out["color"] = o["color"]
+    if o.get("mode") in _CLOCK_MODES:
+        out["mode"] = o["mode"]
+    if "seconds" in o:
+        out["seconds"] = bool(o.get("seconds"))
+    if "format24" in o:
+        out["format24"] = bool(o.get("format24"))
+    return out
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -677,12 +711,17 @@ class DeckCoreService:
         bid = str(it.get("button") or "")
         if not bid or bid in seen:
             return None
-        is_label = it.get("type") == "label"   # freie Text-Kachel (kein Pool-Button → kein valid_ids-Zwang)
-        if not is_label and bid not in valid_ids:
+        wtype = it.get("type") if it.get("type") in _WIDGET_TYPES else None   # Frei-Widget (Text/Uhr, kein Pool-Button)
+        if not wtype and bid not in valid_ids:
             return None
         seen.add(bid)
-        if is_label:
-            out = {"button": bid, "type": "label", "text": str(it.get("text") or "")[:240]}
+        if wtype:
+            out = {"button": bid, "type": wtype}
+            if wtype == "label":
+                out["text"] = str(it.get("text") or "")[:240]
+            opts = _sanitize_opts(it.get("opts"))
+            if opts:
+                out["opts"] = opts
         else:
             raw_style = it.get("style")
             raw_style = raw_style if isinstance(raw_style, dict) else {}
@@ -988,23 +1027,32 @@ class DeckCoreService:
         self._save(); self._publish_cfg()
         return {"ok": True, "updated": n}
 
-    def add_label(self, deck_id: str, text: str = "", x=None, y=None) -> dict:
-        """Freie Text-/Label-Kachel (kein Pool-Button) ins Deck legen — eindeutige __lbl_N-ID, Default 2×1."""
+    def add_widget(self, deck_id: str, wtype: str = "label", text: str = "", x=None, y=None) -> dict:
+        """Freie Widget-Kachel (Text/Label ODER Uhr — kein Pool-Button) ins Deck legen. Eindeutige ID + Default-Größe."""
+        if wtype not in _WIDGET_TYPES:
+            wtype = "label"
         deck = self._deck(deck_id)
         if not deck:
             return {"ok": False, "reason": "unknown_deck"}
         existing = {i["button"] for i in deck["items"]}
+        pref = "__clk_" if wtype == "clock" else "__lbl_"
         n = 1
-        while f"__lbl_{n}" in existing:
+        while f"{pref}{n}" in existing:
             n += 1
-        bid = f"__lbl_{n}"
-        item = {"button": bid, "type": "label", "text": str(text or "Text")[:240], "w": 2}
+        bid = f"{pref}{n}"
+        if wtype == "clock":
+            item = {"button": bid, "type": "clock", "w": 2, "h": 2, "opts": {"mode": "digital"}}
+        else:
+            item = {"button": bid, "type": "label", "text": str(text or "Text")[:240], "w": 2}
         px, py = _clamp_pos(x), _clamp_pos(y)
         if px is not None and py is not None:
             item["x"], item["y"] = px, py
         deck["items"].append(item)
         self._save(); self._publish_cfg()
         return {"ok": True, "id": bid}
+
+    def add_label(self, deck_id: str, text: str = "", x=None, y=None) -> dict:
+        return self.add_widget(deck_id, "label", text, x, y)
 
     def set_item_text(self, deck_id: str, button_id: str, text) -> dict:
         """Text einer Label-Kachel ändern (nur für type=label)."""
@@ -1017,6 +1065,18 @@ class DeckCoreService:
         it["text"] = str(text or "")[:240]
         self._save(); self._publish_cfg()
         return {"ok": True, "text": it["text"]}
+
+    def set_item_opts(self, deck_id: str, button_id: str, opts) -> dict:
+        """Darstellungs-Settings (Schrift/Farbe/Uhr-Modus) einer Widget-Kachel mergen (nur Label/Uhr)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        it = next((i for i in deck["items"] if i["button"] == button_id), None)
+        if it is None or it.get("type") not in _WIDGET_TYPES:
+            return {"ok": False, "reason": "not_a_widget"}
+        it["opts"] = {**(it.get("opts") or {}), **_sanitize_opts(opts)}
+        self._save(); self._publish_cfg()
+        return {"ok": True, "opts": it["opts"]}
 
     def add_item(self, deck_id: str, button_id: str, category: str = "",
                  index: Optional[int] = None) -> dict:

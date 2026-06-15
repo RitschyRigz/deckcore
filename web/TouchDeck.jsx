@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
+import { Clock, fontStack } from './widgets.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -255,11 +256,14 @@ export function TouchDeck() {
     const positioned = Number.isInteger(it.x) && Number.isInteger(it.y)
     const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
       : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
-    if (it.type === 'label') {   // freie Text-/Überschrift-Kachel (keine Aktion, kein Press)
-      const fs = Math.round(Math.min(56, Math.max(14, h * 32)))   // Schrift skaliert mit der Kachel-Höhe
+    if (it.type === 'label' || it.type === 'clock') {   // freie Widget-Kachel (Text/Uhr — keine Aktion, kein Press)
+      const o = it.opts || {}
+      const fs = Math.round(Math.min(60, Math.max(14, h * 32)))   // Schrift skaliert mit der Kachel-Höhe
       return (
-        <div key={id} class="t-key t-label spanned" style={`background:transparent;font-size:${fs}px` + place}>
-          <span class="t-label-text">{it.text || ''}</span>
+        <div key={id} class={'t-key t-widget spanned t-' + it.type} style={'background:transparent' + place}>
+          {it.type === 'clock'
+            ? <Clock opts={o} fs={fs} />
+            : <span class="t-label-text" style={`font-size:${fs}px;font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{it.text || ''}</span>}
         </div>
       )
     }

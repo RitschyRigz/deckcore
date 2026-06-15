@@ -188,6 +188,8 @@ def build_streamdeck_router(
             res = svc.set_item_pos(deck_id, button_id, b.get("x"), b.get("y"))
         if "text" in b:
             res = svc.set_item_text(deck_id, button_id, b.get("text"))
+        if "opts" in b:
+            res = svc.set_item_opts(deck_id, button_id, b.get("opts"))
         return JSONResponse(res)
 
     @r.post("/api/streamdeck/deck/{deck_id}/positions")
@@ -195,11 +197,17 @@ def build_streamdeck_router(
         """Bulk-Positionen aus dem gridstack-Editor (ein Save): {positions:[{button,x,y,w,h}, …]}."""
         return JSONResponse(get_service(request).set_deck_positions(deck_id, (body or {}).get("positions") or []))
 
+    @r.post("/api/streamdeck/deck/{deck_id}/widget")
+    def streamdeck_deck_widget(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Freie Widget-Kachel ins Deck (Frei-Modus): {type:'label'|'clock', text?, x?, y?}."""
+        b = body or {}
+        return JSONResponse(get_service(request).add_widget(deck_id, b.get("type", "label"), b.get("text", ""), b.get("x"), b.get("y")))
+
     @r.post("/api/streamdeck/deck/{deck_id}/label")
     def streamdeck_deck_label(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
-        """Freie Text-/Label-Kachel ins Deck legen (Frei-Modus): {text, x?, y?}."""
+        """Alias (Kompat): Text-/Label-Kachel."""
         b = body or {}
-        return JSONResponse(get_service(request).add_label(deck_id, b.get("text", ""), b.get("x"), b.get("y")))
+        return JSONResponse(get_service(request).add_widget(deck_id, "label", b.get("text", ""), b.get("x"), b.get("y")))
 
     # ── DisplayFusion ─────────────────────────────────────────────────────
     @r.get("/api/displayfusion/profiles")
