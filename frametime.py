@@ -11,9 +11,16 @@ Frametime = `PM_METRIC_CPU_FRAME_TIME` (ms) mit `PM_STAT_MAX` über ein kurzes F
 Frame zwischen zwei Polls geht NICHT verloren (Spike-Erkennung). FPS = `PM_METRIC_PRESENTED_FPS` (AVG).
 
 ⚠ GRACEFUL + ERKANNT (harte Regel „muss auf allen Rechnern gehen"): fehlt DLL/Service oder läuft kein
-Spiel (nichts präsentiert Frames) → `status.available=False` mit klarem Grund; die Graph-Kachel meldet
-das, statt leer zu sein. PresentMon wird NIE vorausgesetzt — nur genutzt, wenn vorhanden. Getrackt wird
-der **Vordergrund-Prozess** (das aktive Spiel); wechselt er, wird automatisch umgehängt.
+Spiel (nichts präsentiert Frames) → `status.available=False`/`presenting=False` mit klarem Grund; die
+Graph-Kachel meldet das, statt leer zu sein. PresentMon wird NIE vorausgesetzt — nur genutzt, wenn
+vorhanden. **Stirbt der PresentMon-Service zur Laufzeit** (er ist selbst abstürzbar — schon passiert),
+wird das binnen Sekunden erkannt → klarer Grund + automatischer Reconnect, statt fälschlich „kein Spiel".
+
+Das Spiel wird per **Fenster-Scan** gefunden (nicht über den Vordergrund — so bleibt die Anzeige stabil,
+während man das Panel im Browser anschaut und das Spiel borderless im Hintergrund weiterläuft): alle
+sichtbaren Nicht-Browser/Deck/Shell-Fenster werden kurz gepollt, das mit den meisten FPS = Spiel. Nur
+DIESER eine Prozess bleibt beim PresentMon-Service getrackt — alle Scan-Nieten werden sofort wieder
+freigegeben (kein Tracking-Leak, der bei vielen Fenstern unnötig Last erzeugt).
 """
 from __future__ import annotations
 
@@ -42,6 +49,7 @@ _WINDOW_MS = 140.0       # Statistik-Fenster der dynamischen Query
 _POLL_HZ = 30.0          # Sampler-Rate (fängt Spikes; CPU-billig)
 _RING = 600              # Ringpuffer-Tiefe (~20 s @ 30 Hz)
 _RECONNECT_COOLDOWN = 8.0
+_DEAD_TIMEOUT = 6.0      # so lange JEDER Poll fehlschlägt (trotz Versuchen) → Service tot → Reconnect
 _BLOB = 16384            # großzügiger Poll-Blob (mehrere Swapchains)
 _SC_CAP = 64             # ⚠ numSwapChains ist IN/OUT: VOR dem Poll die Blob-Kapazität (#Swapchains) setzen,
 #                          sonst lehnt pmPollDynamicQuery mit BAD_ARGUMENT (Status 2) ab. Kostete 1 Debug-Runde.
@@ -104,7 +112,7 @@ def _visible_window_pids() -> set:
 
 
 class FrametimeSource:
-    """Sampelt FPS + Frametime des Vordergrund-Spiels via PresentMon in zwei Ringpuffer."""
+    """Sampelt FPS + Frametime des laufenden Spiels via PresentMon in zwei Ringpuffer (Spiel per Scan)."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -114,7 +122,7 @@ class FrametimeSource:
         self._ft_last: Optional[float] = None
         self._tracked_pid = 0
         self._game_pid = 0           # aktuell gelocktes Spiel (sticky; via Scan gefunden, nicht Vordergrund)
-        self._tracked: set = set()    # bereits an die PresentMon-Tracking-API gemeldete PIDs
+        self._tracked: set = set()    # aktuell an die PresentMon-Tracking-API gemeldete PIDs (nur Spiel bleibt drin)
         self._presenting = False
         self._available = False
         self._reason = "nicht gestartet"
@@ -124,6 +132,9 @@ class FrametimeSource:
         self._fps_off = 0
         self._ft_off = 0
         self._blob = None
+        self._nsc = ctypes.c_uint32(0)
+        self._last_ok = 0.0          # monotonic: letzter erfolgreicher Poll-CALL (Service-Lebensbeweis)
+        self._fail_streak = 0        # Poll-Versuche seit dem letzten erfolgreichen Call
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -140,7 +151,10 @@ class FrametimeSource:
 
     def stop(self) -> None:
         self._stop.set()
+        t = self._thread
         self._thread = None
+        if t and t.is_alive():
+            t.join(timeout=2.0)   # Sampler beendet seine Schleife + schließt die Session sauber (finally)
 
     # ── Öffentliche Lesezugriffe (lösen den Lazy-Start aus) ──────────────
     def status(self) -> dict:
@@ -162,18 +176,21 @@ class FrametimeSource:
 
     # ── Sampler-Thread ───────────────────────────────────────────────────
     def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self._connect()           # DLL + Session + Query (wirft bei Fehler)
-                self._available = True
-                self._reason = "verbunden — warte auf ein Spiel (Vordergrund)"
-                self._loop()
-            except Exception as e:  # noqa: BLE001
-                self._available = False
-                self._presenting = False
-                self._reason = _explain(e)
-                self._teardown()
-                self._stop.wait(_RECONNECT_COOLDOWN)
+        try:
+            while not self._stop.is_set():
+                try:
+                    self._connect()           # DLL + Session + Query (wirft bei Fehler)
+                    self._available = True
+                    self._reason = "verbunden — warte auf ein Spiel"
+                    self._loop()              # läuft bis Stop ODER Service-Tod (wirft) → Reconnect
+                except Exception as e:  # noqa: BLE001
+                    self._available = False
+                    self._presenting = False
+                    self._reason = _explain(e)
+                    self._teardown()
+                    self._stop.wait(_RECONNECT_COOLDOWN)
+        finally:
+            self._teardown()                  # sauberer Session-Close auch bei stop()
 
     def _connect(self) -> None:
         path = _dll_path()
@@ -208,37 +225,61 @@ class FrametimeSource:
         self._fps_off, self._ft_off = int(elems[0].dataOffset), int(elems[1].dataOffset)
         self._blob = (ctypes.c_ubyte * _BLOB)()
 
-    def _poll(self, pid: int):
-        """Einen Prozess pollen → (fps, frametime) oder (None, None). Trackt ihn beim ersten Mal."""
-        dll = self._dll
-        if pid not in self._tracked:
+    # ── Tracking-Verwaltung: nur das Spiel bleibt getrackt (kein Leak) ───
+    def _track(self, pid: int) -> None:
+        if pid and pid not in self._tracked:
             try:
-                dll.pmStartTrackingProcess(self._sess, pid)
+                self._dll.pmStartTrackingProcess(self._sess, pid)
             except Exception:  # noqa: BLE001
                 pass
             self._tracked.add(pid)
+
+    def _untrack(self, pid: int) -> None:
+        if pid and pid in self._tracked:
+            try:
+                self._dll.pmStopTrackingProcess(self._sess, pid)
+            except Exception:  # noqa: BLE001
+                pass
+            self._tracked.discard(pid)
+
+    def _poll(self, pid: int):
+        """Einen Prozess pollen → (fps, frametime) oder (None, None). Trackt ihn beim ersten Mal und merkt
+        sich, ob der Poll-CALL selbst erfolgreich war (Service-Lebensbeweis, unabhängig von vorhandenen Daten:
+        „kein Spiel" = Erfolg + 0 Frames, „Service tot" = Call-Fehler — die zwei dürfen NICHT verwechselt werden)."""
+        dll = self._dll
+        self._track(pid)
         self._nsc.value = _SC_CAP   # IN/OUT-Kapazität! sonst BAD_ARGUMENT
-        if dll.pmPollDynamicQuery(self._query, pid, self._blob, ctypes.byref(self._nsc)) != PM_STATUS_SUCCESS:
+        st = dll.pmPollDynamicQuery(self._query, pid, self._blob, ctypes.byref(self._nsc))
+        if st != PM_STATUS_SUCCESS:
+            self._fail_streak += 1
             return None, None
+        self._last_ok = time.monotonic()
+        self._fail_streak = 0
         fps = ctypes.c_double.from_buffer(self._blob, self._fps_off).value
         ft = ctypes.c_double.from_buffer(self._blob, self._ft_off).value
         return (fps if fps and fps > 0 else None), (ft if ft and ft > 0 else None)
 
     def _scan_for_game(self):
-        """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS
-        ist das Spiel. Findet das Spiel UNABHÄNGIG vom Vordergrund (Panel im Browser anschauen geht)."""
+        """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS ist
+        das Spiel. Findet das Spiel UNABHÄNGIG vom Vordergrund. ⚠ Nur der Gewinner bleibt getrackt — jede Niete
+        wird sofort wieder freigegeben, sonst sammelt der PresentMon-Service endlos Tracking-Einträge an."""
         best = (0, None, None)
         for pid in _visible_window_pids():
             if any(d in _proc_name(pid) for d in _DENY):
                 continue
             f, t = self._poll(pid)
             if f and f > (best[1] or 0.0):
+                if best[0] and best[0] != pid:
+                    self._untrack(best[0])   # bisherigen Besten ablösen
                 best = (pid, f, t)
+            elif pid != best[0]:
+                self._untrack(pid)           # Niete sofort freigeben (kein Leak)
         return best
 
     def _loop(self) -> None:
         period = 1.0 / _POLL_HZ
-        self._nsc = ctypes.c_uint32(0)
+        self._last_ok = time.monotonic()
+        self._fail_streak = 0
         last_scan = 0.0
         while not self._stop.is_set():
             fps = ft = None
@@ -246,7 +287,8 @@ class FrametimeSource:
             if self._game_pid:
                 fps, ft = self._poll(self._game_pid)
                 if fps is None:
-                    self._game_pid = 0   # Spiel weg → neu suchen
+                    self._untrack(self._game_pid)   # Spiel weg → Tracking beenden + neu suchen
+                    self._game_pid = 0
             # 2) kein Spiel gelockt → ~1×/s alle sichtbaren Fenster scannen (das mit den meisten FPS = Spiel)
             if fps is None and (time.monotonic() - last_scan) > 1.0:
                 last_scan = time.monotonic()
@@ -261,17 +303,26 @@ class FrametimeSource:
                 self._reason = "live"
             else:
                 self._idle()
+            # 3) Service-Tod erkennen: seit _DEAD_TIMEOUT KEIN erfolgreicher Poll trotz Versuchen → der
+            #    PresentMon-Service ist weg (er kann selbst abstürzen) → raus + Reconnect mit klarem Grund,
+            #    statt für immer fälschlich „kein Spiel" anzuzeigen.
+            if self._fail_streak and (time.monotonic() - self._last_ok) > _DEAD_TIMEOUT:
+                raise RuntimeError("PresentMon-Service antwortet nicht mehr (abgestürzt? Dienst neu starten)")
             self._stop.wait(period)
 
     def _idle(self) -> None:
-        if self._presenting:
-            self._presenting = False
-            self._reason = "kein Spiel im Vordergrund (nichts präsentiert Frames)"
-            self._fps_last = self._ft_last = None
+        self._presenting = False
+        self._fps_last = self._ft_last = None
+        if self._fail_streak and (time.monotonic() - self._last_ok) > 2.0:
+            self._reason = "PresentMon-Service nicht erreichbar (Neustart?)"   # Calls scheitern ≠ kein Spiel
+        else:
+            self._reason = "kein Spiel erkannt (nichts präsentiert Frames)"
 
     def _teardown(self) -> None:
         d, s, q = self._dll, self._sess, self._query
         self._dll = self._sess = self._query = None
+        self._tracked.clear()    # neue Session = frisch tracken (alte PIDs galten nur für die alte Session)
+        self._game_pid = 0
         try:
             if d and q: d.pmFreeDynamicQuery(q)
         except Exception: pass  # noqa: BLE001
