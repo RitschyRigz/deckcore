@@ -228,3 +228,12 @@
 .t-spark-msg { width: 100%; flex: 1 1 auto; min-height: 16px; display: flex; align-items: center;
   justify-content: center; text-align: center; line-height: 1.15; color: var(--muted);
   font-size: calc(10px * var(--sd-font)); padding: 2px; }
+/* Graph-Politur: gefuellte Flaeche unter der Kurve + Live-Punkt + Min/Max-Werte in den Ecken (RTSS-artig). */
+.t-graph { position: relative; flex: 1 1 auto; min-height: 16px; display: block; }
+.t-graph .t-spark { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; }
+.t-graph-dot { position: absolute; width: 5px; height: 5px; border-radius: 50%;
+  transform: translate(-50%, -50%); box-shadow: 0 0 5px rgba(0, 0, 0, .55); pointer-events: none; }
+.t-graph-lbl { position: absolute; left: 3px; font-size: calc(9px * var(--sd-font)); font-weight: 800;
+  line-height: 1; color: var(--fg); text-shadow: 0 1px 2px rgba(0, 0, 0, .9); pointer-events: none; }
+.t-graph-max { top: 1px; opacity: .85; }
+.t-graph-min { bottom: 1px; opacity: .6; }

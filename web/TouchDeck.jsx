@@ -85,20 +85,32 @@ function FastGraph({ kind, color }) {
 }
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
+// Politur: Fläche unter der Kurve gefüllt, Live-Punkt am aktuellen Wert, Min/Max-Werte in den Ecken.
 function Sparkline({ data, color }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   let min = Infinity, max = -Infinity
   for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
-  if (min === max) { min -= 1; max += 1 }
-  const W = 100, H = 36
-  const pts = arr.map((v, i) =>
-    ((i / (arr.length - 1)) * W).toFixed(1) + ',' + (H - ((v - min) / (max - min)) * H).toFixed(1)).join(' ')
+  let lo = min, hi = max
+  if (lo === hi) { lo -= 1; hi += 1 }            // flache Linie nicht durch 0 teilen
+  const W = 100, H = 36, n = arr.length
+  const px = (i) => (i / (n - 1)) * W
+  const py = (v) => H - ((v - lo) / (hi - lo)) * H
+  const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
+  const lx = px(n - 1), ly = py(arr[n - 1])
+  const c = color || 'var(--accent2)'
+  const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
   return (
-    <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-      <polyline points={pts} fill="none" stroke={color || 'var(--accent2)'} stroke-width="2"
-                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
-    </svg>
+    <div class="t-graph">
+      <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        <polygon points={`0,${H} ${line} ${W},${H}`} fill={c} opacity="0.2" stroke="none" />
+        <polyline points={line} fill="none" stroke={c} stroke-width="2"
+                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+      </svg>
+      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c}`} />
+      <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>
+      <span class="t-graph-lbl t-graph-min">{fmt(min)}</span>
+    </div>
   )
 }
 
