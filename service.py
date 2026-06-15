@@ -93,6 +93,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Import bleibt schlank)
+
 log = logging.getLogger("deckcore")
 
 # DeckCore ist standalone-fähig: KEINE Annahme über eine bestimmte Host-Verzeichnisstruktur.
@@ -383,7 +385,8 @@ class DeckCoreService:
     def __init__(self, bus, *, runtime_dir: Path | None = None,
                  flags_dir: Path | None = None, files_base: Path | None = None,
                  self_base_url: str = "http://127.0.0.1:7883",
-                 default_buttons: list | None = None):
+                 default_buttons: list | None = None,
+                 obs_host: str = "127.0.0.1", obs_port: int = 4455, obs_password: str = ""):
         self.bus = bus
         # Basis für HTTP-Selfcalls (z.B. obs/alert in einer Hülle). Generische Handler brauchen sie nicht.
         self._self_base = str(self_base_url or "").rstrip("/")
@@ -405,6 +408,10 @@ class DeckCoreService:
         self._obs_scene_cache: tuple = (None, 0.0)  # (aktive Szene, ts) — von einer obs_scene-Hülle genutzt
         self._df_active_cache: tuple = (None, 0.0)  # (aktives DisplayFusion-Profil, ts) — geteilt
         self._proc_cache: dict[str, Any] = {}     # process → (status_dict, monotonic) — für Hüllen-Prozess-Monitore
+        # Direkter OBS-Client (generische Kern-Capability) — verbindet erst beim ersten echten Zugriff.
+        # Eine Hülle kann obs/obs_scene/obs_source_visible über _register_extra_handlers überschreiben
+        # (z.B. eine größere Host-App mit EINER geteilten OBS-Verbindung) — dann bleibt dieser ungenutzt.
+        self._obs = ObsDirect(obs_host, obs_port, obs_password)
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -444,12 +451,15 @@ class DeckCoreService:
         A("flag_toggle", self._act_flag_toggle)
         A("flag_set", self._act_flag_set)
         A("http", self._act_http_action)
+        A("obs", self._act_obs)
         M("none", self._mon_none)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
         M("poll", self._mon_poll)
         M("sse_field", self._mon_sse_field)
         M("displayfusion_profile", self._mon_displayfusion_profile)
+        M("obs_scene", self._mon_obs_scene)
+        M("obs_source_visible", self._mon_obs_source_visible)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -934,6 +944,26 @@ class DeckCoreService:
         """DisplayFusion-Monitor-Profile (+ aktiv-Markierung) + ob DisplayFusion verfügbar ist."""
         return {"available": bool(_df_command_path()), "profiles": _df_list_profiles()}
 
+    # ── OBS (direkter obs-websocket-Client) — für Host-Endpoints + Editor-Auswahllisten ──
+    def obs_scenes(self) -> dict:
+        """{scenes:[…], current:…} der aktuellen OBS-Szenen (Editor-Dropdown + Szenen-Import)."""
+        return self._obs.scenes()
+
+    def obs_scene_items(self) -> dict:
+        """{items:[{scene,source}], sources:[…]} — fürs Quellen-Dropdown im Editor."""
+        return self._obs.scene_items()
+
+    def obs_status(self, probe: bool = False) -> dict:
+        """OBS-Verbindungs-/Konfig-Status. ``probe`` erzwingt einen frischen Verbindungsversuch."""
+        return self._obs.status(probe=probe)
+
+    def set_obs_config(self, host: str = None, port: int = None, password: str = None) -> dict:
+        """OBS-Zugangsdaten ändern (Host-Settings) → neu verbinden + Status prüfen + Caches leeren."""
+        self._obs.configure(host=host, port=port, password=password)
+        self._obs_scene_cache = (None, 0.0)
+        self._poll_cache.clear()
+        return self._obs.status(probe=True)
+
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button im POOL (Funktion) + Item im Ziel-Deck.
@@ -1145,6 +1175,21 @@ class DeckCoreService:
         ok = _send_vk_combo(vks)
         return {"success": ok, "message": f"Hotkey: {spec}" if ok else "Hotkey nur unter Windows"}
 
+    def _act_obs(self, action: dict, btn: dict) -> dict:
+        # OBS direkt (obs-websocket) — Szene wechseln / Quelle ein-aus / Stream / Aufnahme.
+        sub = str(action.get("obs_action") or "scene")
+        if sub == "scene":
+            return self._obs.set_scene(action.get("scene", ""))
+        if sub == "source_toggle":
+            return self._obs.set_source_visible(action.get("source", ""),
+                                                action.get("mode", "toggle"),
+                                                action.get("scene", ""))
+        if sub == "stream":
+            return self._obs.stream(action.get("mode", "toggle"))
+        if sub == "record":
+            return self._obs.record(action.get("mode", "toggle"))
+        return {"success": False, "message": f"Unbekannte obs_action: {sub}"}
+
     # (host-spezifische Aktions-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1324,6 +1369,30 @@ class DeckCoreService:
         # Aktives (zuletzt geladenes) DisplayFusion-Profil — für Profil-Buttons.
         return self._df_active_profile()
 
+    def _mon_obs_scene(self, mon: dict, btn: dict) -> Any:
+        # Aktive OBS-Szene (für Szenen-Buttons) — EIN geteilter Cache (_OBS_SCENE_TTL) für ALLE
+        # Szenen-Buttons statt pro-Button-Abfrage (kein OBS-Sturm).
+        now = time.monotonic()
+        val, ts = self._obs_scene_cache
+        if ts and (now - ts) < _OBS_SCENE_TTL:
+            return val
+        val = self._obs.current_scene()
+        self._obs_scene_cache = (val, now)
+        return val
+
+    def _mon_obs_source_visible(self, mon: dict, btn: dict) -> Any:
+        # Sichtbarkeit einer OBS-Quelle als Statuslicht (true=sichtbar). Pro-Button-Cache wie
+        # poll-Monitore (Default 3s), damit nicht jeder Tick OBS abfragt.
+        bid = btn.get("id", "")
+        interval = float(mon.get("interval", 3))
+        now = time.monotonic()
+        cached = self._poll_cache.get(bid)
+        if cached is not None and (now - cached[1]) < interval:
+            return cached[0]
+        val = self._obs.source_visible(mon.get("source", ""), mon.get("scene", ""))
+        self._poll_cache[bid] = (val, now)
+        return val
+
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1421,6 +1490,10 @@ class DeckCoreService:
 
     async def stop(self) -> None:
         self._stop.set()
+        try:
+            self._obs.close()
+        except Exception:  # noqa: BLE001
+            pass
         for t in (self._eval_task, self._sse_task):
             if t:
                 t.cancel()
