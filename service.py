@@ -187,6 +187,8 @@ def _sanitize_opts(o) -> dict:
     out = {}
     if o.get("font") in _WIDGET_FONTS:
         out["font"] = o["font"]
+    if o.get("size") in ("s", "m", "l", "xl"):
+        out["size"] = o["size"]
     if _is_hex_color(o.get("color")):
         out["color"] = o["color"]
     if o.get("mode") in _CLOCK_MODES:

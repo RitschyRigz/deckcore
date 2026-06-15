@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
-import { Clock, fontStack } from './widgets.jsx'
+import { Clock, fontStack, widgetFontSize } from './widgets.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -264,14 +264,13 @@ export function TouchDeck() {
     const isGraph = render === 'graph'
     const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
     const o = optsById[id] || {}
-    const fs = Math.round(Math.min(60, Math.max(14, h * 30)))   // Text-/Uhr-Schrift skaliert mit Kachelhöhe
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + ((isWidget || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
               style={'background:' + (isWidget ? 'transparent' : (isGraph ? 'var(--bg)' : (v.color || '#222'))) + place}
               onClick={(e) => onTap(id, e)}>
-        {isClock ? <Clock opts={o} fs={fs} />
-          : isText ? <span class="t-label-text" style={`font-size:${fs}px;font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
+        {isClock ? <Clock opts={o} />
+          : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
           : isGraph ? (
             <>
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
@@ -283,7 +282,7 @@ export function TouchDeck() {
             <>
               {v.image ? <img class="t-key-img" src={v.image} alt="" />
                 : <span class="t-key-icon">{v.icon || '•'}</span>}
-              {v.title ? <span class="t-key-title">{v.title}</span> : null}
+              {v.title ? <span class="t-key-title" style={o.size ? `font-size:${widgetFontSize(o, 'text')}` : ''}>{v.title}</span> : null}
             </>
           )}
         {!isWidget && <span class="t-key-label">{v.label || id}</span>}

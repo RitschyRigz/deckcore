@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import { Clock, FONT_LABELS, fontStack } from './widgets.jsx'
+import { Clock, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -212,7 +212,7 @@ function LiveKey({ v, eff, base, render, opts }) {
   if (render === 'text') {
     return (
       <div class={keyClass(eff, base) + ' t-widget'} style="background:transparent">
-        <span class="t-label-text" style={`font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'};font-size:20px`}>{v.title || v.label || 'Text'}</span>
+        <span class="t-label-text" style={`font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'};font-size:${widgetFontSize(o, 'text')}`}>{v.title || v.label || 'Text'}</span>
       </div>
     )
   }
@@ -1431,6 +1431,11 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="graph">📈 Graph (Verlaufskurve)</option>
           <option value="text">🔤 Text / Überschrift</option>
           <option value="clock">🕐 Uhr</option>
+        </select>
+        <span class="muted conn-label" style="margin-left:8px">Größe</span>
+        <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
+                onChange={(e) => onOpts({ ...(opts || {}), size: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
+          {Object.keys(SIZE_LABELS).map((k) => <option value={k}>{SIZE_LABELS[k]}</option>)}
         </select>
       </div>
       {isWidget ? (

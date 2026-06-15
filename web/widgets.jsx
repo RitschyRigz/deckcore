@@ -13,6 +13,15 @@ export const WIDGET_FONTS = {
 }
 export const FONT_LABELS = { sans: 'Standard', serif: 'Serif', mono: 'Mono', condensed: 'Schmal', rounded: 'Rund' }
 export const fontStack = (k) => WIDGET_FONTS[k] || WIDGET_FONTS.sans
+export const SIZE_LABELS = { auto: 'Auto', s: 'S', m: 'M', l: 'L', xl: 'XL' }
+
+// Schriftgröße als Container-Query-Einheit (cqw = % der KachelBREITE) → skaliert automatisch mit der Kachel
+// (4 Felder breit = 4× so groß). Braucht container-type:inline-size auf der Kachel (siehe deck.css). kind
+// 'clock' rechnet enger (die Uhr hat mehr Zeichen). 'auto'/unbekannt = vernünftiger Default je Typ.
+export const widgetFontSize = (opts, kind) => {
+  const base = kind === 'clock' ? { s: 8, m: 11, l: 15, xl: 21 } : { s: 12, m: 18, l: 26, xl: 36 }
+  return (base[(opts || {}).size] || (kind === 'clock' ? 11 : 18)) + 'cqw'
+}
 
 const pad = (n) => (n < 10 ? '0' + n : '' + n)
 
@@ -56,6 +65,6 @@ export function Clock({ opts, fs }) {
   if (withSeconds) t += ':' + pad(now.getSeconds())
   return (
     <span class="t-clock t-clock-digital"
-          style={`color:${color};font-family:${fontStack(o.font || 'mono')};font-size:${fs || 26}px`}>{t}</span>
+          style={`color:${color};font-family:${fontStack(o.font || 'mono')};font-size:${widgetFontSize(o, 'clock')}`}>{t}</span>
   )
 }
