@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import { FONT_LABELS } from './widgets.jsx'
+import { Clock, FONT_LABELS, fontStack } from './widgets.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -201,9 +201,21 @@ function Swatch({ vis }) {
   )
 }
 
-// Live-Kachel im WYSIWYG-Raster (Stil = item.style über Deck-Layout) ──────────
-function LiveKey({ v, eff, base }) {
+// Live-Kachel im WYSIWYG-Raster (Stil = item.style über Deck-Layout). render-bewusst: Uhr/Text werden
+// auch in der Editor-Vorschau LIVE gerendert (wie im Panel), sonst das normale Symbol/Titel-Bild.
+function LiveKey({ v, eff, base, render, opts }) {
   v = v || {}
+  const o = opts || {}
+  if (render === 'clock') {
+    return <div class={keyClass(eff, base) + ' t-widget'} style="background:transparent"><Clock opts={o} fs={26} /></div>
+  }
+  if (render === 'text') {
+    return (
+      <div class={keyClass(eff, base) + ' t-widget'} style="background:transparent">
+        <span class="t-label-text" style={`font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'};font-size:20px`}>{v.title || v.label || 'Text'}</span>
+      </div>
+    )
+  }
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '')} style={'background:' + (v.color || '#222')}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
@@ -403,6 +415,7 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
   const items = deck.items || []
   const inDeck = new Set(items.map((it) => it.button))
   const palette = pool.filter((b) => !inDeck.has(b.id))
+  const byId = {}; for (const b of pool) byId[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
   const itemURL = `/api/streamdeck/deck/${deck.id}/item`
 
   // gridstack-Init: erst nach Mount (DOM-Items da). Remount via key, wenn sich die Item-MENGE ändert
@@ -461,7 +474,8 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
             return (
               <div class="grid-stack-item" key={it.button} {...attrs}>
                 <div class="grid-stack-item-content">
-                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />
+                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key"
+                           render={(byId[it.button] || {}).render} opts={(byId[it.button] || {}).opts} />
                   <span class="sd-tile-acts">
                     <button class="sd-tile-act" title="vom Deck nehmen"
                             onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
@@ -507,6 +521,7 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   if (free) return <FreeDeckGrid deck={deck} pool={pool} resolved={resolved} onReload={onReload} onExit={toggleFree} />
   const cats = deck.categories || []
   const itemsById = {}; for (const it of deck.items || []) itemsById[it.button] = it
+  const btnById = {}; for (const b of pool) btnById[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
   const inDeck = new Set((deck.items || []).map((it) => it.button))
   const palette = pool.filter((b) => !inDeck.has(b.id))
   const groups = groupDeckItems(deck.items || [], cats, true)   // hidden mit anzeigen (grau)
@@ -628,7 +643,8 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
                              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); dropOnTile(it.button) }}
                              onClick={() => setSel(sel === it.button ? '' : it.button)}
                              title={it.button}>
-                          <LiveKey v={resolved[it.button]} eff={eff} base="sd-prev-key" />
+                          <LiveKey v={resolved[it.button]} eff={eff} base="sd-prev-key"
+                                   render={(btnById[it.button] || {}).render} opts={(btnById[it.button] || {}).opts} />
                           <span class="sd-tile-acts">
                             <button class="sd-tile-act" title={it.hidden ? 'einblenden' : 'ausblenden'}
                                     onClick={(e) => { e.stopPropagation(); toggleHide(it) }}>{it.hidden ? '🚫' : '👁'}</button>
