@@ -134,6 +134,20 @@ _LAYOUT_BOOLS = ("show_label", "show_title", "frame", "show_category_titles")
 # title_pos = Position des großen Titel-Texts (über dem Bild), "top"|"bottom" (wie Stream Deck).
 _STYLE_KEYS = ("frame", "label", "label_pos", "title", "title_pos")
 
+# Kachel-Span im Touch-Panel — w = Spalten, h = Reihen (Default 1). ⚠ REIN ANZEIGE: das physische
+# Stream-Deck-Plugin liest nur resolved[button] und rendert IMMER 1×1; Größe betrifft nur das Web-Panel.
+# Geclampt auf sinnvolle Grenzen; nur >1 wird gespeichert (Default-Items bleiben byte-identisch).
+_SPAN_W_MAX = 4
+_SPAN_H_MAX = 3
+
+
+def _clamp_span(v, hi: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return 1
+    return 1 if n < 1 else (hi if n > hi else n)
+
 
 def _clamp_num(v, lo, hi, fallback):
     try:
@@ -651,8 +665,15 @@ class DeckCoreService:
         raw_style = (it or {}).get("style")
         raw_style = raw_style if isinstance(raw_style, dict) else {}
         style = {k: raw_style[k] for k in _STYLE_KEYS if k in raw_style}
-        return {"button": bid, "category": str((it or {}).get("category") or ""),
-                "style": style, "hidden": bool((it or {}).get("hidden"))}
+        out = {"button": bid, "category": str((it or {}).get("category") or ""),
+               "style": style, "hidden": bool((it or {}).get("hidden"))}
+        w = _clamp_span((it or {}).get("w"), _SPAN_W_MAX)   # Panel-Span (nur >1 speichern)
+        h = _clamp_span((it or {}).get("h"), _SPAN_H_MAX)
+        if w > 1:
+            out["w"] = w
+        if h > 1:
+            out["h"] = h
+        return out
 
     def _sanitize_deck(self, d, valid_ids: set) -> Optional[dict]:
         if not isinstance(d, dict):
@@ -877,6 +898,26 @@ class DeckCoreService:
         it["hidden"] = bool(hidden)
         self._save(); self._publish_cfg()
         return {"ok": True, "hidden": it["hidden"]}
+
+    def set_item_size(self, deck_id: str, button_id: str, w=None, h=None) -> dict:
+        """Panel-Span eines Items setzen (w=Spalten, h=Reihen). ⚠ NUR Web-Panel — das physische Stream
+        Deck bleibt 1×1. Default 1 → Schlüssel wird entfernt (saubere Speicherung)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        it = next((x for x in deck["items"] if x["button"] == button_id), None)
+        if it is None:
+            return {"ok": False, "reason": "not_in_deck"}
+        for key, val, hi in (("w", w, _SPAN_W_MAX), ("h", h, _SPAN_H_MAX)):
+            if val is None:
+                continue
+            n = _clamp_span(val, hi)
+            if n > 1:
+                it[key] = n
+            else:
+                it.pop(key, None)
+        self._save(); self._publish_cfg()
+        return {"ok": True, "w": it.get("w", 1), "h": it.get("h", 1)}
 
     def add_item(self, deck_id: str, button_id: str, category: str = "",
                  index: Optional[int] = None) -> dict:

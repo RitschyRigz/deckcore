@@ -108,7 +108,8 @@
 .sd-wys-cat.drop-hot { border-color: var(--accent); background: rgba(138,92,255,.08); }
 .sd-wys-cat-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .sd-wys-cat-name { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.sd-wys-grid { display: grid; justify-content: start; }
+.sd-wys-grid { display: grid; grid-auto-rows: var(--sd-size); justify-content: start; }
+.sd-wys-key-wrap.spanned .sd-prev-key { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; }
 .sd-wys-empty { color: var(--muted); font-size: 12px; padding: 10px; text-align: center; }
 .sd-wys-key-wrap { position: relative; cursor: grab; border-radius: 16px; }
 .sd-wys-key-wrap:active { cursor: grabbing; }
@@ -152,11 +153,14 @@
 .t-deck-tab:active { transform: scale(.96); }
 .t-deck-grp { margin-bottom: 16px; }
 .t-deck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 12px;
-  justify-content: start; }
+  grid-auto-rows: var(--sd-size); justify-content: start; }
 .t-key { position: relative; aspect-ratio: 1 / 1; max-width: var(--sd-size); width: 100%;
   border-radius: 16px; border: 1px solid rgba(255,255,255,.12);
   color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   overflow: hidden; padding: 6px; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
+/* Große/breite Kachel (Panel-Span; NUR Web-Panel — physisch bleibt der Button 1×1). Hebt den Quadrat-Cap
+   auf und füllt die gespannten Zellen (grid-column/grid-row: span kommt inline aus dem Item w/h). */
+.t-key.spanned { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; }
 .t-key:active, .t-key.pressed { transform: scale(.93); box-shadow: 0 0 0 3px var(--accent2); }
 .t-key-img { width: 64%; height: 64%; object-fit: contain; }
 /* Bild-Buttons (fertige State-PNGs mit gebackenem Text) füllen die Kachel komplett →

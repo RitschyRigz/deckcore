@@ -272,10 +272,12 @@ export function TouchDeck() {
                 const eff = resolveStyle(it.style, layout)
                 const folder = (actionById[id] || {}).type === 'open_deck'
                 const isGraph = renderById[id] === 'graph'
+                const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
+                const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
                 return (
                   <button key={id}
-                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (pressed === id ? ' pressed' : '')}
-                          style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222'))}
+                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+                          style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222')) + (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')}
                           onClick={(e) => onTap(id, e)}>
                     {isGraph ? (
                       <>

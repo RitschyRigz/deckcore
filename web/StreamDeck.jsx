@@ -357,6 +357,15 @@ function ItemInspector({ deck, item, onReload }) {
       </select>
     </label>
   )
+  // Kachel-Größe (Panel-Span) — direkt am Item (nicht style). NUR Web-Panel; physisch bleibt der Button 1×1.
+  const patchItem = (body) => postJSON(`/api/streamdeck/deck/${deck.id}/item/${item.button}`, body).then(() => onReload && onReload()).catch(() => {})
+  const Span = ({ k, label, max }) => (
+    <label>{label}
+      <select class="so-delay" value={item[k] || 1} onChange={(e) => patchItem({ [k]: parseInt(e.currentTarget.value, 10) })}>
+        {Array.from({ length: max }, (_, i) => i + 1).map((n) => <option value={n}>{n}</option>)}
+      </select>
+    </label>
+  )
   return (
     <div class="sd-inspect">
       <span class="muted" style="font-size:12px">Stil von <b>{item.button}</b> auf diesem Deck:</span>
@@ -367,6 +376,11 @@ function ItemInspector({ deck, item, onReload }) {
         <Sel k="title" label="Titel" opts={[['inherit', 'Standard'], ['on', 'an'], ['off', 'aus']]} />
         <Sel k="title_pos" label="Titel-Position" opts={[['inherit', 'unten'], ['bottom', 'unten'], ['top', 'oben']]} />
       </div>
+      <div class="sd-lay-ctl" style="margin-top:8px">
+        <Span k="w" label="Breite (Spalten)" max={4} />
+        <Span k="h" label="Höhe (Reihen)" max={3} />
+      </div>
+      <p class="muted sd-help" style="margin:6px 0 0">⚠ Größe gilt <b>nur im Touch-Panel</b> (z. B. breite Graph-/Sensor-Kachel). Auf einem echten Stream Deck bleibt der Button immer <b>1×1</b> (Icon + Wert) — die Größe wird dort ignoriert.</p>
       <p class="muted sd-help" style="margin:6px 0 0">Der „Titel" ist der große Text (aus „Aussehen → Standard/Status"); er liegt bei Bild-Buttons als Overlay oben oder unten drauf — wie im Stream Deck.</p>
     </div>
   )
@@ -494,8 +508,11 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
                   <div class="sd-wys-grid" style={gridStyle}>
                     {g.items.map((it) => {
                       const eff = resolveStyle(it.style, layout)
+                      const sw = Math.max(1, it.w || 1), sh = Math.max(1, it.h || 1)
+                      const spanned = sw > 1 || sh > 1
                       return (
-                        <div key={it.button} class={'sd-wys-key-wrap' + (sel === it.button ? ' sel' : '') + (it.hidden ? ' is-hidden' : '')}
+                        <div key={it.button} class={'sd-wys-key-wrap' + (sel === it.button ? ' sel' : '') + (it.hidden ? ' is-hidden' : '') + (spanned ? ' spanned' : '')}
+                             style={spanned ? `grid-column:span ${sw};grid-row:span ${sh}` : ''}
                              draggable onDragStart={(e) => { e.stopPropagation(); drag.current = { id: it.button, from: 'grid' } }}
                              onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
                              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); dropOnTile(it.button) }}

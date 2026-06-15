@@ -172,7 +172,7 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/deck/{deck_id}/item/{button_id}")
     def streamdeck_deck_item_patch(deck_id: str, button_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
-        """Item EINES Decks ändern: beliebige Kombination aus category / style / hidden."""
+        """Item EINES Decks ändern: beliebige Kombination aus category / style / hidden / Größe (w/h, Panel-Span)."""
         svc = get_service(request)
         b = body or {}
         res = {"ok": True}
@@ -182,6 +182,8 @@ def build_streamdeck_router(
             res = svc.set_item_style(deck_id, button_id, b.get("style") or {})
         if "hidden" in b:
             res = svc.set_item_hidden(deck_id, button_id, bool(b.get("hidden")))
+        if "w" in b or "h" in b:
+            res = svc.set_item_size(deck_id, button_id, b.get("w"), b.get("h"))
         return JSONResponse(res)
 
     # ── DisplayFusion ─────────────────────────────────────────────────────
