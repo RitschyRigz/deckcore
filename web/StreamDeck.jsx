@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import { Clock, FONT_LABELS, fontStack } from './widgets.jsx'
+import { FONT_LABELS } from './widgets.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -397,7 +397,6 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
   const gridRef = useRef(null)
   const saveT = useRef(null)
   const dragId = useRef(null)   // Pool-Button, der gerade in den Canvas gezogen wird
-  const [sel, setSel] = useState('')   // angewählte Widget-Kachel (Text/Uhr) → Settings-Panel
   const layout = { ...L_DEF, ...(deck.layout || {}) }
   const cols = layout.cols > 0 ? layout.cols : 6
   const cell = layout.button_size || 116
@@ -443,25 +442,12 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
       .then(() => postJSON(`${itemURL}/${bid}`, { x, y }))
       .then(() => onReload && onReload()).catch(() => {})
   }
-  const addWidget = (wtype) => {
-    let text = ''
-    if (wtype === 'label') { text = prompt('Text der Kachel (z. B. Überschrift):', 'Überschrift'); if (text == null) return }
-    postJSON(`/api/streamdeck/deck/${deck.id}/widget`, { type: wtype, text }).then(() => onReload && onReload()).catch(() => {})
-  }
-  const editLabel = (it) => {
-    const t = prompt('Text ändern:', it.text || '')
-    if (t != null) postJSON(`${itemURL}/${it.button}`, { text: t }).then(() => onReload && onReload()).catch(() => {})
-  }
 
   return (
     <div>
       <div class="sd-wys-head-row">
         <span class="muted" style="font-size:12px">🧩 <b>Frei platzieren</b> — Kacheln ziehen, an der <b>Ecke unten-rechts</b> ziehen = vergrößern. Speichert automatisch. ⚠ Position/Größe gelten NUR im Touch-Panel; ein echtes Stream Deck zeigt jeden Button 1×1.</span>
-        <span class="sd-inline">
-          <button class="btn ghost small" onClick={() => addWidget('label')} title="Freie Text-/Überschrift-Kachel">➕ Text</button>
-          <button class="btn ghost small" onClick={() => addWidget('clock')} title="Live-Uhr-Kachel (digital oder analog)">➕ Uhr</button>
-          <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
-        </span>
+        <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
       </div>
       <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}
            onDragOver={(e) => { if (dragId.current) e.preventDefault() }}
@@ -475,16 +461,8 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
             return (
               <div class="grid-stack-item" key={it.button} {...attrs}>
                 <div class="grid-stack-item-content">
-                  {it.type === 'clock'
-                    ? <Clock opts={it.opts} fs={Math.round(Math.min(54, Math.max(14, h * 30)))} />
-                    : it.type === 'label'
-                      ? <div class="sd-label" style={`font-size:${Math.round(Math.min(56, Math.max(14, h * 32)))}px;font-family:${fontStack((it.opts || {}).font)};color:${(it.opts || {}).color || 'var(--fg)'}`}>{it.text || 'Text'}</div>
-                      : <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />}
+                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />
                   <span class="sd-tile-acts">
-                    {(it.type === 'label' || it.type === 'clock') && <button class="sd-tile-act" title="Einstellungen"
-                            onClick={(e) => { e.stopPropagation(); setSel(it.button) }}>⚙</button>}
-                    {it.type === 'label' && <button class="sd-tile-act" title="Text ändern"
-                            onClick={(e) => { e.stopPropagation(); editLabel(it) }}>✎</button>}
                     <button class="sd-tile-act" title="vom Deck nehmen"
                             onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
                   </span>
@@ -494,7 +472,6 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
           })}
         </div>
       </div>
-      <WidgetSettings deck={deck} item={items.find((i) => i.button === sel) || null} onReload={onReload} />
       <div class="sd-palette">
         <span class="muted" style="font-size:12px">🧩 Pool — in den Canvas <b>ziehen</b> (oder klicken = landet automatisch):</span>
         <div class="sd-pal-chips">
@@ -508,44 +485,6 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
               </button>
             ))}
         </div>
-      </div>
-    </div>
-  )
-}
-
-// Einstellungen einer Widget-Kachel (Text/Uhr): Anzeige-Modus, Schrift, Farbe, Sekunden, 24-Std.
-function WidgetSettings({ deck, item, onReload }) {
-  if (!item || (item.type !== 'label' && item.type !== 'clock')) return null
-  const o = item.opts || {}
-  const isClock = item.type === 'clock'
-  const digital = !isClock || (o.mode || 'digital') === 'digital'
-  const patch = (p) => postJSON(`/api/streamdeck/deck/${deck.id}/item/${item.button}`, { opts: { ...o, ...p } })
-    .then(() => onReload && onReload()).catch(() => {})
-  return (
-    <div class="sd-inspect">
-      <span class="muted" style="font-size:12px">Einstellungen — <b>{isClock ? 'Uhr' : 'Text'}</b>:</span>
-      <div class="sd-lay-ctl">
-        {isClock && (
-          <label>Anzeige
-            <select class="so-delay" value={o.mode || 'digital'} onChange={(e) => patch({ mode: e.currentTarget.value })}>
-              <option value="digital">Digital</option>
-              <option value="analog">Analog</option>
-            </select>
-          </label>
-        )}
-        {digital && (
-          <label>Schrift
-            <select class="so-delay" value={o.font || (isClock ? 'mono' : 'sans')} onChange={(e) => patch({ font: e.currentTarget.value })}>
-              {Object.keys(FONT_LABELS).map((k) => <option value={k}>{FONT_LABELS[k]}</option>)}
-            </select>
-          </label>
-        )}
-        <label>Farbe
-          <input type="color" class="so-delay" style="width:46px;height:30px;padding:2px"
-                 value={o.color || '#ffffff'} onChange={(e) => patch({ color: e.currentTarget.value })} />
-        </label>
-        {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.seconds !== false} onChange={(e) => patch({ seconds: e.currentTarget.checked })} /> Sekunden</label>}
-        {isClock && digital && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.format24 !== false} onChange={(e) => patch({ format24: e.currentTarget.checked })} /> 24-Std</label>}
       </div>
     </div>
   )
@@ -843,6 +782,47 @@ function RefreshOverride({ value, options, onChange }) {
 }
 
 // Funktions-Editor (Pool): Aktion + Überwachung + Refresh + Zustände/Default. KEINE Platzierung.
+// Darstellungs-Settings für Text-/Uhr-Buttons (im Button-Editor bei render=text|clock). Bearbeitet b.opts
+// (Schrift/Farbe/Uhr-Modus) + bei Text den angezeigten Text (= der Titel).
+function WidgetOpts({ b, set }) {
+  const o = b.opts || {}
+  const isClock = b.render === 'clock'
+  const digital = !isClock || (o.mode || 'digital') === 'digital'
+  const setO = (p) => set({ opts: { ...o, ...p } })
+  return (
+    <div class="reward-row" style="flex-wrap:wrap;gap:10px">
+      {b.render === 'text' && (
+        <>
+          <span class="muted conn-label">Text</span>
+          <input class="reward-input" placeholder="Überschrift / Text" value={(b.default || {}).title || ''}
+                 onInput={(e) => set({ default: { ...(b.default || {}), title: e.currentTarget.value } })} />
+        </>
+      )}
+      {isClock && (
+        <label>Anzeige
+          <select class="so-delay" value={o.mode || 'digital'} onChange={(e) => setO({ mode: e.currentTarget.value })}>
+            <option value="digital">Digital</option>
+            <option value="analog">Analog</option>
+          </select>
+        </label>
+      )}
+      {digital && (
+        <label>Schrift
+          <select class="so-delay" value={o.font || (isClock ? 'mono' : 'sans')} onChange={(e) => setO({ font: e.currentTarget.value })}>
+            {Object.keys(FONT_LABELS).map((k) => <option value={k}>{FONT_LABELS[k]}</option>)}
+          </select>
+        </label>
+      )}
+      <label>Farbe
+        <input type="color" class="so-delay" style="width:46px;height:30px;padding:2px"
+               value={o.color || '#ffffff'} onChange={(e) => setO({ color: e.currentTarget.value })} />
+      </label>
+      {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.seconds !== false} onChange={(e) => setO({ seconds: e.currentTarget.checked })} /> Sekunden</label>}
+      {isClock && digital && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.format24 !== false} onChange={(e) => setO({ format24: e.currentTarget.checked })} /> 24-Std</label>}
+    </div>
+  )
+}
+
 function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
   const [b, setB] = useState(() => JSON.parse(JSON.stringify(button)))
   const [msg, setMsg] = useState(null)
@@ -880,9 +860,12 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
                   onChange={(e) => set({ render: e.currentTarget.value === 'value' ? undefined : e.currentTarget.value })}>
             <option value="value">Standard (Symbol / Wert)</option>
             <option value="graph">📈 Graph (Verlaufskurve)</option>
+            <option value="text">🔤 Text / Überschrift</option>
+            <option value="clock">🕐 Uhr</option>
           </select>
-          <span class="muted" style="font-size:12px">„Graph" zeichnet den Verlauf des <b>Überwachungs</b>-Werts (z. B. HWiNFO-Sensor). Tipp: Titel „{'{value}'}" zeigt zusätzlich die aktuelle Zahl.</span>
+          <span class="muted" style="font-size:12px">{b.render === 'clock' ? 'Live-Uhr (digital/analog) — kann zusätzlich eine Press-Aktion haben.' : b.render === 'text' ? 'Reine Text-/Überschrift-Kachel — Text = der Titel; kann zusätzlich eine Press-Aktion haben.' : <>„Graph" zeichnet den Verlauf des <b>Überwachungs</b>-Werts. Tipp: Titel „{'{value}'}" zeigt die aktuelle Zahl.</>}</span>
         </div>
+        {(b.render === 'text' || b.render === 'clock') && <WidgetOpts b={b} set={set} />}
         <ActionEditor action={b.action} options={options} onChange={setAction} replace={(a) => set({ action: a })}
           onPicked={(info) => set({
             label: b.label || info.name,

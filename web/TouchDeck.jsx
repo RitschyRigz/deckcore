@@ -172,6 +172,7 @@ export function TouchDeck() {
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
+  const [optsById, setOptsById] = useState({})       // button-id → opts (Schrift/Farbe/Uhr-Modus für Text/Uhr-Buttons)
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
@@ -182,9 +183,9 @@ export function TouchDeck() {
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    const am = {}, rm = {}, mm = {}
-    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {} }
-    setActionById(am); setRenderById(rm); setMonById(mm)
+    const am = {}, rm = {}, mm = {}, om = {}
+    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {} }
+    setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om)
     setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
@@ -256,41 +257,36 @@ export function TouchDeck() {
     const positioned = Number.isInteger(it.x) && Number.isInteger(it.y)
     const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
       : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
-    if (it.type === 'label' || it.type === 'clock') {   // freie Widget-Kachel (Text/Uhr — keine Aktion, kein Press)
-      const o = it.opts || {}
-      const fs = Math.round(Math.min(60, Math.max(14, h * 32)))   // Schrift skaliert mit der Kachel-Höhe
-      return (
-        <div key={id} class={'t-key t-widget spanned t-' + it.type} style={'background:transparent' + place}>
-          {it.type === 'clock'
-            ? <Clock opts={o} fs={fs} />
-            : <span class="t-label-text" style={`font-size:${fs}px;font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{it.text || ''}</span>}
-        </div>
-      )
-    }
     const v = vis[id] || {}
     const eff = resolveStyle(it.style, layout)
     const folder = (actionById[id] || {}).type === 'open_deck'
-    const isGraph = renderById[id] === 'graph'
+    const render = renderById[id]
+    const isGraph = render === 'graph'
+    const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
+    const o = optsById[id] || {}
+    const fs = Math.round(Math.min(60, Math.max(14, h * 30)))   // Text-/Uhr-Schrift skaliert mit Kachelhöhe
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222')) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={'background:' + (isWidget ? 'transparent' : (isGraph ? 'var(--bg)' : (v.color || '#222'))) + place}
               onClick={(e) => onTap(id, e)}>
-        {isGraph ? (
-          <>
-            {v.title ? <span class="t-key-title">{v.title}</span> : null}
-            {['fps', 'frametime'].includes((monById[id] || {}).type)
-              ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
-              : <Sparkline data={histRef.current[id]} color={v.color} />}
-          </>
-        ) : (
-          <>
-            {v.image ? <img class="t-key-img" src={v.image} alt="" />
-              : <span class="t-key-icon">{v.icon || '•'}</span>}
-            {v.title ? <span class="t-key-title">{v.title}</span> : null}
-          </>
-        )}
-        <span class="t-key-label">{v.label || id}</span>
+        {isClock ? <Clock opts={o} fs={fs} />
+          : isText ? <span class="t-label-text" style={`font-size:${fs}px;font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
+          : isGraph ? (
+            <>
+              {v.title ? <span class="t-key-title">{v.title}</span> : null}
+              {['fps', 'frametime'].includes((monById[id] || {}).type)
+                ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
+                : <Sparkline data={histRef.current[id]} color={v.color} />}
+            </>
+          ) : (
+            <>
+              {v.image ? <img class="t-key-img" src={v.image} alt="" />
+                : <span class="t-key-icon">{v.icon || '•'}</span>}
+              {v.title ? <span class="t-key-title">{v.title}</span> : null}
+            </>
+          )}
+        {!isWidget && <span class="t-key-label">{v.label || id}</span>}
         {folder && <span class="t-folder-badge">⋯</span>}
       </button>
     )

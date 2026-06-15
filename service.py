@@ -709,25 +709,14 @@ class DeckCoreService:
     def _sanitize_item(self, it, valid_ids: set, seen: set) -> Optional[dict]:
         it = it or {}
         bid = str(it.get("button") or "")
-        if not bid or bid in seen:
-            return None
-        wtype = it.get("type") if it.get("type") in _WIDGET_TYPES else None   # Frei-Widget (Text/Uhr, kein Pool-Button)
-        if not wtype and bid not in valid_ids:
-            return None
+        if not bid or bid not in valid_ids or bid in seen:
+            return None   # nur echte Pool-Buttons (Stray __lbl_/__clk_-Altlasten fallen hier weg)
         seen.add(bid)
-        if wtype:
-            out = {"button": bid, "type": wtype}
-            if wtype == "label":
-                out["text"] = str(it.get("text") or "")[:240]
-            opts = _sanitize_opts(it.get("opts"))
-            if opts:
-                out["opts"] = opts
-        else:
-            raw_style = it.get("style")
-            raw_style = raw_style if isinstance(raw_style, dict) else {}
-            style = {k: raw_style[k] for k in _STYLE_KEYS if k in raw_style}
-            out = {"button": bid, "category": str(it.get("category") or ""),
-                   "style": style, "hidden": bool(it.get("hidden"))}
+        raw_style = it.get("style")
+        raw_style = raw_style if isinstance(raw_style, dict) else {}
+        style = {k: raw_style[k] for k in _STYLE_KEYS if k in raw_style}
+        out = {"button": bid, "category": str(it.get("category") or ""),
+               "style": style, "hidden": bool(it.get("hidden"))}
         w = _clamp_span((it or {}).get("w"), _SPAN_W_MAX)   # Panel-Span (nur >1 speichern)
         h = _clamp_span((it or {}).get("h"), _SPAN_H_MAX)
         if w > 1:
@@ -1367,6 +1356,14 @@ class DeckCoreService:
         # Platzierung gehört nicht in die Funktions-Definition.
         for f in ("deck", "group", "style"):
             button.pop(f, None)
+        # Darstellung (render: graph|text|clock; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
+        if button.get("render") not in ("graph", "text", "clock"):
+            button.pop("render", None)
+        if "opts" in button:
+            o = _sanitize_opts(button.get("opts"))
+            button["opts"] = o if o else None
+            if not o:
+                button.pop("opts", None)
         is_new = not any(b.get("id") == bid for b in self._buttons)
         self._last_eval.pop(bid, None)             # erzwingt sofortige Neuauswertung
         self._removed.discard(str(bid))            # bewusst (wieder) angelegt → nicht mehr „gelöscht"
