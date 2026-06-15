@@ -43,6 +43,13 @@ _POLL_HZ = 30.0          # Sampler-Rate (fängt Spikes; CPU-billig)
 _RING = 600              # Ringpuffer-Tiefe (~20 s @ 30 Hz)
 _RECONNECT_COOLDOWN = 8.0
 _BLOB = 16384            # großzügiger Poll-Blob (mehrere Swapchains)
+_SC_CAP = 64             # ⚠ numSwapChains ist IN/OUT: VOR dem Poll die Blob-Kapazität (#Swapchains) setzen,
+#                          sonst lehnt pmPollDynamicQuery mit BAD_ARGUMENT (Status 2) ab. Kostete 1 Debug-Runde.
+# Sichtbare Prozesse, die KEIN Spiel sind (Browser/Deck/Shell) → nie als FPS-Quelle nehmen. So bleiben die
+# Werte stehen, während man das Panel im Browser anschaut (das Spiel läuft borderless im Hintergrund weiter).
+_DENY = ("chrome", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "iexplore", "explorer.exe",
+         "rigzdeck", "python", "code.exe", "discord", "obs", "electron", "dwm.exe", "textinputhost",
+         "searchhost", "applicationframehost", "shellexperiencehost", "widgets", "nvidia")
 
 
 class PM_QUERY_ELEMENT(ctypes.Structure):
@@ -61,18 +68,39 @@ def _dll_path() -> Optional[str]:
     return None
 
 
-def _foreground_pid() -> int:
-    """PID des aktuellen Vordergrund-Fensters (= meist das laufende Spiel)."""
+def _proc_name(pid: int) -> str:
     try:
-        u = ctypes.windll.user32
-        hwnd = u.GetForegroundWindow()
-        if not hwnd:
-            return 0
-        pid = ctypes.c_uint32(0)
-        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return int(pid.value)
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        b = ctypes.create_unicode_buffer(260)
+        s = ctypes.c_uint32(260)
+        k.QueryFullProcessImageNameW(h, 0, b, ctypes.byref(s))
+        k.CloseHandle(h)
+        return b.value.split("\\")[-1].lower()
     except Exception:  # noqa: BLE001
-        return 0
+        return ""
+
+
+def _visible_window_pids() -> set:
+    """PIDs aller sichtbaren Top-Level-Fenster — Kandidaten für das laufende Spiel."""
+    pids: set = set()
+    try:
+        user32 = ctypes.windll.user32
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        def _cb(hwnd, _lparam):
+            if user32.IsWindowVisible(hwnd):
+                p = ctypes.c_uint32(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+                if p.value:
+                    pids.add(int(p.value))
+            return True
+        user32.EnumWindows(_cb, 0)
+    except Exception:  # noqa: BLE001
+        pass
+    return pids
 
 
 class FrametimeSource:
@@ -85,6 +113,8 @@ class FrametimeSource:
         self._fps_last: Optional[float] = None
         self._ft_last: Optional[float] = None
         self._tracked_pid = 0
+        self._game_pid = 0           # aktuell gelocktes Spiel (sticky; via Scan gefunden, nicht Vordergrund)
+        self._tracked: set = set()    # bereits an die PresentMon-Tracking-API gemeldete PIDs
         self._presenting = False
         self._available = False
         self._reason = "nicht gestartet"
@@ -178,35 +208,57 @@ class FrametimeSource:
         self._fps_off, self._ft_off = int(elems[0].dataOffset), int(elems[1].dataOffset)
         self._blob = (ctypes.c_ubyte * _BLOB)()
 
+    def _poll(self, pid: int):
+        """Einen Prozess pollen → (fps, frametime) oder (None, None). Trackt ihn beim ersten Mal."""
+        dll = self._dll
+        if pid not in self._tracked:
+            try:
+                dll.pmStartTrackingProcess(self._sess, pid)
+            except Exception:  # noqa: BLE001
+                pass
+            self._tracked.add(pid)
+        self._nsc.value = _SC_CAP   # IN/OUT-Kapazität! sonst BAD_ARGUMENT
+        if dll.pmPollDynamicQuery(self._query, pid, self._blob, ctypes.byref(self._nsc)) != PM_STATUS_SUCCESS:
+            return None, None
+        fps = ctypes.c_double.from_buffer(self._blob, self._fps_off).value
+        ft = ctypes.c_double.from_buffer(self._blob, self._ft_off).value
+        return (fps if fps and fps > 0 else None), (ft if ft and ft > 0 else None)
+
+    def _scan_for_game(self):
+        """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS
+        ist das Spiel. Findet das Spiel UNABHÄNGIG vom Vordergrund (Panel im Browser anschauen geht)."""
+        best = (0, None, None)
+        for pid in _visible_window_pids():
+            if any(d in _proc_name(pid) for d in _DENY):
+                continue
+            f, t = self._poll(pid)
+            if f and f > (best[1] or 0.0):
+                best = (pid, f, t)
+        return best
+
     def _loop(self) -> None:
-        dll, period = self._dll, 1.0 / _POLL_HZ
-        nsc = ctypes.c_uint32(0)
+        period = 1.0 / _POLL_HZ
+        self._nsc = ctypes.c_uint32(0)
+        last_scan = 0.0
         while not self._stop.is_set():
-            pid = _foreground_pid()
-            if pid != self._tracked_pid:
-                if self._tracked_pid:
-                    try: dll.pmStopTrackingProcess(self._sess, self._tracked_pid)
-                    except Exception: pass  # noqa: BLE001
-                self._tracked_pid = pid
-                if pid:
-                    try: dll.pmStartTrackingProcess(self._sess, pid)
-                    except Exception: pass  # noqa: BLE001
-            if pid:
-                nsc.value = 0
-                st = dll.pmPollDynamicQuery(self._query, pid, self._blob, ctypes.byref(nsc))
-                if st == PM_STATUS_SUCCESS and nsc.value > 0:
-                    fps = ctypes.c_double.from_buffer(self._blob, self._fps_off).value
-                    ft = ctypes.c_double.from_buffer(self._blob, self._ft_off).value
-                    if fps and fps > 0 and ft and ft > 0:
-                        with self._lock:
-                            self._fps.append(round(fps, 1)); self._ft.append(round(ft, 2))
-                        self._fps_last, self._ft_last = round(fps, 1), round(ft, 2)
-                        if not self._presenting:
-                            self._presenting = True; self._reason = "live"
-                    else:
-                        self._idle()
-                else:
-                    self._idle()
+            fps = ft = None
+            # 1) am gelockten Spiel dranbleiben (schnell + billig)
+            if self._game_pid:
+                fps, ft = self._poll(self._game_pid)
+                if fps is None:
+                    self._game_pid = 0   # Spiel weg → neu suchen
+            # 2) kein Spiel gelockt → ~1×/s alle sichtbaren Fenster scannen (das mit den meisten FPS = Spiel)
+            if fps is None and (time.monotonic() - last_scan) > 1.0:
+                last_scan = time.monotonic()
+                pid, fps, ft = self._scan_for_game()
+                self._game_pid = pid
+            if fps is not None:
+                self._tracked_pid = self._game_pid
+                with self._lock:
+                    self._fps.append(round(fps, 1)); self._ft.append(round(ft, 2) if ft else 0.0)
+                self._fps_last, self._ft_last = round(fps, 1), (round(ft, 2) if ft else None)
+                self._presenting = True
+                self._reason = "live"
             else:
                 self._idle()
             self._stop.wait(period)
