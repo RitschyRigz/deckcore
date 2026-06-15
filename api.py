@@ -196,6 +196,29 @@ def build_streamdeck_router(
             raise HTTPException(status_code=400, detail=res.get("reason", "keine Profile / unbekanntes Deck"))
         return JSONResponse(res)
 
+    # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Button-Pool-Ansicht ──
+    @r.post("/api/streamdeck/generate/displayfusion")
+    def streamdeck_generate_df(request: Request) -> JSONResponse:
+        res = get_service(request).generate_displayfusion_buttons()
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "keine Profile"))
+        return JSONResponse(res)
+
+    @r.post("/api/streamdeck/generate/obs_scenes")
+    def streamdeck_generate_obs(request: Request) -> JSONResponse:
+        if obs_scenes is None:
+            raise HTTPException(status_code=503, detail="Keine OBS-Quelle konfiguriert.")
+        try:
+            scenes = obs_scenes() or []
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=f"OBS nicht erreichbar: {e}")
+        if not scenes:
+            raise HTTPException(status_code=503, detail="Keine OBS-Szenen gefunden (ist OBS verbunden?).")
+        res = get_service(request).generate_obs_scene_buttons(scenes)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
+        return JSONResponse(res)
+
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:
         icon_dir = Path(static_dir) / "sd_icons" / "user"

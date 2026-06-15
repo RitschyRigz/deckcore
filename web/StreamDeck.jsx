@@ -538,11 +538,29 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
 // ══════════════════════════════════════════════════════════════════════════════
 function PoolList({ buttons, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
+  const [genBusy, setGenBusy] = useState('')
+  const [genMsg, setGenMsg] = useState(null)
+  // Presets NUR in den Pool generieren (keine Deck-Platzierung) — danach auf Decks/Ordner ziehen.
+  const gen = async (kind) => {
+    setGenBusy(kind); setGenMsg(null)
+    try {
+      const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
+      setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
+      onReload && onReload()
+    } catch (e) { setGenMsg({ ok: false, t: String(e.message || e) }) }
+    setGenBusy('')
+  }
   return (
     <div>
       <div class="conn-toolbar">
         <button class="btn ghost small" onClick={() => setAdding(true)}>➕ Neuer Button</button>
-        <span class="muted">{buttons.length} Buttons im Pool · Funktion (Aktion/Überwachung/Zustände). Platzierung machst du im <b>Decks</b>-Tab bzw. am Elgato-Plugin.</span>
+        <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
+        {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
+        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
+        {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
+      </div>
+      <div class="conn-toolbar" style="margin-top:-8px">
+        <span class="muted">{buttons.length} Buttons im Pool · Funktion (Aktion/Überwachung/Zustände). Platzierung im <b>Decks</b>-Tab bzw. am Elgato-Plugin. <b>Presets</b> erzeugen Buttons nur im Pool — dann auf Decks/Ordner ziehen.</span>
       </div>
       {adding && (
         <FunctionEditor button={blankButton()} options={options} isNew

@@ -958,6 +958,63 @@ class DeckCoreService:
         return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
                 "total": created + updated}
 
+    # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Pool-Ansicht ──
+    def generate_obs_scene_buttons(self, scenes: list) -> dict:
+        """Pro OBS-Szene einen Szenen-Wechsel-Button NUR im Pool anlegen/auffrischen (KEINE
+        Deck-Platzierung; der User zieht sie danach auf Decks/Ordner). Idempotent (id scene_<slug>)."""
+        names = [str(s) for s in (scenes or []) if str(s).strip()]
+        if not names:
+            return {"ok": False, "reason": "no_scenes"}
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        used = set(pool_by_id.keys())
+        created = updated = 0
+        for name in names:
+            bid = "scene_" + _slug(name)
+            if bid in pool_by_id and pool_by_id[bid].get("_scene") != name:
+                base = bid; n = 2
+                while bid in used:
+                    bid = f"{base}_{n}"; n += 1
+            fn = {"id": bid, "label": name, "_scene": name,
+                  "action": {"type": "obs", "obs_action": "scene", "scene": name},
+                  "monitor": {"type": "obs_scene"},
+                  "states": [{"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": "#1f9d55"}],
+                  "default": {"icon": "🎬", "title": name, "color": "#2a2a2a"}}
+            if pool_by_id.get(bid) is not None:
+                self._buttons[self._buttons.index(pool_by_id[bid])] = fn; updated += 1
+            else:
+                self._buttons.append(fn); used.add(bid); created += 1
+            pool_by_id[bid] = fn; self._removed.discard(bid)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "created": created, "updated": updated, "total": created + updated}
+
+    def generate_displayfusion_buttons(self) -> dict:
+        """Pro DisplayFusion-Profil einen Lade-Button NUR im Pool (KEINE Deck-Platzierung). Idempotent."""
+        profs = _df_list_profiles()
+        if not profs:
+            return {"ok": False, "reason": "no_profiles"}
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        used = set(pool_by_id.keys())
+        created = updated = 0
+        for prof in profs:
+            name = prof["name"]
+            bid = "df_" + _slug(name)
+            if bid in pool_by_id and pool_by_id[bid].get("_df_profile") != name:
+                base = bid; n = 2
+                while bid in used:
+                    bid = f"{base}_{n}"; n += 1
+            fn = {"id": bid, "label": name, "_df_profile": name,
+                  "action": {"type": "displayfusion", "profile": name},
+                  "monitor": {"type": "displayfusion_profile"},
+                  "states": [{"when": {"op": "eq", "value": name}, "icon": "🖥", "title": name, "color": "#1f9d55"}],
+                  "default": {"icon": "🖥", "title": name, "color": "#2a2a2a"}}
+            if pool_by_id.get(bid) is not None:
+                self._buttons[self._buttons.index(pool_by_id[bid])] = fn; updated += 1
+            else:
+                self._buttons.append(fn); used.add(bid); created += 1
+            pool_by_id[bid] = fn; self._removed.discard(bid)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "created": created, "updated": updated, "total": created + updated}
+
     def displayfusion_profiles(self) -> dict:
         """DisplayFusion-Monitor-Profile (+ aktiv-Markierung) + ob DisplayFusion verfügbar ist."""
         return {"available": bool(_df_command_path()), "profiles": _df_list_profiles()}
