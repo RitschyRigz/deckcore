@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
@@ -45,6 +45,40 @@ function pickInitialDeck(deckList, def) {
     if (stored && ids.has(stored)) return stored
   } catch {}
   return (deckList && deckList[0] && deckList[0].id) || def
+}
+
+// Verlaufs-Puffer für Graph-Kacheln: bei jedem resolved-Push den Roh-`value` jedes Buttons anhängen
+// (gedeckelt). Wird für ALLE numerischen Werte gesammelt; nur Graph-Kacheln lesen ihn. Schnell sampeln /
+// grob anzeigen: hier sammelt das Frontend, was der Eval-Loop pusht — eine spätere High-Rate-Quelle
+// (z.B. PresentMon-Frametimes) füllt denselben Puffer feiner.
+const _HIST_MAX = 90
+function _accumHist(hist, buttons) {
+  for (const id in buttons) {
+    const v = Number(buttons[id] && buttons[id].value)
+    if (Number.isFinite(v)) {
+      const arr = hist[id] || (hist[id] = [])
+      arr.push(v)
+      if (arr.length > _HIST_MAX) arr.shift()
+    }
+  }
+}
+
+// Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
+function Sparkline({ data, color }) {
+  const arr = data || []
+  if (arr.length < 2) return <div class="t-spark t-spark-wait" />
+  let min = Infinity, max = -Infinity
+  for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
+  if (min === max) { min -= 1; max += 1 }
+  const W = 100, H = 36
+  const pts = arr.map((v, i) =>
+    ((i / (arr.length - 1)) * W).toFixed(1) + ',' + (H - ((v - min) / (max - min)) * H).toFixed(1)).join(' ')
+  return (
+    <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+      <polyline points={pts} fill="none" stroke={color || 'var(--accent2)'} stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+    </svg>
+  )
 }
 
 // Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
@@ -102,6 +136,8 @@ export function TouchDeck() {
   const [vis, setVis] = useState({})            // button-id → {label,title,icon,image,color} (live)
   const [pressed, setPressed] = useState('')
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
+  const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
+  const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
 
@@ -111,18 +147,19 @@ export function TouchDeck() {
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    const am = {}; for (const b of d.buttons || []) am[b.id] = b.action || {}
-    setActionById(am)
+    const am = {}, rm = {}
+    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value' }
+    setActionById(am); setRenderById(rm)
     setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
 
   useEffect(() => {
     loadReg()
-    getJSON('/api/streamdeck/resolved').then((d) => setVis(d.buttons || {})).catch(() => {})
+    getJSON('/api/streamdeck/resolved').then((d) => { _accumHist(histRef.current, d.buttons || {}); setVis(d.buttons || {}) }).catch(() => {})
   }, [])
   useEventStream(['streamdeck:buttons', 'streamdeck:layout'], {
-    'streamdeck:buttons': (d) => { if (d.buttons) setVis(d.buttons) },
+    'streamdeck:buttons': (d) => { if (d.buttons) { _accumHist(histRef.current, d.buttons); setVis(d.buttons) } },
     // Deck-Template- ODER Button-Änderung aus dem Editor → Registry neu lesen (hält actionById frisch).
     'streamdeck:layout': () => loadReg(),
   })
@@ -200,14 +237,24 @@ export function TouchDeck() {
                 const v = vis[id] || {}
                 const eff = resolveStyle(it.style, layout)
                 const folder = (actionById[id] || {}).type === 'open_deck'
+                const isGraph = renderById[id] === 'graph'
                 return (
                   <button key={id}
-                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (pressed === id ? ' pressed' : '')}
-                          style={'background:' + (v.color || '#222')}
+                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (pressed === id ? ' pressed' : '')}
+                          style={'background:' + (isGraph ? 'var(--bg)' : (v.color || '#222'))}
                           onClick={(e) => onTap(id, e)}>
-                    {v.image ? <img class="t-key-img" src={v.image} alt="" />
-                      : <span class="t-key-icon">{v.icon || '•'}</span>}
-                    {v.title ? <span class="t-key-title">{v.title}</span> : null}
+                    {isGraph ? (
+                      <>
+                        {v.title ? <span class="t-key-title">{v.title}</span> : null}
+                        <Sparkline data={histRef.current[id]} color={v.color} />
+                      </>
+                    ) : (
+                      <>
+                        {v.image ? <img class="t-key-img" src={v.image} alt="" />
+                          : <span class="t-key-icon">{v.icon || '•'}</span>}
+                        {v.title ? <span class="t-key-title">{v.title}</span> : null}
+                      </>
+                    )}
                     <span class="t-key-label">{v.label || id}</span>
                     {folder && <span class="t-folder-badge">⋯</span>}
                   </button>

@@ -682,6 +682,15 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
           <input class="reward-input" placeholder="Anzeigename" value={b.label}
                  onInput={(e) => set({ label: e.currentTarget.value })} />
         </div>
+        <div class="reward-row">
+          <span class="muted conn-label">Darstellung</span>
+          <select class="so-delay" value={b.render || 'value'}
+                  onChange={(e) => set({ render: e.currentTarget.value === 'value' ? undefined : e.currentTarget.value })}>
+            <option value="value">Standard (Symbol / Wert)</option>
+            <option value="graph">📈 Graph (Verlaufskurve)</option>
+          </select>
+          <span class="muted" style="font-size:12px">„Graph" zeichnet den Verlauf des <b>Überwachungs</b>-Werts (z. B. HWiNFO-Sensor). Tipp: Titel „{'{value}'}" zeigt zusätzlich die aktuelle Zahl.</span>
+        </div>
         <ActionEditor action={b.action} options={options} onChange={setAction} replace={(a) => set({ action: a })}
           onPicked={(info) => set({
             label: b.label || info.name,

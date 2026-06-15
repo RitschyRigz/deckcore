@@ -1526,6 +1526,7 @@ class DeckCoreService:
                     "icon": st.get("icon", ""),
                     "image": st.get("image", ""),
                     "color": st.get("color", "#222"),
+                    "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
                 }
         return {
             "label": btn.get("label", btn.get("id")),
@@ -1533,6 +1534,7 @@ class DeckCoreService:
             "icon": default.get("icon", ""),
             "image": default.get("image", ""),
             "color": default.get("color", "#222"),
+            "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
         }
 
     def _eff_interval(self, btn: dict) -> float:

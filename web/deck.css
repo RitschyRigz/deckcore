@@ -214,3 +214,14 @@
 @media (prefers-reduced-motion: reduce) {
   .t-radial-key { transition-duration: .01ms; transition-delay: 0ms; }
 }
+
+/* ===== Graph-/Sparkline-Kachel (button.render = "graph") ===== */
+/* Verlaufskurve des Monitor-Werts; dunkle Kachel, farbige Linie (= Status-/Schwellwert-Farbe). */
+.t-key.is-graph { justify-content: flex-start; align-items: stretch; padding: 7px 8px 5px; gap: 3px;
+  border-color: var(--line); }
+.t-key.is-graph .t-key-title { font-size: calc(12px * var(--sd-font)); font-weight: 800; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-key.is-graph .t-key-label { margin-top: auto; opacity: .7; }
+.t-spark { width: 100%; flex: 1 1 auto; min-height: 16px; display: block; }
+.t-spark-wait { width: 100%; flex: 1 1 auto; min-height: 16px; opacity: .35;
+  background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 6px); border-radius: 4px; }
