@@ -798,20 +798,20 @@ function RefreshOverride({ value, options, onChange }) {
 }
 
 // Funktions-Editor (Pool): Aktion + Überwachung + Refresh + Zustände/Default. KEINE Platzierung.
-// Darstellungs-Settings für Text-/Uhr-Buttons (im Button-Editor bei render=text|clock). Bearbeitet b.opts
-// (Schrift/Farbe/Uhr-Modus) + bei Text den angezeigten Text (= der Titel).
-function WidgetOpts({ b, set }) {
-  const o = b.opts || {}
-  const isClock = b.render === 'clock'
+// Typ-Felder für Text-/Uhr-Buttons — Teil der „Aussehen"-Sektion (bei Darstellung text|clock). Bearbeitet
+// opts (Schrift/Farbe/Uhr-Modus) + bei Text den angezeigten Text (= der Titel).
+function WidgetFields({ render, opts, def, onOpts, onDefault }) {
+  const o = opts || {}
+  const isClock = render === 'clock'
   const digital = !isClock || (o.mode || 'digital') === 'digital'
-  const setO = (p) => set({ opts: { ...o, ...p } })
+  const setO = (p) => onOpts({ ...o, ...p })
   return (
     <div class="reward-row" style="flex-wrap:wrap;gap:10px">
-      {b.render === 'text' && (
+      {render === 'text' && (
         <>
           <span class="muted conn-label">Text</span>
-          <input class="reward-input" placeholder="Überschrift / Text" value={(b.default || {}).title || ''}
-                 onInput={(e) => set({ default: { ...(b.default || {}), title: e.currentTarget.value } })} />
+          <input class="reward-input" placeholder="Überschrift / Text" value={(def || {}).title || ''}
+                 onInput={(e) => onDefault({ title: e.currentTarget.value })} />
         </>
       )}
       {isClock && (
@@ -870,18 +870,6 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
           <input class="reward-input" placeholder="Anzeigename" value={b.label}
                  onInput={(e) => set({ label: e.currentTarget.value })} />
         </div>
-        <div class="reward-row">
-          <span class="muted conn-label">Darstellung</span>
-          <select class="so-delay" value={b.render || 'value'}
-                  onChange={(e) => set({ render: e.currentTarget.value === 'value' ? undefined : e.currentTarget.value })}>
-            <option value="value">Standard (Symbol / Wert)</option>
-            <option value="graph">📈 Graph (Verlaufskurve)</option>
-            <option value="text">🔤 Text / Überschrift</option>
-            <option value="clock">🕐 Uhr</option>
-          </select>
-          <span class="muted" style="font-size:12px">{b.render === 'clock' ? 'Live-Uhr (digital/analog) — kann zusätzlich eine Press-Aktion haben.' : b.render === 'text' ? 'Reine Text-/Überschrift-Kachel — Text = der Titel; kann zusätzlich eine Press-Aktion haben.' : <>„Graph" zeichnet den Verlauf des <b>Überwachungs</b>-Werts. Tipp: Titel „{'{value}'}" zeigt die aktuelle Zahl.</>}</span>
-        </div>
-        {(b.render === 'text' || b.render === 'clock') && <WidgetOpts b={b} set={set} />}
         <ActionEditor action={b.action} options={options} onChange={setAction} replace={(a) => set({ action: a })}
           onPicked={(info) => set({
             label: b.label || info.name,
@@ -890,6 +878,9 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
         <MonitorEditor monitor={b.monitor} options={options} onChange={setMonitor} replace={(m) => set({ monitor: m })} />
         <RefreshOverride value={b.refresh_seconds} options={options} onChange={(v) => set({ refresh_seconds: v })} />
         <StatesEditor states={b.states} def={b.default} options={options} monitor={b.monitor}
+                      render={b.render} opts={b.opts}
+                      onRender={(r) => set({ render: r === 'value' ? undefined : r })}
+                      onOpts={(o) => set({ opts: o })}
                       onStates={(s) => set({ states: s })} onDefault={setDefault} />
         <div class="card-foot row">
           <button class="btn" disabled={busy} onClick={save}>{isNew ? 'Anlegen' : 'Speichern'}</button>
@@ -1420,38 +1411,57 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
   )
 }
 
-function StatesEditor({ states, def, options, monitor, onStates, onDefault }) {
+function StatesEditor({ states, def, options, monitor, render, opts, onRender, onOpts, onStates, onDefault }) {
   const mType = (monitor || {}).type || 'none'
   const info = MONITOR_INFO[mType] || {}
   const knownValues = info.values || null
   const stateless = mType === 'none'
+  const isWidget = render === 'text' || render === 'clock'
   const add = () => onStates([...(states || []), { when: { op: knownValues ? 'eq' : 'any' }, title: '', icon: '', color: '#2a2a2a' }])
   const upd = (i, st) => onStates(states.map((s, j) => (j === i ? st : s)))
   const rm = (i) => onStates(states.filter((_, j) => j !== i))
   return (
     <div class="sd-block">
-      <p class="sd-block-h">🎨 Aussehen <span class="muted">— Bild/Icon/Titel/Farbe je Zustand</span></p>
-      <p class="muted sd-help">
-        {stateless
-          ? 'Diese Taste hat keinen Status (Überwachung = „Keine") → es zählt nur das „Standard"-Aussehen unten.'
-          : 'Pro Status eine Regel: „Wenn Wert … dann zeige …". Erster Treffer gewinnt; sonst „Standard".'}
-      </p>
-      {!stateless && (states || []).map((st, i) => (
-        <StateRow key={i} st={st} options={options} knownValues={knownValues}
-                  onChange={(s) => upd(i, s)} onDelete={() => rm(i)} />
-      ))}
-      {!stateless && <button class="btn ghost small" onClick={add}>➕ Status-Regel</button>}
-      <div class="reward-row sd-state" style="margin-top:8px">
-        <span class="muted conn-label">Standard</span>
-        <input class="so-delay" style="width:44px" placeholder="Icon" value={def.icon || ''}
-               onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
-        <input class="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
-               onInput={(e) => onDefault({ title: e.currentTarget.value })} />
-        <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
-        <input type="color" class="sd-color" value={def.color || '#2a2a2a'}
-               onInput={(e) => onDefault({ color: e.currentTarget.value })} />
-        <Swatch vis={{ color: def.color, icon: def.icon, title: def.title, image: def.image }} />
+      <p class="sd-block-h">🎨 Aussehen <span class="muted">— wie die Taste aussieht</span></p>
+      {/* Darstellung steuert, welche Aussehen-Felder unten erscheinen (ein Ort, typgesteuert). */}
+      <div class="reward-row">
+        <span class="muted conn-label">Darstellung</span>
+        <select class="so-delay" value={render || 'value'} onChange={(e) => onRender(e.currentTarget.value)}>
+          <option value="value">Standard (Symbol / Wert)</option>
+          <option value="graph">📈 Graph (Verlaufskurve)</option>
+          <option value="text">🔤 Text / Überschrift</option>
+          <option value="clock">🕐 Uhr</option>
+        </select>
       </div>
+      {isWidget ? (
+        <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} />
+      ) : (
+        <>
+          <p class="muted sd-help">
+            {render === 'graph'
+              ? 'Der Graph zeichnet den Verlauf des Überwachungs-Werts; die „Farbe" unten ist die Linienfarbe. Titel „{value}" zeigt zusätzlich die Zahl.'
+              : stateless
+                ? 'Diese Taste hat keinen Status (Überwachung = „Keine") → es zählt nur das „Standard"-Aussehen unten.'
+                : 'Pro Status eine Regel: „Wenn Wert … dann zeige …". Erster Treffer gewinnt; sonst „Standard".'}
+          </p>
+          {!stateless && (states || []).map((st, i) => (
+            <StateRow key={i} st={st} options={options} knownValues={knownValues}
+                      onChange={(s) => upd(i, s)} onDelete={() => rm(i)} />
+          ))}
+          {!stateless && <button class="btn ghost small" onClick={add}>➕ Status-Regel</button>}
+          <div class="reward-row sd-state" style="margin-top:8px">
+            <span class="muted conn-label">Standard</span>
+            <input class="so-delay" style="width:44px" placeholder="Icon" value={def.icon || ''}
+                   onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
+            <input class="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
+                   onInput={(e) => onDefault({ title: e.currentTarget.value })} />
+            <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
+            <input type="color" class="sd-color" value={def.color || '#2a2a2a'}
+                   onInput={(e) => onDefault({ color: e.currentTarget.value })} />
+            <Swatch vis={{ color: def.color, icon: def.icon, title: def.title, image: def.image }} />
+          </div>
+        </>
+      )}
     </div>
   )
 }
