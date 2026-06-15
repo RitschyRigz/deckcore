@@ -248,6 +248,9 @@ class FrametimeSource:
         „kein Spiel" = Erfolg + 0 Frames, „Service tot" = Call-Fehler — die zwei dürfen NICHT verwechselt werden)."""
         dll = self._dll
         self._track(pid)
+        ctypes.memset(self._blob, 0, _BLOB)   # ⚠ Blob nullen: ein nicht-präsentierender PID schreibt NICHTS in
+        #   den Blob → ohne Nullen läse man den stale-FPS-Wert des zuvor gepollten Spiels (Geister-FPS → falscher
+        #   PID gelockt). Mit Nullen liefert „präsentiert nicht" sauber 0. Kostete 1 Debug-Runde.
         self._nsc.value = _SC_CAP   # IN/OUT-Kapazität! sonst BAD_ARGUMENT
         st = dll.pmPollDynamicQuery(self._query, pid, self._blob, ctypes.byref(self._nsc))
         if st != PM_STATUS_SUCCESS:
@@ -261,19 +264,23 @@ class FrametimeSource:
 
     def _scan_for_game(self):
         """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS ist
-        das Spiel. Findet das Spiel UNABHÄNGIG vom Vordergrund. ⚠ Nur der Gewinner bleibt getrackt — jede Niete
-        wird sofort wieder freigegeben, sonst sammelt der PresentMon-Service endlos Tracking-Einträge an."""
+        das Spiel (UNABHÄNGIG vom Vordergrund). ⚠ PresentMon liefert erst NACH einem Statistik-Fenster Werte —
+        die Kandidaten müssen also ÜBER mehrere Scans getrackt BLEIBEN, sonst füllt sich nie ein Fenster und das
+        Spiel wird nie erkannt (genau dieser Regressions-Fehler trat auf). Gegen den Leak: nur AKTUELL sichtbare
+        Kandidaten bleiben getrackt, verschwundene Fenster werden freigegeben → das Set bleibt = sichtbare
+        Kandidaten; sobald ein Spiel gelockt ist, gibt der Loop ohnehin alles außer dem Spiel frei."""
         best = (0, None, None)
+        candidates = set()
         for pid in _visible_window_pids():
             if any(d in _proc_name(pid) for d in _DENY):
                 continue
-            f, t = self._poll(pid)
+            candidates.add(pid)
+            f, t = self._poll(pid)           # trackt beim ersten Mal und BLEIBT getrackt (Fenster füllt sich)
             if f and f > (best[1] or 0.0):
-                if best[0] and best[0] != pid:
-                    self._untrack(best[0])   # bisherigen Besten ablösen
                 best = (pid, f, t)
-            elif pid != best[0]:
-                self._untrack(pid)           # Niete sofort freigeben (kein Leak)
+        for pid in list(self._tracked):      # nicht mehr sichtbare PIDs freigeben → kein endloser Aufbau
+            if pid not in candidates and pid != self._game_pid:
+                self._untrack(pid)
         return best
 
     def _loop(self) -> None:
@@ -296,6 +303,10 @@ class FrametimeSource:
                 self._game_pid = pid
             if fps is not None:
                 self._tracked_pid = self._game_pid
+                if len(self._tracked) > 1:          # Spiel gelockt → nur DAS tracken, Rest sofort freigeben
+                    for pid in list(self._tracked):
+                        if pid != self._game_pid:
+                            self._untrack(pid)
                 with self._lock:
                     self._fps.append(round(fps, 1)); self._ft.append(round(ft, 2) if ft else 0.0)
                 self._fps_last, self._ft_last = round(fps, 1), (round(ft, 2) if ft else None)
