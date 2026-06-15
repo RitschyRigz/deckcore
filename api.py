@@ -99,14 +99,20 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/deck/add")
     def streamdeck_deck_add(request: Request, body: dict = Body(...)) -> JSONResponse:
-        """Neues Deck. ``copy_from`` (optional) = Deck duplizieren."""
+        """Neues Deck. ``copy_from`` (optional) = Deck duplizieren. ``folder`` (optional) =
+        als Ordner anlegen (nicht in der Panel-Tableiste, nur per open_deck erreichbar)."""
         b = body or {}
         return JSONResponse(get_service(request).add_deck(
-            b.get("label", ""), b.get("icon", "🎛"), b.get("copy_from", "")))
+            b.get("label", ""), b.get("icon", "🎛"), b.get("copy_from", ""), b.get("folder")))
 
     @r.post("/api/streamdeck/deck/delete")
     def streamdeck_deck_delete(request: Request, body: dict = Body(...)) -> JSONResponse:
         return JSONResponse(get_service(request).delete_deck((body or {}).get("id", "")))
+
+    @r.post("/api/streamdeck/deck/{deck_id}/folder")
+    def streamdeck_deck_folder(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Deck ↔ Ordner umschalten (Ordner = nicht in der Panel-Tableiste)."""
+        return JSONResponse(get_service(request).set_deck_folder(deck_id, bool((body or {}).get("folder"))))
 
     @r.post("/api/streamdeck/deck/populate_obs_scenes")
     def streamdeck_deck_populate_scenes(request: Request, body: dict = Body(...)) -> JSONResponse:

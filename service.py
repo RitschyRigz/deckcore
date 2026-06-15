@@ -664,7 +664,7 @@ class DeckCoreService:
             if si:
                 items.append(si)
         return {"id": did, "label": str(d.get("label") or did).strip() or did,
-                "icon": str(d.get("icon") or "🎛"),
+                "icon": str(d.get("icon") or "🎛"), "folder": bool(d.get("folder")),
                 "layout": self._sanitize_layout(d.get("layout") or {}, _LAYOUT_DEFAULT),
                 "categories": cats, "items": items}
 
@@ -676,8 +676,8 @@ class DeckCoreService:
                 seen.add(sd["id"]); out.append(sd)
         return out
 
-    def _fresh_deck(self, did: str, label: str, icon: str) -> dict:
-        return {"id": did, "label": label, "icon": icon,
+    def _fresh_deck(self, did: str, label: str, icon: str, folder: bool = False) -> dict:
+        return {"id": did, "label": label, "icon": icon, "folder": bool(folder),
                 "layout": dict(_LAYOUT_DEFAULT), "categories": [], "items": []}
 
     def _ensure_default_deck(self, decks) -> list[dict]:
@@ -717,14 +717,16 @@ class DeckCoreService:
                 cur = dict(existing[did]); cur["label"] = label; cur["icon"] = icon
                 out.append(cur)
             else:
-                out.append(self._fresh_deck(did, label, icon))
+                out.append(self._fresh_deck(did, label, icon, bool(d.get("folder"))))
         self._decks = self._ensure_default_deck(out)
         self._save(); self._publish_cfg()
         return {"ok": True, "decks": self.decks()}
 
-    def add_deck(self, label: str, icon: str = "🎛", copy_from: str = "") -> dict:
+    def add_deck(self, label: str, icon: str = "🎛", copy_from: str = "", folder=None) -> dict:
         """Neues Deck. ``copy_from`` = id eines bestehenden Decks → dessen Layout+Kategorien+
-        Items klonen (= „Deck duplizieren"). Sonst leeres Deck mit Default-Layout."""
+        Items klonen (= „Deck duplizieren"). Sonst leeres Deck mit Default-Layout. ``folder``:
+        True = als Ordner anlegen (nicht in der Panel-Tableiste, nur per open_deck erreichbar);
+        None = von der Quelle erben (Duplizieren) bzw. kein Ordner."""
         label = str(label or "").strip() or "Deck"
         ids = self._deck_ids()
         base = _slug(label); did = base; n = 2
@@ -732,12 +734,13 @@ class DeckCoreService:
             did = f"{base}_{n}"; n += 1
         icon = str(icon or "🎛")
         src = self._deck(copy_from) if copy_from else None
+        is_folder = bool(src.get("folder")) if (folder is None and src is not None) else bool(folder)
         if src is not None:
-            deck = {"id": did, "label": label, "icon": icon,
+            deck = {"id": did, "label": label, "icon": icon, "folder": is_folder,
                     "layout": dict(src["layout"]), "categories": list(src["categories"]),
                     "items": json.loads(json.dumps(src["items"]))}
         else:
-            deck = self._fresh_deck(did, label, icon)
+            deck = self._fresh_deck(did, label, icon, is_folder)
         self._decks.append(deck)
         self._save(); self._publish_cfg()
         return {"ok": True, "id": did, "decks": self.decks()}
@@ -753,6 +756,20 @@ class DeckCoreService:
         self._decks = [d for d in self._decks if d["id"] != deck_id]
         self._save(); self._publish_cfg()
         return {"ok": True, "decks": self.decks()}
+
+    def set_deck_folder(self, deck_id: str, folder: bool) -> dict:
+        """Deck ↔ Ordner umschalten. Ordner-Decks tauchen NICHT in der Panel-Tableiste auf
+        (nur per open_deck-Button erreichbar) — sonst identisch zu einem Deck. Das Default-Deck
+        kann kein Ordner sein (es ist die Startseite)."""
+        deck_id = str(deck_id or "")
+        if deck_id == _DEFAULT_DECK:
+            return {"ok": False, "reason": "default_not_folder"}
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        deck["folder"] = bool(folder)
+        self._save(); self._publish_cfg()
+        return {"ok": True, "id": deck_id, "folder": deck["folder"]}
 
     # ── Pro Deck: Layout / Kategorien / Items (Platzierung) ──────────────
     def set_deck_layout(self, deck_id: str, patch: dict) -> dict:
@@ -1227,9 +1244,9 @@ class DeckCoreService:
             "displayfusion_available": bool(_df_command_path()),
             "match_ops": ["any", "truthy", "falsy", "eq", "ne", "gt", "lt", "gte", "lte", "contains"],
             "known_flags": flags,
-            # Deck-Liste fürs „Ordner"-Dropdown (open_deck) — leicht (nur id/label/icon).
-            "decks": [{"id": d["id"], "label": d.get("label", d["id"]), "icon": d.get("icon", "🎛")}
-                      for d in self._decks],
+            # Deck-Liste fürs „Ordner"-Dropdown (open_deck) — leicht (id/label/icon + folder-Flag).
+            "decks": [{"id": d["id"], "label": d.get("label", d["id"]), "icon": d.get("icon", "🎛"),
+                       "folder": bool(d.get("folder"))} for d in self._decks],
         }
         out.update(self._extra_options() or {})
         return out

@@ -241,38 +241,67 @@ function RefreshRate({ reg, onSaved }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  DECK-EDITOR (WYSIWYG): Deck wählen → Layout/Kategorien + Buttons direkt im Raster
 // ══════════════════════════════════════════════════════════════════════════════
-function DeckBar({ decks, active, defaultDeck, onSelect, onReload }) {
+function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }) {
   const setDecks = (next) => postJSON('/api/streamdeck/decks', { decks: next.map((d) => ({ id: d.id, label: d.label, icon: d.icon })) }).then(() => onReload && onReload()).catch(() => {})
   const addDeck = (label) => postJSON('/api/streamdeck/deck/add', { label }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
-  const dupDeck = () => postJSON('/api/streamdeck/deck/add', { label: (cur.label || 'Deck') + ' (Kopie)', icon: cur.icon, copy_from: cur.id }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
+  const addFolder = (label) => postJSON('/api/streamdeck/deck/add', { label, icon: '📁', folder: true }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
+  // Preset-Ordner: anlegen + sofort mit generierten Buttons befüllen (reuse der populate_*-Generatoren).
+  const addFolderPreset = async (kind) => {
+    const meta = kind === 'df' ? { label: 'Monitor-Profile', icon: '🖥' } : { label: 'OBS-Szenen', icon: '🎬' }
+    const r = await postJSON('/api/streamdeck/deck/add', { ...meta, folder: true }).catch(() => null)
+    if (!r || !r.id) return
+    try {
+      if (kind === 'df') await postJSON(`/api/streamdeck/deck/${r.id}/populate_displayfusion`, {})
+      else await postJSON('/api/streamdeck/deck/populate_obs_scenes', { deck_id: r.id })
+    } catch { /* Quelle evtl. offline → Ordner bleibt leer, später nachbefüllbar */ }
+    onReload && onReload(); onSelect(r.id)
+  }
+  const dupDeck = () => postJSON('/api/streamdeck/deck/add', { label: (cur.label || 'Deck') + ' (Kopie)', icon: cur.icon, copy_from: cur.id, folder: cur.folder }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const delDeck = () => postJSON('/api/streamdeck/deck/delete', { id: active }).then(() => onReload && onReload()).catch(() => {})
   const move = (dir) => { const arr = decks.slice(); const i = arr.findIndex((x) => x.id === active); const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return;[arr[i], arr[j]] = [arr[j], arr[i]]; setDecks(arr) }
   const rename = (label) => setDecks(decks.map((x) => x.id === active ? { ...x, label } : x))
   const setIcon = (icon) => setDecks(decks.map((x) => x.id === active ? { ...x, icon } : x))
+  const setFolder = (val) => postJSON(`/api/streamdeck/deck/${active}/folder`, { folder: val }).then(() => onReload && onReload()).catch(() => {})
   const cur = decks.find((d) => d.id === active) || decks[0] || {}
   const idx = decks.findIndex((d) => d.id === active)
+  const regular = decks.filter((d) => !d.folder)
+  const folders = decks.filter((d) => d.folder)
+  const Tab = (d) => (
+    <button key={d.id} class={'sd-deck-tab' + (d.id === active ? ' active' : '')} onClick={() => onSelect(d.id)}>
+      <span class="sd-deck-tab-icon">{d.icon || '🎛'}</span>
+      <span class="sd-deck-tab-label">{d.label || d.id}</span>
+    </button>
+  )
 
   return (
     <div class="card" style="max-width:1100px;margin-bottom:12px">
       <div class="sd-deckbar">
-        {decks.map((d) => (
-          <button key={d.id} class={'sd-deck-tab' + (d.id === active ? ' active' : '')} onClick={() => onSelect(d.id)}>
-            <span class="sd-deck-tab-icon">{d.icon || '🎛'}</span>
-            <span class="sd-deck-tab-label">{d.label || d.id}</span>
-          </button>
-        ))}
+        <span class="sd-deckbar-h">Decks</span>
+        {regular.map(Tab)}
         <InlineAdd label="➕ Deck" placeholder="Name des Decks" onAdd={addDeck} />
       </div>
+      <div class="sd-deckbar sd-deckbar-folders">
+        <span class="sd-deckbar-h">📁 Ordner</span>
+        {folders.map(Tab)}
+        <InlineAdd label="➕ Ordner" placeholder="Name des Ordners" onAdd={addFolder} />
+        {dfAvailable && <button class="btn ghost small" title="Ordner anlegen + mit allen DisplayFusion-Monitor-Profilen befüllen" onClick={() => addFolderPreset('df')}>🖥 Preset: DisplayFusion</button>}
+        <button class="btn ghost small" title="Ordner anlegen + mit allen OBS-Szenen befüllen" onClick={() => addFolderPreset('obs')}>🎬 Preset: OBS-Szenen</button>
+        <span class="muted" style="font-size:12px;flex-basis:100%">Ordner erscheinen NICHT in der Panel-Tableiste — nur über einen „📁 Ordner öffnen"-Button erreichbar.</span>
+      </div>
       <div class="sd-deck-tools">
-        <span class="muted" style="font-size:12px">Aktives Deck:</span>
+        <span class="muted" style="font-size:12px">Aktiv:</span>
         <b>{cur.label}</b> <code class="muted sd-deck-id">{cur.id}</code>
-        <InlineEdit value={cur.label} title="Deck umbenennen" onSave={rename} />
+        {cur.folder ? <span class="sd-deck-badge">📁 Ordner</span> : null}
+        <InlineEdit value={cur.label} title="Umbenennen" onSave={rename} />
         <InlineEdit value={cur.icon || '🎛'} title="Symbol ändern" trigger="🎨" onSave={setIcon} />
-        <button class="sd-order-eye" title="nach links" disabled={idx <= 0} onClick={() => move(-1)}>◀</button>
-        <button class="sd-order-eye" title="nach rechts" disabled={idx < 0 || idx >= decks.length - 1} onClick={() => move(1)}>▶</button>
-        <button class="btn ghost small" title="Deck mit Layout+Kategorien+Buttons duplizieren" onClick={dupDeck}>⎘ Duplizieren</button>
+        <button class="sd-order-eye" title="nach vorn" disabled={idx <= 0} onClick={() => move(-1)}>◀</button>
+        <button class="sd-order-eye" title="nach hinten" disabled={idx < 0 || idx >= decks.length - 1} onClick={() => move(1)}>▶</button>
+        <button class="btn ghost small" title="Mit Layout+Kategorien+Buttons duplizieren" onClick={dupDeck}>⎘ Duplizieren</button>
+        {active !== defaultDeck && (cur.folder
+          ? <button class="btn ghost small" title="In ein normales Deck umwandeln (kommt zurück in die Tableiste)" onClick={() => setFolder(false)}>→ Deck</button>
+          : <button class="btn ghost small" title="In einen Ordner umwandeln (raus aus der Tableiste)" onClick={() => setFolder(true)}>→ Ordner</button>)}
         {active !== defaultDeck
-          ? <ConfirmX cls="btn ghost small danger" label="🗑 Deck löschen" title="Deck löschen (Buttons bleiben im Pool)" onConfirm={delDeck} />
+          ? <ConfirmX cls="btn ghost small danger" label="🗑 löschen" title="Löschen (Buttons bleiben im Pool)" onConfirm={delDeck} />
           : <span class="muted" style="font-size:12px">· Standard-Deck (nicht löschbar)</span>}
       </div>
     </div>
@@ -714,7 +743,7 @@ export function StreamDeck() {
       {view === 'decks' ? (
         <>
           <DeckBar decks={decks} active={deck ? deck.id : ''} defaultDeck={data.default_deck || 'main'}
-                   onSelect={setActiveDeck} onReload={load} />
+                   dfAvailable={options.displayfusion_available} onSelect={setActiveDeck} onReload={load} />
           {deck && (
             <div class="card" style="max-width:1100px">
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
@@ -790,7 +819,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             <span class="muted conn-label">Ziel-Deck</span>
             <select class="reward-input" value={action.deck || ''} onChange={(e) => onChange({ deck: e.currentTarget.value })}>
               <option value="">— wählen —</option>
-              {(options.decks || []).map((d) => <option value={d.id}>{(d.icon || '🎛') + ' ' + (d.label || d.id)}</option>)}
+              {(options.decks || []).map((d) => <option value={d.id}>{(d.folder ? '📁 ' : (d.icon || '🎛') + ' ') + (d.label || d.id)}</option>)}
             </select>
           </div>
           <div class="reward-row">

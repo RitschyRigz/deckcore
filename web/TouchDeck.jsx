@@ -55,10 +55,20 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
   useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
   const items = (deck && deck.items || []).filter((it) => !it.hidden)
   const N = items.length
-  const R = Math.min(230, Math.max(116, 60 + N * 16))   // Radius wächst mit der Knopf-Zahl
+  const margin = 14, keyHalf = 46
+  const vw = (typeof window !== 'undefined' ? window.innerWidth : 1024)
+  const vh = (typeof window !== 'undefined' ? window.innerHeight : 768)
+  let R = Math.min(230, Math.max(116, 60 + N * 16))   // Radius wächst mit der Knopf-Zahl …
+  // Randerkennung 1/2: Radius so weit verkleinern, dass der ganze Kreis in den Viewport passt.
+  const maxR = Math.max(64, Math.min((vw - 2 * margin) / 2 - keyHalf, (vh - 2 * margin) / 2 - keyHalf))
+  R = Math.min(R, maxR)
+  // Randerkennung 2/2: Mittelpunkt so klemmen, dass kein Knopf über den Rand ragt (am Anker, sonst rein).
+  const ext = R + keyHalf
+  const cx = Math.min(Math.max(anchor.x, margin + ext), vw - margin - ext)
+  const cy = Math.min(Math.max(anchor.y, margin + ext), vh - margin - ext)
   return (
     <div class="t-radial-backdrop" onClick={onClose}>
-      <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${anchor.x}px;top:${anchor.y}px`}
+      <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${cx}px;top:${cy}px`}
            onClick={(e) => e.stopPropagation()}>
         <span class="t-radial-hub">{(deck && deck.icon) || '📁'}</span>
         {N === 0 && <div class="t-radial-empty">leer</div>}
@@ -159,6 +169,7 @@ export function TouchDeck() {
 
   const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
+  const visibleDecks = decks.filter((d) => !d.folder)   // Ordner NICHT in der Tableiste (nur per open_deck)
 
   return (
     <div class="t-deck" style={deckStyle}>
@@ -167,9 +178,9 @@ export function TouchDeck() {
           <button class="t-nav-back" onClick={goBack}>‹ Zurück</button>
           <span class="t-nav-crumb">{crumb.join('  ›  ')}</span>
         </div>
-      ) : (decks.length > 1 && (
+      ) : (visibleDecks.length > 1 && (
         <div class="t-deck-tabs">
-          {decks.map((dk) => (
+          {visibleDecks.map((dk) => (
             <button key={dk.id} class={'t-deck-tab' + (dk.id === tabSel ? ' active' : '')}
                     onClick={() => switchDeck(dk.id)}>
               <span class="t-deck-tab-icon">{dk.icon || '🎛'}</span>
