@@ -395,6 +395,7 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
   const elRef = useRef(null)
   const gridRef = useRef(null)
   const saveT = useRef(null)
+  const dragId = useRef(null)   // Pool-Button, der gerade in den Canvas gezogen wird
   const layout = { ...L_DEF, ...(deck.layout || {}) }
   const cols = layout.cols > 0 ? layout.cols : 6
   const cell = layout.button_size || 116
@@ -427,6 +428,19 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
 
   const addItem = (bid) => postJSON(itemURL, { button: bid, category: '' }).then(() => onReload && onReload()).catch(() => {})
   const removeItem = (bid) => delJSON(`${itemURL}/${bid}`).then(() => onReload && onReload()).catch(() => {})
+  // Pool-Button per Drag in den Canvas: Zelle aus den Drop-Koordinaten rechnen → hinzufügen + dort positionieren.
+  const dropAt = (bid, cx, cy) => {
+    let x = 0, y = 0
+    const el = elRef.current
+    if (el) {
+      const r = el.getBoundingClientRect()
+      x = Math.max(0, Math.min(cols - 1, Math.floor((cx - r.left) / (r.width / cols))))
+      y = Math.max(0, Math.floor((cy - r.top) / (cell + 5)))
+    }
+    postJSON(itemURL, { button: bid })
+      .then(() => postJSON(`${itemURL}/${bid}`, { x, y }))
+      .then(() => onReload && onReload()).catch(() => {})
+  }
 
   return (
     <div>
@@ -434,7 +448,9 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
         <span class="muted" style="font-size:12px">🧩 <b>Frei platzieren</b> — Kacheln ziehen, an der <b>Ecke unten-rechts</b> ziehen = vergrößern. Speichert automatisch. ⚠ Position/Größe gelten NUR im Touch-Panel; ein echtes Stream Deck zeigt jeden Button 1×1.</span>
         <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
       </div>
-      <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}>
+      <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}
+           onDragOver={(e) => { if (dragId.current) e.preventDefault() }}
+           onDrop={(e) => { e.preventDefault(); const bid = dragId.current; dragId.current = null; if (bid && !inDeck.has(bid)) dropAt(bid, e.clientX, e.clientY) }}>
         <div class="grid-stack sd-gs" ref={elRef} key={deck.id + ':' + items.length}>
           {items.map((it) => {
             const w = Math.min(cols, Math.max(1, it.w || 1)), h = Math.max(1, it.h || 1)
@@ -456,11 +472,13 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
         </div>
       </div>
       <div class="sd-palette">
-        <span class="muted" style="font-size:12px">🧩 Pool — klicken zum Hinzufügen (landet frei platzierbar im Raster):</span>
+        <span class="muted" style="font-size:12px">🧩 Pool — in den Canvas <b>ziehen</b> (oder klicken = landet automatisch):</span>
         <div class="sd-pal-chips">
           {palette.length === 0 ? <span class="muted" style="font-size:12px">— alle Pool-Buttons sind auf diesem Deck —</span>
             : palette.map((b) => (
-              <button key={b.id} class="sd-pal-chip" onClick={() => addItem(b.id)} title={'Hinzufügen: ' + (b.label || b.id)}>
+              <button key={b.id} class="sd-pal-chip" draggable
+                      onDragStart={() => { dragId.current = b.id }}
+                      onClick={() => addItem(b.id)} title="In den Canvas ziehen — oder klicken (landet automatisch)">
                 <Swatch vis={resolved[b.id]} />
                 <span class="sd-pal-name">{b.label || b.id}</span>
               </button>
