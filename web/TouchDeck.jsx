@@ -250,15 +250,23 @@ export function TouchDeck() {
   const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${layout.gap || 12}px;justify-content:start`
   const tile = (it) => {
     const id = it.button
-    const v = vis[id] || {}
-    const eff = resolveStyle(it.style, layout)
-    const folder = (actionById[id] || {}).type === 'open_deck'
-    const isGraph = renderById[id] === 'graph'
     const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
     const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
     const positioned = Number.isInteger(it.x) && Number.isInteger(it.y)
     const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
       : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
+    if (it.type === 'label') {   // freie Text-/Überschrift-Kachel (keine Aktion, kein Press)
+      const fs = Math.round(Math.min(56, Math.max(14, h * 32)))   // Schrift skaliert mit der Kachel-Höhe
+      return (
+        <div key={id} class="t-key t-label spanned" style={`background:transparent;font-size:${fs}px` + place}>
+          <span class="t-label-text">{it.text || ''}</span>
+        </div>
+      )
+    }
+    const v = vis[id] || {}
+    const eff = resolveStyle(it.style, layout)
+    const folder = (actionById[id] || {}).type === 'open_deck'
+    const isGraph = renderById[id] === 'graph'
     return (
       <button key={id}
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}

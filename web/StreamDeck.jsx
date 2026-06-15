@@ -441,12 +441,23 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
       .then(() => postJSON(`${itemURL}/${bid}`, { x, y }))
       .then(() => onReload && onReload()).catch(() => {})
   }
+  const addLabel = () => {
+    const t = prompt('Text der Kachel (z. B. Überschrift):', 'Überschrift')
+    if (t != null) postJSON(`/api/streamdeck/deck/${deck.id}/label`, { text: t }).then(() => onReload && onReload()).catch(() => {})
+  }
+  const editLabel = (it) => {
+    const t = prompt('Text ändern:', it.text || '')
+    if (t != null) postJSON(`${itemURL}/${it.button}`, { text: t }).then(() => onReload && onReload()).catch(() => {})
+  }
 
   return (
     <div>
       <div class="sd-wys-head-row">
         <span class="muted" style="font-size:12px">🧩 <b>Frei platzieren</b> — Kacheln ziehen, an der <b>Ecke unten-rechts</b> ziehen = vergrößern. Speichert automatisch. ⚠ Position/Größe gelten NUR im Touch-Panel; ein echtes Stream Deck zeigt jeden Button 1×1.</span>
-        <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
+        <span class="sd-inline">
+          <button class="btn ghost small" onClick={addLabel} title="Freie Text-/Überschrift-Kachel hinzufügen (frei platzierbar, kein Pool-Button)">➕ Text</button>
+          <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
+        </span>
       </div>
       <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}
            onDragOver={(e) => { if (dragId.current) e.preventDefault() }}
@@ -460,8 +471,12 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
             return (
               <div class="grid-stack-item" key={it.button} {...attrs}>
                 <div class="grid-stack-item-content">
-                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />
+                  {it.type === 'label'
+                    ? <div class="sd-label" style={`font-size:${Math.round(Math.min(56, Math.max(14, h * 32)))}px`}>{it.text || 'Text'}</div>
+                    : <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />}
                   <span class="sd-tile-acts">
+                    {it.type === 'label' && <button class="sd-tile-act" title="Text ändern"
+                            onClick={(e) => { e.stopPropagation(); editLabel(it) }}>✎</button>}
                     <button class="sd-tile-act" title="vom Deck nehmen"
                             onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
                   </span>

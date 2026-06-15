@@ -186,12 +186,20 @@ def build_streamdeck_router(
             res = svc.set_item_size(deck_id, button_id, b.get("w"), b.get("h"))
         if "x" in b or "y" in b:
             res = svc.set_item_pos(deck_id, button_id, b.get("x"), b.get("y"))
+        if "text" in b:
+            res = svc.set_item_text(deck_id, button_id, b.get("text"))
         return JSONResponse(res)
 
     @r.post("/api/streamdeck/deck/{deck_id}/positions")
     def streamdeck_deck_positions(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         """Bulk-Positionen aus dem gridstack-Editor (ein Save): {positions:[{button,x,y,w,h}, …]}."""
         return JSONResponse(get_service(request).set_deck_positions(deck_id, (body or {}).get("positions") or []))
+
+    @r.post("/api/streamdeck/deck/{deck_id}/label")
+    def streamdeck_deck_label(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Freie Text-/Label-Kachel ins Deck legen (Frei-Modus): {text, x?, y?}."""
+        b = body or {}
+        return JSONResponse(get_service(request).add_label(deck_id, b.get("text", ""), b.get("x"), b.get("y")))
 
     # ── DisplayFusion ─────────────────────────────────────────────────────
     @r.get("/api/displayfusion/profiles")

@@ -118,6 +118,12 @@
 .sd-gs .grid-stack-item-content:active .sd-prev-key { cursor: grabbing; }
 .sd-gs .sd-tile-acts { position: absolute; top: 3px; right: 3px; display: none; gap: 2px; z-index: 3; }
 .sd-gs .grid-stack-item:hover .sd-tile-acts { display: flex; }
+/* Text-/Label-Kachel (freier Text, keine Aktion). Schrift-Größe kommt inline (skaliert mit Kachel-Höhe). */
+.t-key.t-label { border: 0; box-shadow: none; cursor: default; padding: 4px 8px; justify-content: center; }
+.t-label-text { font-weight: 800; text-align: center; line-height: 1.15; color: var(--fg); width: 100%; word-break: break-word; }
+.sd-gs .sd-label { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  text-align: center; font-weight: 800; color: var(--fg); padding: 4px 8px; line-height: 1.15; word-break: break-word;
+  background: rgba(255, 255, 255, .05); border-radius: 12px; border: 1px dashed var(--line); }
 .sd-wys-empty { color: var(--muted); font-size: 12px; padding: 10px; text-align: center; }
 .sd-wys-key-wrap { position: relative; cursor: grab; border-radius: 16px; }
 .sd-wys-key-wrap:active { cursor: grabbing; }

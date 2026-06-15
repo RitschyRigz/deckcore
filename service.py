@@ -673,15 +673,22 @@ class DeckCoreService:
         return {k: out.get(k, _LAYOUT_DEFAULT[k]) for k in _LAYOUT_DEFAULT}
 
     def _sanitize_item(self, it, valid_ids: set, seen: set) -> Optional[dict]:
-        bid = str((it or {}).get("button") or "")
-        if not bid or bid not in valid_ids or bid in seen:
+        it = it or {}
+        bid = str(it.get("button") or "")
+        if not bid or bid in seen:
+            return None
+        is_label = it.get("type") == "label"   # freie Text-Kachel (kein Pool-Button → kein valid_ids-Zwang)
+        if not is_label and bid not in valid_ids:
             return None
         seen.add(bid)
-        raw_style = (it or {}).get("style")
-        raw_style = raw_style if isinstance(raw_style, dict) else {}
-        style = {k: raw_style[k] for k in _STYLE_KEYS if k in raw_style}
-        out = {"button": bid, "category": str((it or {}).get("category") or ""),
-               "style": style, "hidden": bool((it or {}).get("hidden"))}
+        if is_label:
+            out = {"button": bid, "type": "label", "text": str(it.get("text") or "")[:240]}
+        else:
+            raw_style = it.get("style")
+            raw_style = raw_style if isinstance(raw_style, dict) else {}
+            style = {k: raw_style[k] for k in _STYLE_KEYS if k in raw_style}
+            out = {"button": bid, "category": str(it.get("category") or ""),
+                   "style": style, "hidden": bool(it.get("hidden"))}
         w = _clamp_span((it or {}).get("w"), _SPAN_W_MAX)   # Panel-Span (nur >1 speichern)
         h = _clamp_span((it or {}).get("h"), _SPAN_H_MAX)
         if w > 1:
@@ -980,6 +987,36 @@ class DeckCoreService:
             n += 1
         self._save(); self._publish_cfg()
         return {"ok": True, "updated": n}
+
+    def add_label(self, deck_id: str, text: str = "", x=None, y=None) -> dict:
+        """Freie Text-/Label-Kachel (kein Pool-Button) ins Deck legen — eindeutige __lbl_N-ID, Default 2×1."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        existing = {i["button"] for i in deck["items"]}
+        n = 1
+        while f"__lbl_{n}" in existing:
+            n += 1
+        bid = f"__lbl_{n}"
+        item = {"button": bid, "type": "label", "text": str(text or "Text")[:240], "w": 2}
+        px, py = _clamp_pos(x), _clamp_pos(y)
+        if px is not None and py is not None:
+            item["x"], item["y"] = px, py
+        deck["items"].append(item)
+        self._save(); self._publish_cfg()
+        return {"ok": True, "id": bid}
+
+    def set_item_text(self, deck_id: str, button_id: str, text) -> dict:
+        """Text einer Label-Kachel ändern (nur für type=label)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        it = next((i for i in deck["items"] if i["button"] == button_id), None)
+        if it is None or it.get("type") != "label":
+            return {"ok": False, "reason": "not_a_label"}
+        it["text"] = str(text or "")[:240]
+        self._save(); self._publish_cfg()
+        return {"ok": True, "text": it["text"]}
 
     def add_item(self, deck_id: str, button_id: str, category: str = "",
                  index: Optional[int] = None) -> dict:
