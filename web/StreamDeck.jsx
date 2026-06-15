@@ -245,17 +245,6 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
   const setDecks = (next) => postJSON('/api/streamdeck/decks', { decks: next.map((d) => ({ id: d.id, label: d.label, icon: d.icon })) }).then(() => onReload && onReload()).catch(() => {})
   const addDeck = (label) => postJSON('/api/streamdeck/deck/add', { label }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const addFolder = (label) => postJSON('/api/streamdeck/deck/add', { label, icon: '📁', folder: true }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
-  // Preset-Ordner: anlegen + sofort mit generierten Buttons befüllen (reuse der populate_*-Generatoren).
-  const addFolderPreset = async (kind) => {
-    const meta = kind === 'df' ? { label: 'Monitor-Profile', icon: '🖥' } : { label: 'OBS-Szenen', icon: '🎬' }
-    const r = await postJSON('/api/streamdeck/deck/add', { ...meta, folder: true }).catch(() => null)
-    if (!r || !r.id) return
-    try {
-      if (kind === 'df') await postJSON(`/api/streamdeck/deck/${r.id}/populate_displayfusion`, {})
-      else await postJSON('/api/streamdeck/deck/populate_obs_scenes', { deck_id: r.id })
-    } catch { /* Quelle evtl. offline → Ordner bleibt leer, später nachbefüllbar */ }
-    onReload && onReload(); onSelect(r.id)
-  }
   const dupDeck = () => postJSON('/api/streamdeck/deck/add', { label: (cur.label || 'Deck') + ' (Kopie)', icon: cur.icon, copy_from: cur.id, folder: cur.folder }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const delDeck = () => postJSON('/api/streamdeck/deck/delete', { id: active }).then(() => onReload && onReload()).catch(() => {})
   const move = (dir) => { const arr = decks.slice(); const i = arr.findIndex((x) => x.id === active); const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return;[arr[i], arr[j]] = [arr[j], arr[i]]; setDecks(arr) }
@@ -284,9 +273,7 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
         <span class="sd-deckbar-h">📁 Ordner</span>
         {folders.map(Tab)}
         <InlineAdd label="➕ Ordner" placeholder="Name des Ordners" onAdd={addFolder} />
-        {dfAvailable && <button class="btn ghost small" title="Ordner anlegen + mit allen DisplayFusion-Monitor-Profilen befüllen" onClick={() => addFolderPreset('df')}>🖥 Preset: DisplayFusion</button>}
-        <button class="btn ghost small" title="Ordner anlegen + mit allen OBS-Szenen befüllen" onClick={() => addFolderPreset('obs')}>🎬 Preset: OBS-Szenen</button>
-        <span class="muted" style="font-size:12px;flex-basis:100%">Ordner erscheinen NICHT in der Panel-Tableiste — nur über einen „📁 Ordner öffnen"-Button erreichbar.</span>
+        <span class="muted" style="font-size:12px;flex-basis:100%">Ordner erscheinen NICHT in der Panel-Tableiste — nur über einen „📁 Ordner öffnen"-Button erreichbar. <b>Presets</b> (DisplayFusion/OBS) lädst du direkt beim Anlegen eines „📁 Ordner öffnen"-Buttons — oder per „Importieren" unten im Deck.</span>
       </div>
       <div class="sd-deck-tools">
         <span class="muted" style="font-size:12px">Aktiv:</span>
@@ -462,6 +449,7 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
       <div class="sd-wys-head-row">
         <span class="muted" style="font-size:12px">🖱 Buttons <b>direkt im Raster</b> ziehen — ordnen + zwischen Kategorien schieben. Aus der <b>Palette</b> unten reinziehen. Klick = auswählen.</span>
         <span class="sd-inline">
+          <span class="muted" style="font-size:12px;font-weight:700">Presets generieren:</span>
           <button class="btn ghost small" disabled={obsBusy} onClick={importScenes}
                   title="Pro OBS-Szene einen Szenen-Wechsel-Button in DIESES Deck (aktive Szene wird live grün hervorgehoben). Idempotent.">
             {obsBusy ? '… lädt OBS' : '🎬 OBS-Szenen importieren'}
@@ -770,6 +758,10 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const [dfProfiles, setDfProfiles] = useState([])
   const [picking, setPicking] = useState(false)
   const [pickMsg, setPickMsg] = useState(null)
+  const [deckOpts, setDeckOpts] = useState(options.decks || [])   // Ziel-Deck-Liste (open_deck), lokal aktualisierbar
+  const [presetBusy, setPresetBusy] = useState(false)
+  const [presetMsg, setPresetMsg] = useState(null)
+  useEffect(() => { setDeckOpts(options.decks || []) }, [options.decks])
   useEffect(() => {
     if (t === 'obs') {
       getJSON('/api/obs/scenes').then((d) => setObsScenes(d.scenes || [])).catch(() => {})
@@ -791,6 +783,28 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       setPickMsg({ ok: true, t: r.icon_url ? 'Datei + Icon übernommen' : 'Datei übernommen (kein Icon gefunden)' })
     } catch (e) { setPickMsg({ ok: false, t: 'Auswahl fehlgeschlagen: ' + (e.message || e) }) }
     setPicking(false)
+  }
+  // open_deck-Preset: einen befüllten Ordner anlegen (DisplayFusion-Profile / OBS-Szenen) und
+  // direkt als Ziel dieses Ordner-Buttons setzen. Die Deck-Liste lokal nachladen, damit das
+  // Dropdown den frischen Ordner sofort zeigt.
+  const refreshDeckOpts = async () => {
+    try { const d = await getJSON('/api/streamdeck/registry'); setDeckOpts((d.options && d.options.decks) || []) } catch { /* noop */ }
+  }
+  const makePresetFolder = async (kind) => {
+    setPresetBusy(true); setPresetMsg(null)
+    const meta = kind === 'df' ? { label: 'Monitor-Profile', icon: '🖥' } : { label: 'OBS-Szenen', icon: '🎬' }
+    try {
+      const r = await postJSON('/api/streamdeck/deck/add', { ...meta, folder: true })
+      if (!r || !r.id) throw new Error('Ordner nicht angelegt')
+      let filled = true
+      try {
+        if (kind === 'df') await postJSON(`/api/streamdeck/deck/${r.id}/populate_displayfusion`, {})
+        else await postJSON('/api/streamdeck/deck/populate_obs_scenes', { deck_id: r.id })
+      } catch { filled = false }
+      await refreshDeckOpts(); onChange({ deck: r.id })
+      setPresetMsg({ ok: true, t: filled ? 'Ordner angelegt + befüllt ✓' : 'Ordner angelegt (Quelle offline — später befüllen)' })
+    } catch (e) { setPresetMsg({ ok: false, t: 'Fehlgeschlagen: ' + (e.message || e) }) }
+    setPresetBusy(false)
   }
   return (
     <div class="sd-block">
@@ -819,8 +833,16 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             <span class="muted conn-label">Ziel-Deck</span>
             <select class="reward-input" value={action.deck || ''} onChange={(e) => onChange({ deck: e.currentTarget.value })}>
               <option value="">— wählen —</option>
-              {(options.decks || []).map((d) => <option value={d.id}>{(d.folder ? '📁 ' : (d.icon || '🎛') + ' ') + (d.label || d.id)}</option>)}
+              {deckOpts.map((d) => <option value={d.id}>{(d.folder ? '📁 ' : (d.icon || '🎛') + ' ') + (d.label || d.id)}</option>)}
             </select>
+          </div>
+          <div class="reward-row">
+            <span class="muted conn-label">oder Preset laden</span>
+            <button class="btn ghost small" disabled={presetBusy} onClick={() => makePresetFolder('df')}
+                    title="Neuen Ordner mit allen DisplayFusion-Monitor-Profilen anlegen und hier direkt als Ziel setzen">🖥 DisplayFusion-Ordner</button>
+            <button class="btn ghost small" disabled={presetBusy} onClick={() => makePresetFolder('obs')}
+                    title="Neuen Ordner mit allen OBS-Szenen anlegen und hier direkt als Ziel setzen">🎬 OBS-Szenen-Ordner</button>
+            {presetMsg && <span class={'msg small ' + (presetMsg.ok ? 'ok' : 'err')}>{presetMsg.t}</span>}
           </div>
           <div class="reward-row">
             <span class="muted conn-label">Öffnen als</span>
@@ -830,8 +852,9 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             </select>
           </div>
           <p class="muted sd-help">Macht diesen Button zu einem <b>Ordner</b>: beim Tippen öffnet sich das
-            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü, das die Buttons im Kreis
-            um diesen Button auffächert. Nur im Touch-Panel; auf der Elgato-Hardware ohne Wirkung.</p>
+            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü. <b>„Preset laden"</b> legt
+            direkt einen befüllten Ordner an (alle DisplayFusion-Profile / OBS-Szenen) und setzt ihn als Ziel.
+            Nur im Touch-Panel; auf der Elgato-Hardware ohne Wirkung.</p>
         </>
       )}
       {t === 'process_action' && (
