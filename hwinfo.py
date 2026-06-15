@@ -130,8 +130,11 @@ def _read_registry():
     n = 0
     while f"Label{n}" in vals:
         label = str(vals.get(f"Label{n}", "")).strip()
-        unit = str(vals.get(f"Unit{n}", "")).strip()
-        val = _to_float(vals.get(f"ValueRaw{n}"))
+        # HWiNFO-VSB schreibt KEINE separate Unit-Spalte → die Einheit steckt im formatierten
+        # Value<N> (z.B. „43 °C", „16,538 MB"). Darum aus Value ziehen (Unit<N> nur als Fallback,
+        # falls eine HWiNFO-Version es doch schreibt).
+        unit = str(vals.get(f"Unit{n}", "")).strip() or _unit_from_value(vals.get(f"Value{n}"))
+        val = _to_float(vals.get(f"ValueRaw{n}"))   # ValueRaw ist sauber numerisch (ohne Tausender-Komma)
         if val is None:   # Fallback: aus „55.0 °C" die führende Zahl ziehen
             val = _to_float(_lead_num(vals.get(f"Value{n}")))
         sensor = str(vals.get(f"Sensor{n}", "")).strip()
@@ -151,6 +154,18 @@ def _to_float(v) -> Optional[float]:
         return float(str(v).strip().replace(",", "."))
     except (TypeError, ValueError):
         return None
+
+
+def _unit_from_value(s) -> str:
+    """Einheit aus einem formatierten HWiNFO-Wert ziehen: ``"43 °C"`` → ``"°C"``,
+    ``"16,538 MB"`` → ``"MB"``, ``"49.7 %"`` → ``"%"`` (führende Zahl + Trenner abschneiden)."""
+    if s is None:
+        return ""
+    t = str(s).strip()
+    i = 0
+    while i < len(t) and (t[i].isdigit() or t[i] in "+-.,'  "):
+        i += 1
+    return t[i:].strip()
 
 
 def _lead_num(s) -> Optional[str]:
