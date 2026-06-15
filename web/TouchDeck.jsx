@@ -242,10 +242,10 @@ export function TouchDeck() {
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
   const visibleDecks = decks.filter((d) => !d.folder)   // Ordner NICHT in der Tableiste (nur per open_deck)
 
-  // Freie Platzierung: hat IRGENDEIN Item eine Position (x/y), rendert das Deck als FESTES Quadrat-Raster mit
-  // freien Positionen (un-platzierte Items fließen in die Lücken). Sonst = bisheriges responsives Kategorie-
-  // Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt"). x/y kommen aus dem Editor.
-  const freeMode = (active.items || []).some((it) => Number.isInteger(it.x) && Number.isInteger(it.y))
+  // Freie Platzierung: Deck-Flag `layout.free` (im Editor umgeschaltet) → festes Quadrat-Raster mit freien
+  // Positionen (Item x/y; un-platzierte Items fließen in die Lücken). Ohne das Flag = bisheriges responsives
+  // Kategorie-Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt").
+  const freeMode = !!layout.free
   const freeCols = layout.cols > 0 ? layout.cols : 6
   const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${layout.gap || 12}px;justify-content:start`
   const tile = (it) => {

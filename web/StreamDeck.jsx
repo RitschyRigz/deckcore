@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
+import { GridStack } from 'gridstack'
+import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Stream Deck — config-getriebene Button-Registry. Datenmodell v2 (Shared-Pool):
@@ -386,6 +388,89 @@ function ItemInspector({ deck, item, onReload }) {
   )
 }
 
+// 🧩 Freier Drag-/Resize-Editor (gridstack) — Kachel-Positionen sind DATEN (Item x/y/w/h), kein Auto-Flow.
+// Spiegelt das Muster des Stream-Tab-Layout-Editors. ⚠ Position/Größe gelten NUR im Touch-Panel; das physische
+// Elgato-Plugin liest nur resolved[button] und rendert JEDEN Button 1×1.
+function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
+  const elRef = useRef(null)
+  const gridRef = useRef(null)
+  const saveT = useRef(null)
+  const layout = { ...L_DEF, ...(deck.layout || {}) }
+  const cols = layout.cols > 0 ? layout.cols : 6
+  const cell = layout.button_size || 116
+  const items = deck.items || []
+  const inDeck = new Set(items.map((it) => it.button))
+  const palette = pool.filter((b) => !inDeck.has(b.id))
+  const itemURL = `/api/streamdeck/deck/${deck.id}/item`
+
+  // gridstack-Init: erst nach Mount (DOM-Items da). Remount via key, wenn sich die Item-MENGE ändert
+  // (Positionen kommen aus den gs-Attributen). Drag/Resize → debounced Bulk-Save (set_deck_positions).
+  useEffect(() => {
+    if (!elRef.current) return
+    const grid = GridStack.init({
+      column: cols, cellHeight: cell, margin: 5, float: true,
+      resizable: { handles: 'se' }, draggable: { cancel: '.sd-tile-act' },
+    }, elRef.current)
+    gridRef.current = grid
+    const flush = () => {
+      const g = gridRef.current
+      if (!g) return
+      const positions = (g.engine.nodes || []).map((n) => ({
+        button: n.el && n.el.getAttribute('gs-id'), x: n.x, y: n.y, w: n.w, h: n.h,
+      })).filter((p) => p.button)
+      if (positions.length) postJSON(`/api/streamdeck/deck/${deck.id}/positions`, { positions }).catch(() => {})
+    }
+    const onChange = () => { clearTimeout(saveT.current); saveT.current = setTimeout(flush, 350) }
+    grid.on('change', onChange)
+    return () => { clearTimeout(saveT.current); try { grid.off('change'); grid.destroy(false) } catch {}; gridRef.current = null }
+  }, [deck.id, cols, cell, items.length])
+
+  const addItem = (bid) => postJSON(itemURL, { button: bid, category: '' }).then(() => onReload && onReload()).catch(() => {})
+  const removeItem = (bid) => delJSON(`${itemURL}/${bid}`).then(() => onReload && onReload()).catch(() => {})
+
+  return (
+    <div>
+      <div class="sd-wys-head-row">
+        <span class="muted" style="font-size:12px">🧩 <b>Frei platzieren</b> — Kacheln ziehen, an der <b>Ecke unten-rechts</b> ziehen = vergrößern. Speichert automatisch. ⚠ Position/Größe gelten NUR im Touch-Panel; ein echtes Stream Deck zeigt jeden Button 1×1.</span>
+        <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
+      </div>
+      <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}>
+        <div class="grid-stack sd-gs" ref={elRef} key={deck.id + ':' + items.length}>
+          {items.map((it) => {
+            const w = Math.min(cols, Math.max(1, it.w || 1)), h = Math.max(1, it.h || 1)
+            const attrs = { 'gs-id': it.button, 'gs-w': w, 'gs-h': h, 'gs-max-w': cols }
+            if (Number.isInteger(it.x)) attrs['gs-x'] = it.x
+            if (Number.isInteger(it.y)) attrs['gs-y'] = it.y
+            return (
+              <div class="grid-stack-item" key={it.button} {...attrs}>
+                <div class="grid-stack-item-content">
+                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" />
+                  <span class="sd-tile-acts">
+                    <button class="sd-tile-act" title="vom Deck nehmen"
+                            onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <div class="sd-palette">
+        <span class="muted" style="font-size:12px">🧩 Pool — klicken zum Hinzufügen (landet frei platzierbar im Raster):</span>
+        <div class="sd-pal-chips">
+          {palette.length === 0 ? <span class="muted" style="font-size:12px">— alle Pool-Buttons sind auf diesem Deck —</span>
+            : palette.map((b) => (
+              <button key={b.id} class="sd-pal-chip" onClick={() => addItem(b.id)} title={'Hinzufügen: ' + (b.label || b.id)}>
+                <Swatch vis={resolved[b.id]} />
+                <span class="sd-pal-name">{b.label || b.id}</span>
+              </button>
+            ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   const [sel, setSel] = useState('')
   const drag = useRef(null)   // {id, from:'grid'|'palette'}
@@ -396,6 +481,11 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   const [dfMsg, setDfMsg] = useState(null)
 
   const layout = { ...L_DEF, ...(deck.layout || {}) }
+  const free = !!layout.free
+  const toggleFree = () => postJSON(`/api/streamdeck/deck/${deck.id}/layout`, { ...layout, free: !free })
+    .then(() => onReload && onReload()).catch(() => {})
+  // Freie Anordnung (gridstack) ist ein eigener Editor → früh raus (alle Hooks oben liefen bereits).
+  if (free) return <FreeDeckGrid deck={deck} pool={pool} resolved={resolved} onReload={onReload} onExit={toggleFree} />
   const cats = deck.categories || []
   const itemsById = {}; for (const it of deck.items || []) itemsById[it.button] = it
   const inDeck = new Set((deck.items || []).map((it) => it.button))
@@ -469,6 +559,7 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
       <div class="sd-wys-head-row">
         <span class="muted" style="font-size:12px">🖱 Buttons <b>direkt im Raster</b> ziehen — ordnen + zwischen Kategorien schieben. Aus der <b>Palette</b> unten reinziehen. Klick = auswählen.</span>
         <span class="sd-inline">
+          <button class="btn ghost small" onClick={toggleFree} title="Freie Drag-Platzierung (gridstack): Kacheln frei verschieben/vergrößern statt Kategorie-Raster">⊞ Frei anordnen</button>
           <span class="muted" style="font-size:12px;font-weight:700">Presets generieren:</span>
           <button class="btn ghost small" disabled={obsBusy} onClick={importScenes}
                   title="Pro OBS-Szene einen Szenen-Wechsel-Button in DIESES Deck (aktive Szene wird live grün hervorgehoben). Idempotent.">

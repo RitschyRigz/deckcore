@@ -110,6 +110,14 @@
 .sd-wys-cat-name { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .sd-wys-grid { display: grid; grid-auto-rows: var(--sd-size); justify-content: start; }
 .sd-wys-key-wrap.spanned .sd-prev-key { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; }
+/* 🧩 Freier Drag-Editor (gridstack): LiveKey füllt das Widget; Aktionen oben rechts; Canvas-Hintergrund. */
+.sd-free { margin: 6px 0; }
+.sd-gs.grid-stack { background: rgba(255, 255, 255, .025); border: 1px dashed var(--line); border-radius: 12px; min-height: 140px; }
+.sd-gs .grid-stack-item-content { display: flex; inset: 0; }
+.sd-gs .sd-prev-key { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; cursor: grab; }
+.sd-gs .grid-stack-item-content:active .sd-prev-key { cursor: grabbing; }
+.sd-gs .sd-tile-acts { position: absolute; top: 3px; right: 3px; display: none; gap: 2px; z-index: 3; }
+.sd-gs .grid-stack-item:hover .sd-tile-acts { display: flex; }
 .sd-wys-empty { color: var(--muted); font-size: 12px; padding: 10px; text-align: center; }
 .sd-wys-key-wrap { position: relative; cursor: grab; border-radius: 16px; }
 .sd-wys-key-wrap:active { cursor: grabbing; }

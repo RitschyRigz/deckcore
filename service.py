@@ -119,6 +119,7 @@ _LAYOUT_DEFAULT = {
     "button_size": 116,   # px Kachelgröße
     "gap": 12,            # px Abstand
     "font_scale": 1.0,    # Skalierung Icon/Titel/Label
+    "free": False,        # True = freie Drag-Platzierung (gridstack, Item x/y) statt Kategorie-Auto-Flow
     # ── Stil-DEFAULTS des Decks (pro Item via item.style überschreibbar) ──
     "show_label": True,           # Button-Name anzeigen (Default)
     "label_pos": "bottom",        # "top" | "bottom" (Default)
@@ -129,7 +130,7 @@ _LAYOUT_DEFAULT = {
 _LAYOUT_BOUNDS = {  # (min, max) für die numerischen Felder
     "cols": (0, 12), "button_size": (60, 260), "gap": (0, 48), "font_scale": (0.6, 2.0),
 }
-_LAYOUT_BOOLS = ("show_label", "show_title", "frame", "show_category_titles")
+_LAYOUT_BOOLS = ("show_label", "show_title", "frame", "show_category_titles", "free")
 # Pro-Item-Stil-Felder (was ein Item im Deck an Stil überschreiben darf).
 # title_pos = Position des großen Titel-Texts (über dem Bild), "top"|"bottom" (wie Stream Deck).
 _STYLE_KEYS = ("frame", "label", "label_pos", "title", "title_pos")
