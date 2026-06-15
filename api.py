@@ -194,6 +194,17 @@ def build_streamdeck_router(
         """HWiNFO-Sensorliste fürs Editor-Dropdown (leer, wenn HWiNFO/Quelle nicht verfügbar)."""
         return JSONResponse(get_service(request).hwinfo_sensors())
 
+    @r.get("/api/frametime/status")
+    def frametime_status(request: Request) -> JSONResponse:
+        """PresentMon-FPS/Frametime-Status (available/presenting/reason) — startet den Sampler lazy."""
+        return JSONResponse(get_service(request).frametime_status())
+
+    @r.get("/api/frametime/series")
+    def frametime_series(request: Request) -> JSONResponse:
+        """High-Rate-Verlauf für die Graph-Kachel. ``?kind=fps|frametime``."""
+        kind = "frametime" if request.query_params.get("kind") == "frametime" else "fps"
+        return JSONResponse(get_service(request).frametime_series(kind))
+
     @r.post("/api/streamdeck/deck/{deck_id}/populate_displayfusion")
     def streamdeck_deck_populate_df(deck_id: str, request: Request) -> JSONResponse:
         res = get_service(request).populate_displayfusion_profiles(deck_id)

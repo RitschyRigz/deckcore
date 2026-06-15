@@ -95,6 +95,7 @@ from typing import Any, Optional
 
 from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Import bleibt schlank)
 from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
+from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
 
 log = logging.getLogger("deckcore")
 
@@ -414,6 +415,7 @@ class DeckCoreService:
         # (z.B. eine größere Host-App mit EINER geteilten OBS-Verbindung) — dann bleibt dieser ungenutzt.
         self._obs = ObsDirect(obs_host, obs_port, obs_password)
         self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
+        self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -464,6 +466,8 @@ class DeckCoreService:
         M("obs_scene", self._mon_obs_scene)
         M("obs_source_visible", self._mon_obs_source_visible)
         M("hwinfo", self._mon_hwinfo)
+        M("fps", self._mon_fps)
+        M("frametime", self._mon_frametime)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1047,6 +1051,14 @@ class DeckCoreService:
         """HWiNFO-Sensorliste {available, source, sensors:[{key,label,value,unit,sensor}]}."""
         return self._hwinfo.sensors()
 
+    def frametime_status(self) -> dict:
+        """PresentMon-FPS/Frametime-Status (available/presenting/reason) — für Kachel-Hinweis + Editor."""
+        return self._frametime.status()
+
+    def frametime_series(self, kind: str) -> dict:
+        """High-Rate-Verlauf {data:[…]} für ``fps``|``frametime`` (Graph-Kachel pollt das schnell)."""
+        return self._frametime.series(kind)
+
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button im POOL (Funktion) + Item im Ziel-Deck.
@@ -1298,7 +1310,7 @@ class DeckCoreService:
                          "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "hwinfo", "obs_source_visible", "obs_scene",
+                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "obs_source_visible", "obs_scene",
                           "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
@@ -1493,6 +1505,15 @@ class DeckCoreService:
         # der Wert landet via {value} im Titel, States können nach Schwellwert einfärben (gt/lt).
         return self._hwinfo.value(mon.get("sensor", ""))
 
+    def _mon_fps(self, mon: dict, btn: dict) -> Any:
+        # FPS des Vordergrund-Spiels (PresentMon). Für Graph-Kacheln liest das Frontend zusätzlich
+        # /api/frametime/series (High-Rate); hier nur der aktuelle Wert (Titel/Schwellwert).
+        return self._frametime.value("fps")
+
+    def _mon_frametime(self, mon: dict, btn: dict) -> Any:
+        # Frametime in ms (PresentMon, Spike-erfassend). Wie fps — Graph via series-Endpoint.
+        return self._frametime.value("frametime")
+
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1594,6 +1615,10 @@ class DeckCoreService:
         self._stop.set()
         try:
             self._obs.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._frametime.stop()
         except Exception:  # noqa: BLE001
             pass
         for t in (self._eval_task, self._sse_task):

@@ -225,3 +225,6 @@
 .t-spark { width: 100%; flex: 1 1 auto; min-height: 16px; display: block; }
 .t-spark-wait { width: 100%; flex: 1 1 auto; min-height: 16px; opacity: .35;
   background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 6px); border-radius: 4px; }
+.t-spark-msg { width: 100%; flex: 1 1 auto; min-height: 16px; display: flex; align-items: center;
+  justify-content: center; text-align: center; line-height: 1.15; color: var(--muted);
+  font-size: calc(10px * var(--sd-font)); padding: 2px; }

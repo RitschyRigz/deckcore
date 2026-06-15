@@ -44,6 +44,8 @@ const MONITOR_LABELS = {
   sse_field: 'Wert aus Live-Event (Fortgeschritten)',
   poll: 'Wert von einer URL (Fortgeschritten)',
   hwinfo: 'HWiNFO-Sensor (Temperatur / Last / Takt / Lüfter … als Zahl)',
+  fps: 'FPS — Spiel im Vordergrund (PresentMon)',
+  frametime: 'Frametime in ms — fängt Spikes (PresentMon)',
   obs_source_visible: 'Ist eine OBS-Quelle sichtbar? (an/aus)',
   obs_scene: 'Welche OBS-Szene ist aktiv? (Szenenname)',
   displayfusion_profile: 'Welches DisplayFusion-Profil ist aktiv? (Profilname)',
@@ -56,6 +58,8 @@ const MONITOR_INFO = {
   bot_state: { text: 'Liefert: off · ready · followup · afk (für den gewählten Bot). Nutze „= gleich" + Wert.', values: ['off', 'ready', 'followup', 'afk'], bool: false },
   poll: { text: 'Wert kommt von der URL (z. B. Health: ok · warning · error · off).', values: ['ok', 'warning', 'error', 'off'], bool: false },
   hwinfo: { text: 'Liefert den HWiNFO-Sensorwert als Zahl. Setze ihn mit {value} in den Titel (z. B. „CPU {value}°"). Für Farbe nach Schwellwert: Status „> größer als" + Wert (z. B. ab 80 rot).', values: null, bool: false },
+  fps: { text: 'FPS des Vordergrund-Spiels via PresentMon (herstellerneutral, keine Injection). Am schönsten als Live-Kurve: oben „Darstellung → 📈 Graph". {value} im Titel = aktuelle Zahl.', values: null, bool: false },
+  frametime: { text: 'Frametime in ms via PresentMon — fängt Spikes (Maximum je Zeitfenster). Als „Darstellung → 📈 Graph" wird das ein Frametime-Verlauf wie in RivaTuner. Braucht ein laufendes Spiel im Vordergrund.', values: null, bool: false },
   file_field: { text: 'Wert aus dem JSON-Feld. Bei true/false „ist wahr/an", sonst „= gleich" + Wert.', values: null, bool: false },
   sse_field: { text: 'Wert aus dem Live-Event-Feld. Bei true/false „ist wahr/an", sonst „= gleich" + Wert.', values: null, bool: false },
   obs_source_visible: { text: 'Liefert AN (sichtbar) oder AUS (ausgeblendet). Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
@@ -1079,9 +1083,11 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
   const info = MONITOR_INFO[t]
   const [obsSources, setObsSources] = useState([])
   const [hwSensors, setHwSensors] = useState([])
+  const [pmStatus, setPmStatus] = useState(null)
   useEffect(() => {
     if (t === 'obs_source_visible') getJSON('/api/obs/scene_items').then((d) => setObsSources(d.sources || [])).catch(() => {})
     if (t === 'hwinfo') getJSON('/api/hwinfo/sensors').then((d) => setHwSensors(d.sensors || [])).catch(() => {})
+    if (t === 'fps' || t === 'frametime') getJSON('/api/frametime/status').then(setPmStatus).catch(() => {})
   }, [t])
   return (
     <div class="sd-block">
@@ -1109,6 +1115,14 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
               markieren. Danach hier neu öffnen.</p>
           )}
         </>
+      )}
+      {(t === 'fps' || t === 'frametime') && (
+        <p class={'sd-help ' + (pmStatus && pmStatus.available ? 'msg ok' : 'msg err')}>
+          {pmStatus && pmStatus.available
+            ? (pmStatus.presenting ? '✓ PresentMon live — Werte fließen' : '✓ PresentMon verbunden — warte auf ein Spiel im Vordergrund')
+            : '⚠ ' + ((pmStatus && pmStatus.reason) || 'PresentMon nicht gefunden — Intel PresentMon installieren')}
+          {'. '}Am schönsten als <b>Darstellung → 📈 Graph</b> (oben). Quelle: PresentMon — herstellerneutral, keine Injection.
+        </p>
       )}
       {t === 'process_alive' && (
         <div class="reward-row">

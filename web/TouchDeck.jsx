@@ -63,6 +63,27 @@ function _accumHist(hist, buttons) {
   }
 }
 
+// High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
+// sampelt im ms-Bereich; die Anzeige liest gröber). Zeigt einen klaren Hinweis, wenn keine Daten
+// (kein Spiel / PresentMon fehlt) — nie stumm leer.
+function FastGraph({ kind, color }) {
+  const [data, setData] = useState([])
+  const [msg, setMsg] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const tick = () => getJSON('/api/frametime/series?kind=' + kind).then((d) => {
+      if (!alive) return
+      setData(d.data || [])
+      setMsg((d.data && d.data.length > 1) ? null : (d.reason || (d.available ? 'warte auf ein Spiel' : 'PresentMon fehlt')))
+    }).catch(() => {})
+    tick()
+    const iv = setInterval(tick, 110)
+    return () => { alive = false; clearInterval(iv) }
+  }, [kind])
+  if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
+  return <Sparkline data={data} color={color} />
+}
+
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
 function Sparkline({ data, color }) {
   const arr = data || []
@@ -137,6 +158,7 @@ export function TouchDeck() {
   const [pressed, setPressed] = useState('')
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
+  const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
@@ -147,9 +169,9 @@ export function TouchDeck() {
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    const am = {}, rm = {}
-    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value' }
-    setActionById(am); setRenderById(rm)
+    const am = {}, rm = {}, mm = {}
+    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {} }
+    setActionById(am); setRenderById(rm); setMonById(mm)
     setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
@@ -246,7 +268,9 @@ export function TouchDeck() {
                     {isGraph ? (
                       <>
                         {v.title ? <span class="t-key-title">{v.title}</span> : null}
-                        <Sparkline data={histRef.current[id]} color={v.color} />
+                        {['fps', 'frametime'].includes((monById[id] || {}).type)
+                          ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
+                          : <Sparkline data={histRef.current[id]} color={v.color} />}
                       </>
                     ) : (
                       <>
