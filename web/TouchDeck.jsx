@@ -9,15 +9,14 @@ import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle 
 //
 // Datenmodell v2 (Shared-Pool): die Button-FUNKTION ist global (`/resolved` per id); die
 // Platzierung lebt PRO DECK als Item {button, category, style, hidden}. Jedes Deck hat sein
-// EIGENES Layout (Raster/Größe/Gap/Schrift) + eigene Kategorien. Hier wird also pro gewähltem
-// Deck dessen Template gerendert — kein globales Layout mehr.
+// EIGENES Layout (Raster/Größe/Gap/Schrift) + eigene Kategorien.
 //
-// DECKS (umschaltbare Panels): die Umschalt-Leiste zeigt alle Decks. Welches beim Laden offen
-// ist: ?deck=<id> (Tablet-Pinning) → localStorage → erstes Deck. So kann Tablet 1 fest auf
-// „Szenen" stehen, Tablet 2 frei umschalten — beide an derselben /panel-URL.
+// ORDNER (open_deck): ein Button mit action.type==='open_deck' ist ein Ordner — beim Tippen
+// öffnet sich das Ziel-Deck. mode='replace' → Unterseite (Navigations-Stack + Zurück-Pfeil);
+// mode='radial' → die Buttons fächern im Kreis um den Anker auf (Overlay). Das Panel kennt die
+// Aktion aus der Registry (`actionById`), navigiert lokal und löst KEINEN Press aus.
 
-// Bild-Vorladung: alle State-Icons des Pools einmal in den Browser-Cache holen → kein Flackern
-// beim Stream-Start (off→run-Swap sofort). Modul-weiter Cache gegen Doppel-Loads.
+// Bild-Vorladung: alle State-Icons des Pools einmal in den Browser-Cache holen → kein Flackern.
 const _preloadedIcons = new Set()
 function preloadDeckImages(poolButtons) {
   const urls = new Set()
@@ -48,21 +47,64 @@ function pickInitialDeck(deckList, def) {
   return (deckList && deckList[0] && deckList[0].id) || def
 }
 
+// Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
+// getippten Ordner-Button) auf. Reines Overlay — schließt bei Tap auf den Hintergrund oder nach
+// einer ausgeführten Aktion. Ein Ordner-Button IM Radial öffnet wieder ein Radial (eine Ebene).
+function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
+  const [shown, setShown] = useState(false)
+  useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
+  const items = (deck && deck.items || []).filter((it) => !it.hidden)
+  const N = items.length
+  const R = Math.min(230, Math.max(116, 60 + N * 16))   // Radius wächst mit der Knopf-Zahl
+  return (
+    <div class="t-radial-backdrop" onClick={onClose}>
+      <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${anchor.x}px;top:${anchor.y}px`}
+           onClick={(e) => e.stopPropagation()}>
+        <span class="t-radial-hub">{(deck && deck.icon) || '📁'}</span>
+        {N === 0 && <div class="t-radial-empty">leer</div>}
+        {items.map((it, i) => {
+          const ang = (-90 + i * (360 / N)) * Math.PI / 180
+          const rx = Math.round(Math.cos(ang) * R), ry = Math.round(Math.sin(ang) * R)
+          const id = it.button
+          const v = vis[id] || {}
+          const folder = (actionById[id] || {}).type === 'open_deck'
+          return (
+            <button key={id}
+                    class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')}
+                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};background:${v.color || '#222'}`}
+                    onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
+              {v.image ? <img class="t-key-img" src={v.image} alt="" />
+                : <span class="t-key-icon">{v.icon || '•'}</span>}
+              <span class="t-key-label">{v.label || id}</span>
+              {folder && <span class="t-folder-badge">⋯</span>}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function TouchDeck() {
   const [decks, setDecks] = useState([])        // volle Templates [{id,label,icon,layout,categories,items}]
   const [defaultDeck, setDefaultDeck] = useState('main')
-  const [deck, setDeck] = useState('')          // gewähltes Deck (id)
+  const [deck, setDeck] = useState('')          // Tab-gewähltes Deck (Top-Level)
   const [vis, setVis] = useState({})            // button-id → {label,title,icon,image,color} (live)
   const [pressed, setPressed] = useState('')
+  const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
+  const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
+  const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
     const dks = d.decks || []
     setDecks(dks)
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
-    // Aktuelle Auswahl behalten, wenn noch gültig — sonst Start-Deck bestimmen.
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    preloadDeckImages(d.buttons || [])   // Pool-State-Icons vorladen → kein Flackern
+    const am = {}; for (const b of d.buttons || []) am[b.id] = b.action || {}
+    setActionById(am)
+    setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
+    preloadDeckImages(d.buttons || [])
   }).catch(() => {})
 
   useEffect(() => {
@@ -71,27 +113,41 @@ export function TouchDeck() {
   }, [])
   useEventStream(['streamdeck:buttons', 'streamdeck:layout'], {
     'streamdeck:buttons': (d) => { if (d.buttons) setVis(d.buttons) },
-    // Deck-Template-Änderung aus dem Desktop-Editor → Registry neu lesen.
+    // Deck-Template- ODER Button-Änderung aus dem Editor → Registry neu lesen (hält actionById frisch).
     'streamdeck:layout': () => loadReg(),
   })
 
   const switchDeck = (id) => {
-    setDeck(id)
+    setDeck(id); setNavStack([]); setOverlay(null)
     try { localStorage.setItem('sd.deck', id) } catch {}
   }
+  const goBack = () => setNavStack((s) => s.slice(0, -1))
+  const closeOverlay = () => setOverlay(null)
 
-  const press = async (id) => {
+  // EINHEITLICHER Tap-Handler (Haupt-Raster UND Radial): Ordner → navigieren; sonst → Press.
+  const onTap = async (id, evt) => {
+    const a = actionById[id] || {}
+    if (a.type === 'open_deck' && a.deck) {
+      if ((a.mode || 'replace') === 'radial') {
+        const r = evt.currentTarget.getBoundingClientRect()
+        setOverlay({ deck: a.deck, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
+      } else {
+        setOverlay(null); setNavStack((s) => [...s, a.deck])
+      }
+      return
+    }
     setPressed(id)
     try { await postJSON('/api/streamdeck/press/' + encodeURIComponent(id)) } catch {}
     setTimeout(() => setPressed(''), 220)
+    setOverlay(null)   // nach einer echten Aktion ein offenes Radial schließen
   }
 
   if (!decks.length) return <div class="t-empty" style="margin:30px auto">Keine Decks in der Registry.</div>
 
-  const sel = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
-  const active = decks.find((d) => d.id === sel) || decks[0]
+  const tabSel = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
+  const shownId = navStack.length ? navStack[navStack.length - 1] : tabSel
+  const active = decks.find((d) => d.id === shownId) || decks[0]
   const layout = { ...DECK_LAYOUT_DEF, ...(active.layout || {}) }
-  // Sichtbare Items des aktiven Decks nach SEINEN Kategorien gruppieren (hidden raus, leere weg).
   const groups = groupDeckItems(active.items || [], active.categories || [], false)
     .filter((g) => g.items.length)
 
@@ -101,19 +157,27 @@ export function TouchDeck() {
   const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}`
   const showCatTitles = layout.show_category_titles !== false
 
+  const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
+  const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
+
   return (
     <div class="t-deck" style={deckStyle}>
-      {decks.length > 1 && (
+      {navStack.length > 0 ? (
+        <div class="t-nav">
+          <button class="t-nav-back" onClick={goBack}>‹ Zurück</button>
+          <span class="t-nav-crumb">{crumb.join('  ›  ')}</span>
+        </div>
+      ) : (decks.length > 1 && (
         <div class="t-deck-tabs">
           {decks.map((dk) => (
-            <button key={dk.id} class={'t-deck-tab' + (dk.id === sel ? ' active' : '')}
+            <button key={dk.id} class={'t-deck-tab' + (dk.id === tabSel ? ' active' : '')}
                     onClick={() => switchDeck(dk.id)}>
               <span class="t-deck-tab-icon">{dk.icon || '🎛'}</span>
               <span class="t-deck-tab-label">{dk.label || dk.id}</span>
             </button>
           ))}
         </div>
-      )}
+      ))}
       {!groups.length
         ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
         : groups.map((g) => (
@@ -124,21 +188,27 @@ export function TouchDeck() {
                 const id = it.button
                 const v = vis[id] || {}
                 const eff = resolveStyle(it.style, layout)
+                const folder = (actionById[id] || {}).type === 'open_deck'
                 return (
                   <button key={id}
-                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (pressed === id ? ' pressed' : '')}
+                          class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (pressed === id ? ' pressed' : '')}
                           style={'background:' + (v.color || '#222')}
-                          onClick={() => press(id)}>
+                          onClick={(e) => onTap(id, e)}>
                     {v.image ? <img class="t-key-img" src={v.image} alt="" />
                       : <span class="t-key-icon">{v.icon || '•'}</span>}
                     {v.title ? <span class="t-key-title">{v.title}</span> : null}
                     <span class="t-key-label">{v.label || id}</span>
+                    {folder && <span class="t-folder-badge">⋯</span>}
                   </button>
                 )
               })}
             </div>
           </section>
         ))}
+      {overlay && overlayDeck && (
+        <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById}
+                    anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />
+      )}
     </div>
   )
 }

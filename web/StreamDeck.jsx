@@ -21,6 +21,7 @@ const ACTION_LABELS = {
   events_action: '⭐ Action auslösen (aus Events & Actions)',
   process_action: '🟢 Prozess-Aktion (start/stop/toggle/mute)',
   launch: '🚀 Programm/Script starten (beliebige .exe/.py/.lnk …)',
+  open_deck: '📁 Ordner öffnen (Sub-Deck / Radial-Menü)',
   displayfusion: '🖥 DisplayFusion — Monitor-Profil laden',
   media: '⏯ Media-Taste (Play/Pause · ⏭⏮ · Lauter/Leiser · Mute)',
   hotkey: '⌨ Tastenkürzel / Makro senden',
@@ -83,6 +84,7 @@ function normOptions(o) {
     known_flags: arr(o.known_flags),
     match_ops: arr(o.match_ops),
     sse_topics: arr(o.sse_topics),
+    decks: arr(o.decks),
   }
 }
 
@@ -780,6 +782,27 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             </select>
           </div>
           <p class="muted sd-help">Löst beim Druck genau diese Action aus dem <b>Events &amp; Actions</b>-Tab aus.</p>
+        </>
+      )}
+      {t === 'open_deck' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Ziel-Deck</span>
+            <select class="reward-input" value={action.deck || ''} onChange={(e) => onChange({ deck: e.currentTarget.value })}>
+              <option value="">— wählen —</option>
+              {(options.decks || []).map((d) => <option value={d.id}>{(d.icon || '🎛') + ' ' + (d.label || d.id)}</option>)}
+            </select>
+          </div>
+          <div class="reward-row">
+            <span class="muted conn-label">Öffnen als</span>
+            <select class="so-delay" value={action.mode || 'replace'} onChange={(e) => onChange({ mode: e.currentTarget.value })}>
+              <option value="replace">Unterseite (Vollbild + Zurück-Pfeil)</option>
+              <option value="radial">Radial-Menü (Kreis um den Button)</option>
+            </select>
+          </div>
+          <p class="muted sd-help">Macht diesen Button zu einem <b>Ordner</b>: beim Tippen öffnet sich das
+            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü, das die Buttons im Kreis
+            um diesen Button auffächert. Nur im Touch-Panel; auf der Elgato-Hardware ohne Wirkung.</p>
         </>
       )}
       {t === 'process_action' && (

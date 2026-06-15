@@ -452,6 +452,7 @@ class DeckCoreService:
         A("flag_set", self._act_flag_set)
         A("http", self._act_http_action)
         A("obs", self._act_obs)
+        A("open_deck", self._act_open_deck)
         M("none", self._mon_none)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -1190,6 +1191,15 @@ class DeckCoreService:
             return self._obs.record(action.get("mode", "toggle"))
         return {"success": False, "message": f"Unbekannte obs_action: {sub}"}
 
+    def _act_open_deck(self, action: dict, btn: dict) -> dict:
+        # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
+        # passiert im Touch-Panel (es liest action.deck/mode direkt aus der Registry) — serverseitig
+        # nur ein No-op-Erfolg (auf reiner Elgato-Hardware ohne Panel gibt es nichts zu navigieren).
+        target = str(action.get("deck") or "")
+        if not target:
+            return {"success": False, "message": "Kein Ziel-Deck gewählt"}
+        return {"success": True, "message": f"Ordner: {target}"}
+
     # (host-spezifische Aktions-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1202,7 +1212,7 @@ class DeckCoreService:
             flags = sorted(p.name for p in self._flags_dir.glob("*.flag"))
         except Exception:  # noqa: BLE001
             pass
-        _ACTION_ORDER = ["process_action", "launch", "displayfusion", "media", "hotkey",
+        _ACTION_ORDER = ["process_action", "launch", "open_deck", "displayfusion", "media", "hotkey",
                          "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
@@ -1217,6 +1227,9 @@ class DeckCoreService:
             "displayfusion_available": bool(_df_command_path()),
             "match_ops": ["any", "truthy", "falsy", "eq", "ne", "gt", "lt", "gte", "lte", "contains"],
             "known_flags": flags,
+            # Deck-Liste fürs „Ordner"-Dropdown (open_deck) — leicht (nur id/label/icon).
+            "decks": [{"id": d["id"], "label": d.get("label", d["id"]), "icon": d.get("icon", "🎛")}
+                      for d in self._decks],
         }
         out.update(self._extra_options() or {})
         return out
