@@ -96,6 +96,8 @@ from typing import Any, Optional
 from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Import bleibt schlank)
 from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
 from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
+from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
+from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 
 log = logging.getLogger("deckcore")
 
@@ -480,6 +482,10 @@ class DeckCoreService:
         self._obs = ObsDirect(obs_host, obs_port, obs_password)
         self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
         self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
+        self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
+        self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
+        self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
+        self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -490,6 +496,7 @@ class DeckCoreService:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._eval_task: Optional[asyncio.Task] = None
         self._sse_task: Optional[asyncio.Task] = None
+        self._coupling_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._load()
 
@@ -521,6 +528,8 @@ class DeckCoreService:
         A("http", self._act_http_action)
         A("obs", self._act_obs)
         A("open_deck", self._act_open_deck)
+        A("wavelink", self._act_wavelink)
+        A("winaudio", self._act_winaudio)
         M("none", self._mon_none)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -532,6 +541,11 @@ class DeckCoreService:
         M("hwinfo", self._mon_hwinfo)
         M("fps", self._mon_fps)
         M("frametime", self._mon_frametime)
+        M("wavelink_meter", self._mon_wavelink_meter)
+        M("wavelink_level", self._mon_wavelink_level)
+        M("wavelink_mute", self._mon_wavelink_mute)
+        M("wavelink_main_output", self._mon_wavelink_main_output)
+        M("winaudio_default", self._mon_winaudio_default)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1104,6 +1118,104 @@ class DeckCoreService:
         return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
                 "total": created + updated}
 
+    def populate_wavelink(self, deck_id: str) -> dict:
+        """Baut/aktualisiert aus dem LIVE-Wave-Link-Zustand ein komplettes Audio-Deck:
+        pro Ausgabegerät einen Main-Output-Wähler (Tap = als Monitor-Hauptausgang setzen, grün=aktiv),
+        pro Mix UND pro Channel einen vertikalen Fader (render=fader; Ziehen=Level, Tippen=Mute, Live-VU).
+        Stabile Button-ids (``wl_out_``/``wl_mix_``/``wl_chan_``) → wiederholtes Befüllen aktualisiert
+        statt zu duplizieren; die User-Platzierung im Deck bleibt erhalten."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        snap = self._wl.snapshot()
+        if not snap.get("app"):
+            return {"ok": False, "reason": "wavelink_offline"}
+        mixes = snap.get("mixes", []) or []
+        channels = snap.get("channels", []) or []
+        outputs = snap.get("outputDevices", []) or []
+        cats = {"out": "Ausgänge", "mix": "Mixes", "chan": "Channels"}
+        for c in cats.values():
+            if c not in deck["categories"]:
+                deck["categories"].append(c)
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        item_by_id = {it["button"]: it for it in deck["items"]}
+        created = updated = 0
+
+        def _upsert(fn: dict) -> None:
+            ex = pool_by_id.get(fn["id"])
+            if ex is not None:
+                self._buttons[self._buttons.index(ex)] = fn
+            else:
+                self._buttons.append(fn)
+            pool_by_id[fn["id"]] = fn
+            self._removed.discard(fn["id"])
+
+        def _place(bid: str, category: str, style: dict, h: int = 1) -> None:
+            nonlocal created, updated
+            ex = item_by_id.get(bid)
+            if ex is not None:
+                if h and h > 1:
+                    ex["h"] = h            # Größe auch beim Auffrischen nachziehen
+                elif "h" in ex:
+                    ex.pop("h", None)
+                updated += 1
+            else:
+                it = {"button": bid, "category": category, "style": style, "hidden": False}
+                if h and h > 1:
+                    it["h"] = h            # Fader stehen hochkant schöner (2 Reihen) — reine Panel-Größe
+                deck["items"].append(it)
+                item_by_id[bid] = it
+                created += 1
+
+        # Ausgabegeräte → Main-Output-Wähler (normaler Button; grün, wenn aktiver Monitor-Hauptausgang).
+        for d in outputs:
+            did = str(d.get("id") or "")
+            if not did:
+                continue
+            name = str(d.get("name") or did)
+            bid = "wl_out_" + _slug(did)
+            _upsert({
+                "id": bid, "label": name,
+                "action": {"type": "wavelink", "wl_action": "main_output",
+                           "output_device_id": did, "output_id": did},
+                "monitor": {"type": "wavelink_main_output", "output_device_id": did},
+                "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
+                "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"},
+            })
+            _place(bid, cats["out"], {"label": "off"})
+
+        # Mixes → vertikaler Fader.
+        for m in mixes:
+            mid = str(m.get("id") or "")
+            if not mid:
+                continue
+            name = str(m.get("name") or mid)
+            _upsert({
+                "id": "wl_mix_" + _slug(mid), "label": name, "render": "fader",
+                "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
+                "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
+                "states": [], "default": {"title": "{value}%", "color": "#2563eb"},
+            })
+            _place("wl_mix_" + _slug(mid), cats["mix"], {}, h=2)
+
+        # Channels → vertikaler Fader (Master-Level).
+        for c in channels:
+            cid = str(c.get("id") or "")
+            if not cid:
+                continue
+            name = str(c.get("name") or cid)
+            _upsert({
+                "id": "wl_chan_" + _slug(cid), "label": name, "render": "fader",
+                "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
+                "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
+                "states": [], "default": {"title": "{value}%", "color": "#7c3aed"},
+            })
+            _place("wl_chan_" + _slug(cid), cats["chan"], {}, h=2)
+
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
+                "mixes": len(mixes), "channels": len(channels), "outputs": len(outputs)}
+
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Pool-Ansicht ──
     def generate_obs_scene_buttons(self, scenes: list) -> dict:
         """Pro OBS-Szene einen Szenen-Wechsel-Button NUR im Pool anlegen/auffrischen (KEINE
@@ -1197,6 +1309,53 @@ class DeckCoreService:
     def frametime_series(self, kind: str) -> dict:
         """High-Rate-Verlauf {data:[…]} für ``fps``|``frametime`` (Graph-Kachel pollt das schnell)."""
         return self._frametime.series(kind)
+
+    # ── Wave Link (direkter JSON-RPC-Client) — Host-Endpoints + Editor-Listen + Fader ──
+    def wavelink_status(self, probe: bool = False) -> dict:
+        """Verbindungs-/App-Status. ``probe`` erzwingt einen frischen Verbindungsversuch."""
+        return self._wl.status(probe=probe)
+
+    def wavelink_snapshot(self) -> dict:
+        """{app, mixes, channels, outputDevices, mainOutput} — Editor-Auswahllisten + Generator."""
+        return self._wl.snapshot()
+
+    def wavelink_meters(self, ids: list | None = None) -> dict:
+        """Aktuelle VU-Pegel {meters:{id:0..1}} — das Frontend pollt das schnell für die VU-Kacheln."""
+        return self._wl.meters(ids)
+
+    def set_wavelink_config(self, host: str = None, port: int = None) -> dict:
+        """Wave-Link-Host/Port überschreiben (Auto-Discovery sonst) → neu verbinden + Status."""
+        self._wl.configure(host=host, port=port)
+        return self._wl.status(probe=True)
+
+    def wavelink_set_level(self, target_type: str, target_id: str, level: float,
+                           mix_id: str = "") -> dict:
+        """Stufenloser Fader (0..100): Mix- oder Channel-Level setzen."""
+        if str(target_type) == "channel":
+            return self._wl.set_channel_level(target_id, float(level) / 100.0, mix_id=mix_id)
+        return self._wl.set_mix_level(target_id, float(level) / 100.0)
+
+    def wavelink_set_mute(self, target_type: str, target_id: str, muted=None,
+                          mix_id: str = "") -> dict:
+        """Mix- oder Channel-Mute setzen/toggeln (``muted=None`` = umschalten)."""
+        if str(target_type) == "channel":
+            return self._wl.set_channel_mute(target_id, muted=muted, mix_id=mix_id)
+        return self._wl.set_mix_mute(target_id, muted=muted)
+
+    def wavelink_set_main_output(self, output_device_id: str, output_id: str = "") -> dict:
+        """Monitor-Hauptausgang auf ein Gerät setzen."""
+        return self._wl.set_main_output(output_device_id, output_id)
+
+    # ── Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe) ──
+    def winaudio_status(self) -> dict:
+        """{available, default} — aktueller Windows-Standard-Render-Endpoint + ob steuerbar."""
+        return {"available": self._winaudio.available(), "default": self._winaudio_default_id()}
+
+    def winaudio_set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:
+        """Windows-Standard-Ausgabegerät setzen (Cache danach invalidieren → Statuslicht frisch)."""
+        res = self._winaudio.set_default(device_id, roles=tuple(roles))
+        self._winaudio_cache = (None, 0.0)
+        return res
 
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
@@ -1306,8 +1465,8 @@ class DeckCoreService:
         # Platzierung gehört nicht in die Funktions-Definition.
         for f in ("deck", "group", "style"):
             button.pop(f, None)
-        # Darstellung (render: graph|text|clock; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "text", "clock"):
+        # Darstellung (render: graph|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
+        if button.get("render") not in ("graph", "text", "clock", "fader"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))
@@ -1441,6 +1600,59 @@ class DeckCoreService:
             return {"success": False, "message": "Kein Ziel-Deck gewählt"}
         return {"success": True, "message": f"Ordner: {target}"}
 
+    def _act_wavelink(self, action: dict, btn: dict) -> dict:
+        # Wave Link direkt: Monitor-Hauptausgang setzen / Mix|Channel muten / Level setzen|nudgen.
+        # DISKRETE Tasten-Aktion (auch vom echten Stream Deck). Der STUFENLOSE Fader zieht über den
+        # /api/wavelink/level-Endpoint, NICHT über diesen Press-Pfad.
+        sub = str(action.get("wl_action") or "main_output")
+        if sub == "main_output":
+            return self._wl.set_main_output(action.get("output_device_id", ""),
+                                            action.get("output_id", ""))
+        if sub == "mix_mute":
+            return self._wl.set_mix_mute(action.get("mix_id", ""))
+        if sub == "channel_mute":
+            return self._wl.set_channel_mute(action.get("channel_id", ""),
+                                             mix_id=action.get("mix_id", ""))
+        if sub == "mix_level":
+            return self._wl_press_level("mix", action)
+        if sub == "channel_level":
+            return self._wl_press_level("channel", action)
+        return {"success": False, "message": f"Unbekannte wl_action: {sub}"}
+
+    def _wl_press_level(self, kind: str, action: dict) -> dict:
+        """Diskreter Level-Druck: ``level`` (0..100) absolut setzen ODER ``delta`` relativ
+        nudgen (aktuellen Wert lesen + addieren). Für Tasten ohne Schieberegler (Hardware)."""
+        delta = action.get("delta")
+        if kind == "mix":
+            cid, mix_id = action.get("mix_id", ""), ""
+            cur = self._wl.mix_level(cid)
+        else:
+            cid, mix_id = action.get("channel_id", ""), action.get("mix_id", "")
+            cur = self._wl.channel_level(cid, mix_id)
+        if delta is not None:
+            lvl = ((cur if cur is not None else 0) + float(delta)) / 100.0
+        else:
+            lvl = float(action.get("level", 0)) / 100.0
+        if kind == "mix":
+            return self._wl.set_mix_level(cid, lvl)
+        return self._wl.set_channel_level(cid, lvl, mix_id=mix_id)
+
+    def _act_winaudio(self, action: dict, btn: dict) -> dict:
+        # Windows-Standard-Ausgabegerät setzen (Deck-Knopf „Windows-Standard"). Bei aktiver Kopplung
+        # (Flag wavelink_follow_default) zieht Wave Link automatisch nach (der Coupling-Loop sieht es).
+        sub = str(action.get("wa_action") or "set_default")
+        if sub == "set_default":
+            # device_name (robust gegen wechselnde IDs beim Neu-Einstecken) bevorzugt; sonst feste device_id.
+            name = action.get("device_name")
+            device_id = self._winaudio_resolve(name) if name else str(action.get("device_id", "") or "")
+            if name and not device_id:
+                return {"success": False, "message": f"{name}: gerade nicht verfügbar"}
+            roles = tuple(action.get("roles") or ("console", "multimedia"))
+            res = self._winaudio.set_default(device_id, roles=roles)
+            self._winaudio_cache = (None, 0.0)   # Statuslicht sofort neu lesen
+            return res
+        return {"success": False, "message": f"Unbekannte wa_action: {sub}"}
+
     # (host-spezifische Aktions-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1454,11 +1666,12 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         _ACTION_ORDER = ["process_action", "launch", "open_deck", "displayfusion", "media", "hotkey",
-                         "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
-                         "events_action", "none"]
+                         "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs", "wavelink",
+                         "winaudio", "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "obs_source_visible", "obs_scene",
-                          "displayfusion_profile", "none"]
+                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
+                          "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
+                          "winaudio_default", "obs_source_visible", "obs_scene", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         out = {
@@ -1661,6 +1874,74 @@ class DeckCoreService:
         # Frametime in ms (PresentMon, Spike-erfassend). Wie fps — Graph via series-Endpoint.
         return self._frametime.value("frametime")
 
+    def _mon_wavelink_meter(self, mon: dict, btn: dict) -> Any:
+        # Live-VU-Pegel (0..100) eines Mix/Channel. Für die Fader-Kachel pollt das Frontend
+        # zusätzlich /api/wavelink/meters (High-Rate); hier der Wert pro Tick (Titel/Schwellwert).
+        v = self._wl.meter(mon.get("target", ""))
+        return None if v is None else round(v * 100)
+
+    def _mon_wavelink_level(self, mon: dict, btn: dict) -> Any:
+        # Aktueller Regler-Stand (0..100) eines Mix/Channel — Knopf-Stellung + {value}-Titel.
+        if str(mon.get("target_type") or "mix") == "channel":
+            return self._wl.channel_level(mon.get("id", ""), mon.get("mix_id", ""))
+        return self._wl.mix_level(mon.get("id", ""))
+
+    def _mon_wavelink_mute(self, mon: dict, btn: dict) -> Any:
+        # Mute-Status (true=stumm) eines Mix/Channel — fürs Statuslicht/Icon.
+        if str(mon.get("target_type") or "mix") == "channel":
+            return self._wl.channel_muted(mon.get("id", ""), mon.get("mix_id", ""))
+        return self._wl.mix_muted(mon.get("id", ""))
+
+    def _mon_wavelink_main_output(self, mon: dict, btn: dict) -> Any:
+        # True, wenn DIESES Gerät aktuell der Monitor-Hauptausgang ist (grünes Statuslicht).
+        return self._wl.is_main_output(mon.get("output_device_id", ""))
+
+    def _winaudio_default_id(self, role: str = "multimedia") -> Any:
+        """Aktuelles Windows-Standard-Ausgabegerät — EIN geteilter ~1s-Cache für alle winaudio_default-
+        Buttons UND den Coupling-Loop (kein COM-Call pro Button pro Tick)."""
+        now = time.monotonic()
+        val, ts = self._winaudio_cache
+        if ts and (now - ts) < 1.0:
+            return val
+        val = self._winaudio.default_render_id(role)
+        self._winaudio_cache = (val, now)
+        return val
+
+    def _winaudio_devices(self):
+        """Aktive Render-Geräte (~2s-Cache) — für die Namens-Auflösung (GetAllDevices ist nicht ganz billig)."""
+        now = time.monotonic()
+        val, ts = self._winaudio_devs_cache
+        if ts and (now - ts) < 2.0:
+            return val
+        val = self._winaudio.render_devices()
+        self._winaudio_devs_cache = (val, now)
+        return val
+
+    def _winaudio_resolve(self, name_substring: str):
+        """Aktuelle ID des aktiven Ausgabegeräts, dessen Name den Teilstring enthält (geteilter Cache)."""
+        sub = (name_substring or "").lower()
+        if not sub:
+            return None
+        for d in self._winaudio_devices():
+            if sub in (d.get("name") or "").lower():
+                return d.get("id")
+        return None
+
+    def _mon_winaudio_default(self, mon: dict, btn: dict) -> Any:
+        # True, wenn dieses Gerät das aktuelle Windows-Standard-Ausgabegerät ist (grünes Statuslicht).
+        # device_name (robust gegen wechselnde IDs) bevorzugt; sonst feste device_id.
+        name = mon.get("device_name")
+        if name:
+            target = self._winaudio_resolve(name)
+            if not target:
+                return False                       # Gerät grad nicht aktiv → nicht „Standard"
+        else:
+            target = str(mon.get("device_id", "") or "")
+            if not target:
+                return None
+        cur = self._winaudio_default_id(mon.get("role", "multimedia"))
+        return None if cur is None else (cur == target)
+
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -1755,6 +2036,7 @@ class DeckCoreService:
         self._loop = asyncio.get_running_loop()
         self._eval_task = asyncio.create_task(self._eval_loop())
         self._sse_task = asyncio.create_task(self._sse_loop())
+        self._coupling_task = asyncio.create_task(self._coupling_loop())
         log.info("StreamDeckService gestartet (%d Buttons, Rate %.2fs)",
                  len(self._buttons), self._tick)
 
@@ -1768,13 +2050,48 @@ class DeckCoreService:
             self._frametime.stop()
         except Exception:  # noqa: BLE001
             pass
-        for t in (self._eval_task, self._sse_task):
+        try:
+            self._wl.close()
+        except Exception:  # noqa: BLE001
+            pass
+        for t in (self._eval_task, self._sse_task, self._coupling_task):
             if t:
                 t.cancel()
                 try:
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+
+    async def _coupling_loop(self) -> None:
+        """Kopplung „Wave Link folgt Windows-Standardgerät": solange das Flag
+        ``wavelink_follow_default.flag`` existiert, WL-Main auf das Windows-Standard-Ausgabegerät
+        ziehen. Opt-in — ohne Flag ein reiner No-op (kein COM-/Wave-Link-Zugriff)."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(1.5)
+                await asyncio.to_thread(self._coupling_tick)
+            except asyncio.CancelledError:
+                break
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _coupling_tick(self) -> None:
+        try:
+            if not (self._flags_dir / "wavelink_follow_default.flag").exists():
+                return                       # Kopplung aus → nichts tun
+            if not self._winaudio.available():
+                return
+            win_id = self._winaudio_default_id("multimedia")
+            if not win_id:
+                return
+            cur = (self._wl.main_output() or {}).get("outputDeviceId")
+            if not cur:
+                return                       # Wave Link nicht verbunden / kein Main
+            if cur != win_id:
+                self._wl.set_main_output(win_id, win_id)
+                log.info("Kopplung: Wave-Link-Main -> Windows-Standard %s", win_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("coupling tick fehlgeschlagen: %s", e)
 
     async def _eval_loop(self) -> None:
         while not self._stop.is_set():

@@ -1431,6 +1431,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="graph">📈 Graph (Verlaufskurve)</option>
           <option value="text">🔤 Text / Überschrift</option>
           <option value="clock">🕐 Uhr</option>
+          <option value="fader">🎚 Fader (Wave Link)</option>
         </select>
         <span class="muted conn-label" style="margin-left:8px">Größe</span>
         <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
@@ -1443,7 +1444,9 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
       ) : (
         <>
           <p class="muted sd-help">
-            {render === 'graph'
+            {render === 'fader'
+              ? 'Vertikaler Wave-Link-Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Quelle = der wavelink_level-Monitor (Ziel-Mix/Channel). Am einfachsten per „🎚 Wave-Link-Deck bauen" erzeugen.'
+              : render === 'graph'
               ? 'Der Graph zeichnet den Verlauf des Überwachungs-Werts; die „Farbe" unten ist die Linienfarbe. Titel „{value}" zeigt zusätzlich die Zahl.'
               : stateless
                 ? 'Diese Taste hat keinen Status (Überwachung = „Keine") → es zählt nur das „Standard"-Aussehen unten.'

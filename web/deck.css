@@ -277,3 +277,28 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   line-height: 1; color: var(--fg); text-shadow: 0 1px 2px rgba(0, 0, 0, .9); pointer-events: none; }
 .t-graph-max { top: 1px; opacity: .85; }
 .t-graph-min { bottom: 1px; opacity: .6; }
+
+/* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
+   Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */
+.t-fader-key { padding: 0; overflow: hidden; }
+.t-fader { display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
+  padding: 5px 4px; gap: 3px; align-items: center; }
+.t-fader-name { font-size: 11cqw; line-height: 1.1; color: var(--fg); max-width: 100%; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 8%;
+  align-items: stretch; justify-content: center; }
+.t-fader-track { position: relative; width: 34%; max-width: 40px; border-radius: 7px; cursor: ns-resize;
+  touch-action: none; background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.10); }
+.t-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 0 0 6px 6px; opacity: .9; }
+.t-fader-knob { position: absolute; left: -14%; right: -14%; height: 9px; margin-bottom: -4px; border-radius: 3px;
+  background: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.6); pointer-events: none; }
+.t-fader-vu { position: relative; width: 26%; max-width: 26px; padding: 2px 0;
+  display: flex; flex-direction: column-reverse; gap: 6%; }
+.t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 1.5px; background: rgba(255,255,255,.10); }
+.t-vu-seg.on.g { background: #3fb950; }
+.t-vu-seg.on.y { background: #d8a000; }
+.t-vu-seg.on.r { background: #e5534b; }
+.t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--muted); min-height: 1em; }
+.t-fader.muted { opacity: .5; }
+.t-fader.muted .t-fader-fill { background: var(--muted) !important; }
+.t-fader.muted .t-fader-foot { color: #e5534b; }

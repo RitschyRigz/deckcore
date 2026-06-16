@@ -120,6 +120,89 @@ function Sparkline({ data, color }) {
   )
 }
 
+// Vertikaler Wave-Link-Fader: Schieberegler (vertikal ziehen = Level setzen) + Live-VU-Säule daneben;
+// Tippen OHNE Ziehen = Mute-Toggle. REINE Panel-Kachel — das physische Stream Deck zeigt stattdessen
+// Titel/Level% + Druck=Mute (Backend _act_wavelink). meters/state = vom Deck GETEILTE Polls (ein Request
+// für ALLE Fader, nicht pro Kachel). target/typ kommen aus dem wavelink_level-Monitor des Buttons.
+function Fader({ id, v, mon, meters, state, onMute }) {
+  const ttype = mon.target_type || 'mix'
+  const targetId = mon.id || mon.target || ''
+  const mixId = mon.mix_id || ''
+  const meterId = mon.id || mon.target || targetId
+  const trackRef = useRef(null)
+  const movedRef = useRef(false)
+  const sentRef = useRef(0)
+  const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
+  const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
+
+  const st = state[targetId] || {}
+  const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
+  const level = drag != null ? drag : baseLevel
+  const muted = optMute != null ? optMute : !!st.muted
+  const mlvl = Math.max(0, Math.min(1, meters[meterId] || 0))
+  const accent = (v.color && v.color !== '#222') ? v.color : 'var(--accent2, #3b82f6)'
+  const name = v.label || v.title || id
+
+  const levelAt = (clientY) => {
+    const el = trackRef.current
+    if (!el) return level
+    const r = el.getBoundingClientRect()
+    return Math.max(0, Math.min(100, Math.round((1 - (clientY - r.top) / r.height) * 100)))
+  }
+  const push = (lvl, force) => {
+    const t = Date.now()
+    if (!force && t - sentRef.current < 45) return     // ~22 Hz drosseln
+    sentRef.current = t
+    postJSON('/api/wavelink/level', { target_type: ttype, id: targetId, level: lvl, mix_id: mixId }).catch(() => {})
+  }
+  const onDown = (e) => {
+    e.stopPropagation()
+    movedRef.current = false
+    setDrag(levelAt(e.clientY))
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
+  }
+  const onMove = (e) => {
+    if (drag == null) return
+    e.stopPropagation()
+    const l = levelAt(e.clientY)
+    if (Math.abs(l - baseLevel) > 2) movedRef.current = true
+    setDrag(l)
+    push(l, false)
+  }
+  const onUp = (e) => {
+    if (drag == null) return
+    e.stopPropagation()
+    if (movedRef.current) {
+      push(drag, true)                              // finalen Wert sicher senden
+    } else {                                         // Tap ohne Bewegung = Mute
+      setOptMute(!muted); onMute()
+      setTimeout(() => setOptMute(null), 1500)
+    }
+    setDrag(null)
+  }
+
+  const SEGS = 14, segs = []
+  for (let i = 0; i < SEGS; i++) {
+    const thr = (i + 1) / SEGS
+    const cls = thr > 0.86 ? 'r' : thr > 0.6 ? 'y' : 'g'
+    segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
+  }
+  return (
+    <div class={'t-fader' + (muted ? ' muted' : '')}>
+      <div class="t-fader-name" title={name}>{name}</div>
+      <div class="t-fader-body">
+        <div class="t-fader-track" ref={trackRef} onPointerDown={onDown} onPointerMove={onMove}
+             onPointerUp={onUp} onPointerCancel={onUp}>
+          <div class="t-fader-fill" style={`height:${level}%;background:${accent}`} />
+          <div class="t-fader-knob" style={`bottom:${level}%`} />
+        </div>
+        <div class="t-fader-vu">{segs}</div>
+      </div>
+      <div class="t-fader-foot">{muted ? '🔇 stumm' : level + '%'}</div>
+    </div>
+  )
+}
+
 // Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
 // getippten Ordner-Button) auf. Reines Overlay — schließt bei Tap auf den Hintergrund oder nach
 // einer ausgeführten Aktion. Ein Ordner-Button IM Radial öffnet wieder ein Radial (eine Ebene).
@@ -179,6 +262,8 @@ export function TouchDeck() {
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
   const [optsById, setOptsById] = useState({})       // button-id → opts (Schrift/Farbe/Uhr-Modus für Text/Uhr-Buttons)
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
+  const [wlMeters, setWlMeters] = useState({})       // Wave-Link VU-Pegel {id:0..1} (geteilter schneller Poll)
+  const [wlState, setWlState] = useState({})         // Wave-Link {id:{level,muted}} (geteilter langsamer Poll)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
   const [fullscreen, setFullscreen] = useState(false) // Vollbild-Deck: nur das aktive Deck, Chrome weg
@@ -206,6 +291,25 @@ export function TouchDeck() {
     // Deck-Template- ODER Button-Änderung aus dem Editor → Registry neu lesen (hält actionById frisch).
     'streamdeck:layout': () => loadReg(),
   })
+
+  // Wave-Link-Fader brauchen Live-VU (schnell) + Level/Mute (langsam) — EIN geteilter Poll für ALLE
+  // Fader (nicht pro Kachel). Läuft nur, wenn überhaupt eine Fader-Kachel existiert.
+  const hasFaders = Object.values(renderById).some((r) => r === 'fader')
+  useEffect(() => {
+    if (!hasFaders) return
+    let alive = true
+    const buildState = (snap) => {
+      const m = {}
+      for (const x of (snap.mixes || [])) m[x.id] = { level: Math.round((x.level || 0) * 100), muted: !!x.isMuted }
+      for (const c of (snap.channels || [])) m[c.id] = { level: Math.round((c.level || 0) * 100), muted: !!c.isMuted }
+      return m
+    }
+    const pollMeters = () => getJSON('/api/wavelink/meters').then((d) => { if (alive) setWlMeters(d.meters || {}) }).catch(() => {})
+    const pollState = () => getJSON('/api/wavelink/state').then((d) => { if (alive) setWlState(buildState(d)) }).catch(() => {})
+    pollMeters(); pollState()
+    const im = setInterval(pollMeters, 90), is = setInterval(pollState, 1600)
+    return () => { alive = false; clearInterval(im); clearInterval(is) }
+  }, [hasFaders])
 
   // Vollbild: body-Klasse umschalten (die Host-Hülle blendet darüber ihre EIGENE Nav aus), Escape
   // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
@@ -305,7 +409,17 @@ export function TouchDeck() {
     const render = renderById[id]
     const isGraph = render === 'graph'
     const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
+    const isFader = render === 'fader'
     const o = optsById[id] || {}
+    if (isFader) {
+      // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
+      return (
+        <div key={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + (spanned ? ' spanned' : '')}
+             style={'background:var(--bg)' + place}>
+          <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} onMute={() => onTap(id)} />
+        </div>
+      )
+    }
     return (
       <button key={id}
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + ((isWidget || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}

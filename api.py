@@ -221,6 +221,22 @@ def build_streamdeck_router(
             raise HTTPException(status_code=400, detail=res.get("reason", "keine Profile / unbekanntes Deck"))
         return JSONResponse(res)
 
+    @r.post("/api/streamdeck/wavelink/build")
+    def streamdeck_wavelink_build(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Baut/aktualisiert ein komplettes Wave-Link-Deck (Geräte/Mixes/Channels) aus dem Live-Zustand.
+        Legt das Deck an, wenn keins angegeben/vorhanden (Default-Label „Wave Link")."""
+        svc = get_service(request)
+        b = body or {}
+        deck_id = (b.get("deck_id") or "").strip()
+        if not deck_id:
+            label = (b.get("deck_label") or "Wave Link").strip() or "Wave Link"
+            existing = next((d for d in svc.decks() if d["label"].lower() == label.lower()), None)
+            deck_id = existing["id"] if existing else svc.add_deck(label, b.get("deck_icon") or "🎚")["id"]
+        res = svc.populate_wavelink(deck_id)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
+        return JSONResponse(res)
+
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Button-Pool-Ansicht ──
     @r.post("/api/streamdeck/generate/displayfusion")
     def streamdeck_generate_df(request: Request) -> JSONResponse:
@@ -243,6 +259,59 @@ def build_streamdeck_router(
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)
+
+    # ── Wave Link (Audio-Mischpult, direkter JSON-RPC-Client) ─────────────
+    @r.get("/api/wavelink/status")
+    def wavelink_status(request: Request) -> JSONResponse:
+        """Wave-Link-Verbindungs-/App-Status. ``?probe=1`` erzwingt einen Verbindungsversuch."""
+        probe = request.query_params.get("probe") in ("1", "true", "yes")
+        return JSONResponse(get_service(request).wavelink_status(probe=probe))
+
+    @r.get("/api/wavelink/state")
+    def wavelink_state(request: Request) -> JSONResponse:
+        """{app, mixes, channels, outputDevices, mainOutput} — Editor-Auswahllisten + Generator."""
+        return JSONResponse(get_service(request).wavelink_snapshot())
+
+    @r.get("/api/wavelink/meters")
+    def wavelink_meters(request: Request) -> JSONResponse:
+        """Aktuelle VU-Pegel {meters:{id:0..1}} — das Panel pollt das schnell. ``?ids=a,b`` filtert."""
+        ids_q = request.query_params.get("ids") or ""
+        ids = [s for s in ids_q.split(",") if s] or None
+        return JSONResponse(get_service(request).wavelink_meters(ids))
+
+    @r.post("/api/wavelink/config")
+    def wavelink_config(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Wave-Link-Host/Port überschreiben (sonst Auto-Discovery) → neu verbinden + Status."""
+        b = body or {}
+        return JSONResponse(get_service(request).set_wavelink_config(host=b.get("host"), port=b.get("port")))
+
+    @r.post("/api/wavelink/level")
+    def wavelink_level(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Stufenloser Fader: Mix-/Channel-Level (0..100) setzen.
+        {target_type:'mix'|'channel', id, level, mix_id?}"""
+        b = body or {}
+        if "id" not in b or "level" not in b:
+            raise HTTPException(status_code=400, detail="id und level erforderlich")
+        return JSONResponse(get_service(request).wavelink_set_level(
+            b.get("target_type", "mix"), b.get("id", ""), b.get("level", 0), b.get("mix_id", "")))
+
+    @r.post("/api/wavelink/mute")
+    def wavelink_mute(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Mix-/Channel-Mute setzen/toggeln. {target_type, id, muted?, mix_id?}"""
+        b = body or {}
+        if "id" not in b:
+            raise HTTPException(status_code=400, detail="id erforderlich")
+        return JSONResponse(get_service(request).wavelink_set_mute(
+            b.get("target_type", "mix"), b.get("id", ""), b.get("muted"), b.get("mix_id", "")))
+
+    @r.post("/api/wavelink/main_output")
+    def wavelink_main_output(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Monitor-Hauptausgang auf ein Gerät setzen. {output_device_id, output_id?}"""
+        b = body or {}
+        if not b.get("output_device_id"):
+            raise HTTPException(status_code=400, detail="output_device_id erforderlich")
+        return JSONResponse(get_service(request).wavelink_set_main_output(
+            b.get("output_device_id", ""), b.get("output_id", "")))
 
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:
