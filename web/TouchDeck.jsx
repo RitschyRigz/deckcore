@@ -16,6 +16,11 @@ import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle 
 // öffnet sich das Ziel-Deck. mode='replace' → Unterseite (Navigations-Stack + Zurück-Pfeil);
 // mode='radial' → die Buttons fächern im Kreis um den Anker auf (Overlay). Das Panel kennt die
 // Aktion aus der Registry (`actionById`), navigiert lokal und löst KEINEN Press aus.
+//
+// VOLLBILD (fullscreen): ein ⛶-Knopf in der Deck-Leiste schaltet „nur das aktive Deck" — die
+// Deck-Auswahl + der Knopf selbst verschwinden und es wird `body.dc-deck-fs` gesetzt, worüber die
+// Host-Hülle ihre EIGENE Navigation ausblendet (Kern bleibt host-agnostisch). Zurück per Wisch von
+// oben nach unten (oder Escape). Die Ordner-Navigation (.t-nav) bleibt im Vollbild nutzbar.
 
 // Bild-Vorladung: alle State-Icons des Pools einmal in den Browser-Cache holen → kein Flackern.
 const _preloadedIcons = new Set()
@@ -176,6 +181,8 @@ export function TouchDeck() {
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
+  const [fullscreen, setFullscreen] = useState(false) // Vollbild-Deck: nur das aktive Deck, Chrome weg
+  const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
     const dks = d.decks || []
@@ -200,12 +207,47 @@ export function TouchDeck() {
     'streamdeck:layout': () => loadReg(),
   })
 
+  // Vollbild: body-Klasse umschalten (die Host-Hülle blendet darüber ihre EIGENE Nav aus), Escape
+  // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
+  useEffect(() => {
+    try { document.body.classList.toggle('dc-deck-fs', fullscreen) } catch {}
+  }, [fullscreen])
+  useEffect(() => () => { try { document.body.classList.remove('dc-deck-fs') } catch {} }, [])
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e) => { if (e.key === 'Escape') setFullscreen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen])
+
   const switchDeck = (id) => {
     setDeck(id); setNavStack([]); setOverlay(null)
     try { localStorage.setItem('sd.deck', id) } catch {}
   }
   const goBack = () => setNavStack((s) => s.slice(0, -1))
   const closeOverlay = () => setOverlay(null)
+
+  // Wisch von oben nach unten (aus dem oberen Bildschirmrand) beendet das Vollbild. Verbraucht das
+  // Event NIE — normale Deck-Tipps/Scrolls bleiben unberührt.
+  const onTouchStart = (e) => { const t = e.touches && e.touches[0]; swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null }
+  const onTouchMove = (e) => {
+    if (!fullscreen || !swipeRef.current) return
+    const t = e.touches && e.touches[0]; if (!t) return
+    const s = swipeRef.current, dy = t.clientY - s.y, dx = t.clientX - s.x
+    const vh = (typeof window !== 'undefined' ? window.innerHeight : 800)
+    if (s.y < vh * 0.12 && dy > 70 && dy > Math.abs(dx)) { setFullscreen(false); swipeRef.current = null }
+  }
+  // ⛶ Vollbild-Knopf (rechts in der Deck-Leiste). Im Vollbild selbst ausgeblendet → Rückkehr per Wisch.
+  const FsBtn = () => (
+    <button class="t-fs-btn" title="Vollbild" aria-label="Vollbild"
+            onClick={(e) => { e.stopPropagation(); setFullscreen(true) }}>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M16 3h3a2 2 0 0 1 2 2v3" />
+        <path d="M8 21H5a2 2 0 0 1-2-2v-3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+      </svg>
+    </button>
+  )
 
   // EINHEITLICHER Tap-Handler (Haupt-Raster UND Radial): Ordner → navigieren; sonst → Press.
   const onTap = async (id, evt) => {
@@ -292,13 +334,14 @@ export function TouchDeck() {
   }
 
   return (
-    <div class="t-deck" style={deckStyle}>
+    <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}>
       {navStack.length > 0 ? (
         <div class="t-nav">
           <button class="t-nav-back" onClick={goBack}>‹ Zurück</button>
           <span class="t-nav-crumb">{crumb.join('  ›  ')}</span>
+          <FsBtn />
         </div>
-      ) : (visibleDecks.length > 1 && (
+      ) : visibleDecks.length > 1 ? (
         <div class="t-deck-tabs">
           {visibleDecks.map((dk) => (
             <button key={dk.id} class={'t-deck-tab' + (dk.id === tabSel ? ' active' : '')}
@@ -307,8 +350,11 @@ export function TouchDeck() {
               <span class="t-deck-tab-label">{dk.label || dk.id}</span>
             </button>
           ))}
+          <FsBtn />
         </div>
-      ))}
+      ) : (
+        <div class="t-deck-bar-min"><FsBtn /></div>
+      )}
       {!(active.items || []).length
         ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
         : freeMode ? (

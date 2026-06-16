@@ -222,6 +222,22 @@
 .t-nav-back:active { transform: scale(.96); }
 .t-nav-crumb { color: var(--muted); font-size: 13px; font-weight: 600; }
 
+/* ── Vollbild-Deck (⛶) ──────────────────────────────────────────────
+   Ein ⛶-Knopf rechts in der Deck-Leiste schaltet „nur das aktive Deck".
+   Im Vollbild verschwinden Deck-Auswahl + Knopf; die Host-Hülle blendet via
+   body.dc-deck-fs ihre eigene Navigation aus. Ordner-Zurück (.t-nav) bleibt. */
+.t-fs-btn { margin-left: auto; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; width: 40px; height: 40px; background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.t-fs-btn:hover { border-color: var(--accent); }
+.t-fs-btn:active { transform: scale(.96); }
+.t-deck-bar-min { display: flex; justify-content: flex-end; position: sticky; top: 0; z-index: 5;
+  padding: 2px 0 10px; margin-bottom: 8px; background: var(--bg); }
+body.dc-deck-fs .t-deck-tabs,
+body.dc-deck-fs .t-deck-bar-min,
+body.dc-deck-fs .t-fs-btn { display: none; }
+body.dc-deck-fs .t-deck { padding: 10px; }
+
 /* Radial-Menü (mode=radial): Overlay, Knöpfe fächern im Kreis um den Anker auf. */
 .t-radial-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45);
   backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
