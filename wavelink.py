@@ -205,23 +205,31 @@ class WaveLinkDirect:
         return self._inline_request(ws, "getApplicationInfo")
 
     def _init_subscriptions(self, ws) -> None:
-        """Direkt nach Connect: Meter der HARDWARE-Input-Channels (Mic/Capture-Card) abonnieren.
-        Die senden sonst KEIN ``levelMeterChanged`` — per Default kommen nur Mixes + Software-Channels.
-        Nach dem Abo kommt der Pegel unter der NORMALEN Channel-id im ``channels``-Array → die Fader-
-        Kachel findet ihn ohne Mapping. Software-Channels bleiben unberührt (additives Abo). Synchron
-        VOR dem Dispatch-Loop (Inline-Reads, exklusiv)."""
+        """Direkt nach Connect: Live-Pegel (``levelMeterChanged``) für ALLE Channels UND Mixes
+        abonnieren. Wave Link (per Live-Probe an 3.2.x verifiziert) pusht von sich aus KEINE
+        Meter — jedes Ziel muss explizit abonniert werden, sonst bleibt seine VU-Säule tot:
+          • Channels (Hardware Mic/Capture-Card UND Software-App-Channels) → ``type="channel"``;
+            der Pegel kommt danach unter der normalen Channel-id im ``channels``-Array. ``input``
+            schicken wir zusätzlich mit (No-op für Software, kostet nichts) — so bleiben die schon
+            laufenden Hardware-Meter garantiert unverändert.
+          • Mixes (Personal/Stream/Game-Out/… Busse) → ``type="mix"`` (Pegel im ``mixes``-Array).
+            Genau das fehlte bisher: Mix-Fader (z. B. „Mic Only") schlugen nie aus.
+        Additiv + idempotent. Synchron VOR dem Dispatch-Loop (Inline-Reads, exklusiv)."""
+        def _sub(tid: str, typ: str) -> None:
+            self._inline_id -= 1
+            ws.send(json.dumps({"jsonrpc": "2.0", "id": self._inline_id, "method": "setSubscription",
+                                "params": {"levelMeterChanged": {"id": tid, "subId": "",
+                                                                 "isEnabled": True, "type": typ}}}))
         try:
-            res = self._inline_request(ws, "getChannels")
-            for c in (res or {}).get("channels", []):
+            for c in (self._inline_request(ws, "getChannels") or {}).get("channels", []):
                 cid = c.get("id")
-                if not cid or c.get("type") != "Hardware":
-                    continue
-                # beide Typ-Kandidaten (live verifiziert) — der Meter kommt danach unter der Channel-id.
-                for typ in ("input", "channel"):
-                    self._inline_id -= 1
-                    ws.send(json.dumps({"jsonrpc": "2.0", "id": self._inline_id, "method": "setSubscription",
-                                        "params": {"levelMeterChanged": {"id": cid, "subId": "",
-                                                                         "isEnabled": True, "type": typ}}}))
+                if cid:
+                    for typ in ("input", "channel"):   # Hardware + Software metern unter type="channel"
+                        _sub(cid, typ)
+            for m in (self._inline_request(ws, "getMixes") or {}).get("mixes", []):
+                mid = m.get("id")
+                if mid:
+                    _sub(mid, "mix")                   # Mixes senden NUR mit explizitem type="mix"
         except Exception:  # noqa: BLE001
             pass
 
