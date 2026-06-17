@@ -313,6 +313,13 @@ def build_streamdeck_router(
         return JSONResponse(get_service(request).wavelink_set_main_output(
             b.get("output_device_id", ""), b.get("output_id", "")))
 
+    # ── Windows-Standard-Ausgabegerät (winaudio) — Editor-Dropdown ────────
+    @r.get("/api/winaudio/devices")
+    def winaudio_devices(request: Request) -> JSONResponse:
+        """Aktive Windows-Ausgabegeräte {available, devices:[{id,name}]} fürs Editor-Dropdown
+        (winaudio-Action „Windows-Standard setzen" + winaudio_default-Monitor)."""
+        return JSONResponse(get_service(request).winaudio_devices())
+
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:
         icon_dir = Path(static_dir) / "sd_icons" / "user"

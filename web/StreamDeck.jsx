@@ -31,6 +31,7 @@ const ACTION_LABELS = {
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
   obs: '🎬 OBS (Szene wechseln / Quelle ein-aus / Stream / Aufnahme)',
+  winaudio: '🔊 Windows-Standardgerät setzen (Ausgabe umschalten)',
   flag_toggle: '🚩 Flag umschalten (Fortgeschritten)',
   flag_set: '📌 Flag setzen (Fortgeschritten)',
   http: '🌐 HTTP-Aufruf (Fortgeschritten)',
@@ -52,6 +53,7 @@ const MONITOR_LABELS = {
   obs_source_visible: 'Ist eine OBS-Quelle sichtbar? (an/aus)',
   obs_scene: 'Welche OBS-Szene ist aktiv? (Szenenname)',
   displayfusion_profile: 'Welches DisplayFusion-Profil ist aktiv? (Profilname)',
+  winaudio_default: 'Ist dieses Gerät das Windows-Standard-Ausgabegerät? (an/aus)',
 }
 const MONITOR_INFO = {
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
@@ -68,6 +70,7 @@ const MONITOR_INFO = {
   obs_source_visible: { text: 'Liefert AN (sichtbar) oder AUS (ausgeblendet). Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
   obs_scene: { text: 'Liefert den Namen der aktiven OBS-Szene. Nutze „= gleich" + Szenenname → der Button hebt sich hervor, wenn SEINE Szene gerade aktiv ist.', values: null, bool: false },
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
+  winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -967,6 +970,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const [obsSources, setObsSources] = useState([])
   const [eaActions, setEaActions] = useState([])
   const [dfProfiles, setDfProfiles] = useState([])
+  const [winDevs, setWinDevs] = useState([])
   const [picking, setPicking] = useState(false)
   const [pickMsg, setPickMsg] = useState(null)
   const [deckOpts, setDeckOpts] = useState(options.decks || [])   // Ziel-Deck-Liste (open_deck), lokal aktualisierbar
@@ -982,6 +986,8 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       .then((d) => setEaActions(d.actions || [])).catch(() => {})
     if (t === 'displayfusion') getJSON('/api/displayfusion/profiles')
       .then((d) => setDfProfiles(d.profiles || [])).catch(() => {})
+    if (t === 'winaudio') getJSON('/api/winaudio/devices')
+      .then((d) => setWinDevs(d.devices || [])).catch(() => {})
   }, [t])
   const pickFile = async () => {
     setPicking(true); setPickMsg(null)
@@ -1252,6 +1258,31 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
           )}
         </>
       )}
+      {t === 'winaudio' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Gerät</span>
+            <select class="reward-input" value={action.device_name || ''}
+                    onChange={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value, device_id: undefined })}>
+              <option value="">— wählen —</option>
+              {winDevs.map((d) => <option value={d.name}>{d.name}</option>)}
+            </select>
+          </div>
+          {!winDevs.length && (
+            <div class="reward-row">
+              <span class="muted conn-label">Gerätename</span>
+              <input class="reward-input" placeholder="Teil des Namens, z. B. ROG CETRA / Realtek USB"
+                     value={action.device_name || ''}
+                     onInput={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value })} />
+            </div>
+          )}
+          <p class="muted sd-help">Schaltet beim Druck das <b>Windows-Standard-Ausgabegerät</b> auf dieses Gerät
+            (z. B. Kopfhörer ⟷ Lautsprecher). Erkannt über den <b>Namen</b> (robust gegen wechselnde Geräte-IDs
+            beim Neu-Einstecken). Tipp: unten Überwachung „Ist dieses Gerät das Windows-Standardgerät?" mit
+            demselben Gerät → der Button leuchtet grün, wenn es aktiv ist.
+            {winDevs.length ? '' : ' (Geräteliste leer — läuft die App auf diesem PC? Sonst Namen oben eintippen.)'}</p>
+        </>
+      )}
     </div>
   )
 }
@@ -1261,10 +1292,12 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
   const info = MONITOR_INFO[t]
   const [obsSources, setObsSources] = useState([])
   const [hwSensors, setHwSensors] = useState([])
+  const [winDevs, setWinDevs] = useState([])
   const [pmStatus, setPmStatus] = useState(null)
   useEffect(() => {
     if (t === 'obs_source_visible') getJSON('/api/obs/scene_items').then((d) => setObsSources(d.sources || [])).catch(() => {})
     if (t === 'hwinfo') getJSON('/api/hwinfo/sensors').then((d) => setHwSensors(d.sensors || [])).catch(() => {})
+    if (t === 'winaudio_default') getJSON('/api/winaudio/devices').then((d) => setWinDevs(d.devices || [])).catch(() => {})
     if (t === 'fps' || t === 'frametime') getJSON('/api/frametime/status').then(setPmStatus).catch(() => {})
   }, [t])
   return (
@@ -1370,6 +1403,25 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
           <input class="so-delay" style="width:140px" placeholder="leer = automatisch"
                  value={monitor.scene || ''} onInput={(e) => onChange({ scene: e.currentTarget.value })} />
         </div>
+      )}
+      {t === 'winaudio_default' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Gerät</span>
+            <select class="reward-input" value={monitor.device_name || ''}
+                    onChange={(e) => onChange({ device_name: e.currentTarget.value, device_id: undefined })}>
+              <option value="">— wählen —</option>
+              {winDevs.map((d) => <option value={d.name}>{d.name}</option>)}
+            </select>
+          </div>
+          {!winDevs.length && (
+            <div class="reward-row">
+              <span class="muted conn-label">Gerätename</span>
+              <input class="reward-input" placeholder="Teil des Namens, z. B. ROG CETRA / Realtek USB"
+                     value={monitor.device_name || ''} onInput={(e) => onChange({ device_name: e.currentTarget.value })} />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

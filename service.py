@@ -1351,6 +1351,11 @@ class DeckCoreService:
         """{available, default} — aktueller Windows-Standard-Render-Endpoint + ob steuerbar."""
         return {"available": self._winaudio.available(), "default": self._winaudio_default_id()}
 
+    def winaudio_devices(self) -> dict:
+        """Aktive Windows-Ausgabegeräte ``{available, devices:[{id,name}]}`` fürs Editor-Dropdown
+        (winaudio-Action „Standard setzen" + winaudio_default-Monitor). Leer, wenn nicht verfügbar."""
+        return {"available": self._winaudio.available(), "devices": self._winaudio_devices() or []}
+
     def winaudio_set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:
         """Windows-Standard-Ausgabegerät setzen (Cache danach invalidieren → Statuslicht frisch)."""
         res = self._winaudio.set_default(device_id, roles=tuple(roles))
