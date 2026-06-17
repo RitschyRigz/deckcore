@@ -515,6 +515,8 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   const [obsMsg, setObsMsg] = useState(null)
   const [dfBusy, setDfBusy] = useState(false)
   const [dfMsg, setDfMsg] = useState(null)
+  const [wlBusy, setWlBusy] = useState(false)
+  const [wlMsg, setWlMsg] = useState(null)
 
   const layout = { ...L_DEF, ...(deck.layout || {}) }
   const free = !!layout.free
@@ -584,6 +586,19 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
     } catch (e) { setDfMsg({ ok: false, t: String(e.message || e) }) }
     setDfBusy(false)
   }
+  // Wave-Link-Fader/Ausgänge aus der laufenden Wave-Link-App in DIESES Deck (idempotent).
+  const importWavelink = async () => {
+    setWlBusy(true); setWlMsg(null)
+    try {
+      const r = await postJSON('/api/streamdeck/wavelink/build', { deck_id: deck.id })
+      setWlMsg({ ok: true, t: `${r.created} neu · ${r.updated} aktualisiert (${r.mixes} Mixes · ${r.channels} Channels · ${r.outputs} Ausgänge)` })
+      onReload && onReload()
+    } catch (e) {
+      const m = String(e.message || e)
+      setWlMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.' : m })
+    }
+    setWlBusy(false)
+  }
 
   const size = (layout.button_size || 116) + 'px'
   const gridCols = layout.cols > 0 ? `repeat(${layout.cols}, 1fr)` : `repeat(auto-fill, minmax(${size}, 1fr))`
@@ -608,9 +623,14 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
               {dfBusy ? '… lädt DF' : '🖥 DisplayFusion-Profile importieren'}
             </button>
           )}
+          <button class="btn ghost small" disabled={wlBusy} onClick={importWavelink}
+                  title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler in DIESES Deck. Idempotent.">
+            {wlBusy ? '… liest Wave Link' : '🎚 Wave-Link-Fader importieren'}
+          </button>
           <InlineAdd label="➕ Kategorie" placeholder="Neue Kategorie" onAdd={addCat} />
           {obsMsg && <span class={'msg ' + (obsMsg.ok ? 'ok' : 'err')}>{obsMsg.t}</span>}
           {dfMsg && <span class={'msg ' + (dfMsg.ok ? 'ok' : 'err')}>{dfMsg.t}</span>}
+          {wlMsg && <span class={'msg ' + (wlMsg.ok ? 'ok' : 'err')}>{wlMsg.t}</span>}
         </span>
       </div>
 
@@ -692,14 +712,22 @@ function PoolList({ buttons, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
   const [genBusy, setGenBusy] = useState('')
   const [genMsg, setGenMsg] = useState(null)
-  // Presets NUR in den Pool generieren (keine Deck-Platzierung) — danach auf Decks/Ordner ziehen.
+  // Presets generieren: OBS/DisplayFusion NUR in den Pool; Wave Link baut ein komplettes Fader-Deck.
   const gen = async (kind) => {
     setGenBusy(kind); setGenMsg(null)
     try {
-      const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
-      setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
+      if (kind === 'wl') {
+        const r = await postJSON('/api/streamdeck/wavelink/build', {})
+        setGenMsg({ ok: true, t: `Wave-Link-Deck: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.mixes || 0} Mixes · ${r.channels || 0} Channels · ${r.outputs || 0} Ausgänge) — Tab „Wave Link"` })
+      } else {
+        const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
+        setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
+      }
       onReload && onReload()
-    } catch (e) { setGenMsg({ ok: false, t: String(e.message || e) }) }
+    } catch (e) {
+      const m = String(e.message || e)
+      setGenMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.' : m })
+    }
     setGenBusy('')
   }
   return (
@@ -709,6 +737,7 @@ function PoolList({ buttons, resolved, options, onReload }) {
         <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
         {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
+        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und baut ein komplettes Wave-Link-Deck: pro Mix/Channel einen Fader + pro Ausgang einen Wähler. Idempotent.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
         {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
