@@ -320,6 +320,12 @@ def build_streamdeck_router(
         (winaudio-Action „Windows-Standard setzen" + winaudio_default-Monitor)."""
         return JSONResponse(get_service(request).winaudio_devices())
 
+    @r.post("/api/streamdeck/preset")
+    def streamdeck_preset(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Editor-Vorlage für eine Aktion: {monitor, states, default} (+ render?) — füllt Symbol +
+        Logik vor. Body {action:{…}}."""
+        return JSONResponse(get_service(request).button_preset((body or {}).get("action") or {}))
+
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:
         icon_dir = Path(static_dir) / "sd_icons" / "user"

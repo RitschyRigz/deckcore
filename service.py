@@ -98,6 +98,7 @@ from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, 
 from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
 from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
+from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
 
 log = logging.getLogger("deckcore")
 
@@ -1355,6 +1356,17 @@ class DeckCoreService:
         """Aktive Windows-Ausgabegeräte ``{available, devices:[{id,name}]}`` fürs Editor-Dropdown
         (winaudio-Action „Standard setzen" + winaudio_default-Monitor). Leer, wenn nicht verfügbar."""
         return {"available": self._winaudio.available(), "devices": self._winaudio_devices() or []}
+
+    def button_preset(self, action: dict) -> dict:
+        """Editor-Vorlage für eine Aktion: ``{monitor, states, default}`` (+ optional ``render``) —
+        füllt Überwachung + Zustands-Logik + Symbol „preset-mäßig" vor. Eine Wahrheit mit den
+        Generatoren (``deckcore/presets.py``)."""
+        a = action or {}
+        deck_label = None
+        if a.get("type") == "open_deck":
+            d = self._deck(a.get("deck", ""))
+            deck_label = d.get("label") if d else None
+        return _button_preset(a, deck_label=deck_label)
 
     def winaudio_set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:
         """Windows-Standard-Ausgabegerät setzen (Cache danach invalidieren → Statuslicht frisch)."""

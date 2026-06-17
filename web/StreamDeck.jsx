@@ -31,6 +31,7 @@ const ACTION_LABELS = {
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
   obs: '🎬 OBS (Szene wechseln / Quelle ein-aus / Stream / Aufnahme)',
+  wavelink: '🎚 Wave Link (Mix/Channel: Mute / Level / Main-Output)',
   winaudio: '🔊 Windows-Standardgerät setzen (Ausgabe umschalten)',
   flag_toggle: '🚩 Flag umschalten (Fortgeschritten)',
   flag_set: '📌 Flag setzen (Fortgeschritten)',
@@ -875,10 +876,36 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
   const [b, setB] = useState(() => JSON.parse(JSON.stringify(button)))
   const [msg, setMsg] = useState(null)
   const [busy, setBusy] = useState(false)
+  // Vorlage/Preset: füllt Überwachung + Zustände + Symbol passend zur Aktion vor. AUTO bei neuen
+  // Buttons; sobald der User Überwachung/Zustände/Standard selbst ändert, stoppt das Auto-Füllen.
+  const [presetOn, setPresetOn] = useState(!!isNew)
+  const stopPreset = () => setPresetOn(false)
   const set = (patch) => setB({ ...b, ...patch })
   const setAction = (patch) => setB({ ...b, action: { ...b.action, ...patch } })
-  const setMonitor = (patch) => setB({ ...b, monitor: { ...b.monitor, ...patch } })
-  const setDefault = (patch) => setB({ ...b, default: { ...b.default, ...patch } })
+  const setMonitor = (patch) => { stopPreset(); setB({ ...b, monitor: { ...b.monitor, ...patch } }) }
+  const setDefault = (patch) => { stopPreset(); setB({ ...b, default: { ...b.default, ...patch } }) }
+  const applyPresetData = (p) => {
+    if (!p) return
+    setB((cur) => ({
+      ...cur,
+      monitor: p.monitor ? p.monitor : cur.monitor,
+      states: Array.isArray(p.states) ? p.states : cur.states,
+      default: { ...cur.default, ...(p.default || {}) },
+      ...(p.render !== undefined ? { render: p.render || undefined } : {}),
+    }))
+  }
+  const actionSig = JSON.stringify(b.action)
+  useEffect(() => {
+    if (!presetOn || (((b.action || {}).type) || 'none') === 'none') return
+    let cancelled = false
+    postJSON('/api/streamdeck/preset', { action: b.action })
+      .then((p) => { if (!cancelled) applyPresetData(p) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [actionSig, presetOn])
+  const applyPresetNow = async () => {
+    setPresetOn(true)
+    try { applyPresetData(await postJSON('/api/streamdeck/preset', { action: b.action })) } catch (e) { /* noop */ }
+  }
 
   const save = async () => {
     const id = (b.id || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_')
@@ -907,13 +934,20 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
             label: b.label || info.name,
             default: { ...b.default, image: info.icon_url || (b.default || {}).image, title: (b.default || {}).title || info.name },
           })} />
-        <MonitorEditor monitor={b.monitor} options={options} onChange={setMonitor} replace={(m) => set({ monitor: m })} />
+        <div class="reward-row" style="margin:6px 0 2px">
+          <button class="btn ghost small" type="button" onClick={applyPresetNow}
+                  title="Füllt Überwachung, Zustands-Logik und ein passendes Symbol zur gewählten Aktion vor — danach kannst du alles anpassen.">✨ Vorlage anwenden</button>
+          <span class="muted" style="font-size:12px">{presetOn
+            ? 'füllt Symbol + Logik automatisch — sobald du unten etwas änderst, hört das auf.'
+            : 'füllt Überwachung, Zustände + passendes Symbol zur Aktion vor.'}</span>
+        </div>
+        <MonitorEditor monitor={b.monitor} options={options} onChange={setMonitor} replace={(m) => { stopPreset(); set({ monitor: m }) }} />
         <RefreshOverride value={b.refresh_seconds} options={options} onChange={(v) => set({ refresh_seconds: v })} />
         <StatesEditor states={b.states} def={b.default} options={options} monitor={b.monitor}
                       render={b.render} opts={b.opts}
-                      onRender={(r) => set({ render: r === 'value' ? undefined : r })}
-                      onOpts={(o) => set({ opts: o })}
-                      onStates={(s) => set({ states: s })} onDefault={setDefault} />
+                      onRender={(r) => { stopPreset(); set({ render: r === 'value' ? undefined : r }) }}
+                      onOpts={(o) => { stopPreset(); set({ opts: o }) }}
+                      onStates={(s) => { stopPreset(); set({ states: s }) }} onDefault={setDefault} />
         <div class="card-foot row">
           <button class="btn" disabled={busy} onClick={save}>{isNew ? 'Anlegen' : 'Speichern'}</button>
           {onCancel && <button class="btn ghost small" onClick={onCancel}>Abbrechen</button>}
