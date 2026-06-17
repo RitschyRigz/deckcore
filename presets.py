@@ -42,6 +42,13 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
 
     # ── Audio (generisch) ────────────────────────────────────────────────
     if t == "winaudio":
+        sub = a.get("wa_action") or "set_default"
+        if sub in ("set_volume", "toggle_mute"):
+            # Lautstärke-Regler: vertikaler Fader + Live-VU. Das Gerät steht an der AKTION (device_id/
+            # device_name); der Monitor liest es von dort → hier KEIN Gerät im Monitor.
+            return {"render": "fader",
+                    "monitor": {"type": "winaudio_volume"},
+                    "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": GREEN}}
         name = a.get("device_name") or "Gerät"
         return {"monitor": {"type": "winaudio_default", "device_name": a.get("device_name", "")},
                 "states": [_state("truthy", None, "🔊", name)],
@@ -92,6 +99,16 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
     if t == "open_deck":
         return {"monitor": {"type": "none"}, "states": [],
                 "default": {"icon": "📁", "title": deck_label or "Ordner", "color": GREY}}
+
+    if t == "open_folder":
+        # Titel = letzter Pfad-Bestandteil (z.B. „Desktop"); `shell:Downloads` → „Downloads".
+        raw = (a.get("path") or "").strip().strip('"').rstrip("\\/")
+        if raw.lower().startswith("shell:"):
+            name = raw.split(":", 1)[1] or "Ordner"
+        else:
+            name = raw.replace("/", "\\").split("\\")[-1] if raw else "Ordner"
+        return {"monitor": {"type": "none"}, "states": [],
+                "default": {"icon": "📂", "title": name or "Ordner", "color": GREY}}
 
     if t == "launch":
         # Symbol/Titel kommen i.d.R. aus der Datei-Icon-Extraktion (pick_file) → hier nur Fallback,

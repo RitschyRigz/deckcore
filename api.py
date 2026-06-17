@@ -237,6 +237,22 @@ def build_streamdeck_router(
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)
 
+    @r.post("/api/streamdeck/winaudio/build")
+    def streamdeck_winaudio_build(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Legt den „allgemeinen Windows-Lautstärke-Regler" (Master-Fader + VU) ins Deck.
+        Legt das Deck an, wenn keins angegeben/vorhanden (Default-Label „Audio")."""
+        svc = get_service(request)
+        b = body or {}
+        deck_id = (b.get("deck_id") or "").strip()
+        if not deck_id:
+            label = (b.get("deck_label") or "Audio").strip() or "Audio"
+            existing = next((d for d in svc.decks() if d["label"].lower() == label.lower()), None)
+            deck_id = existing["id"] if existing else svc.add_deck(label, b.get("deck_icon") or "🔊")["id"]
+        res = svc.populate_winaudio_volume(deck_id)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
+        return JSONResponse(res)
+
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Button-Pool-Ansicht ──
     @r.post("/api/streamdeck/generate/displayfusion")
     def streamdeck_generate_df(request: Request) -> JSONResponse:
@@ -320,11 +336,63 @@ def build_streamdeck_router(
         (winaudio-Action „Windows-Standard setzen" + winaudio_default-Monitor)."""
         return JSONResponse(get_service(request).winaudio_devices())
 
+    # ── Windows-Master-Lautstärke + VU (Volume-Fader-Kachel) ──────────────
+    @r.get("/api/winaudio/volume")
+    def winaudio_volume(request: Request) -> JSONResponse:
+        """{available, level(0..100), muted, peak(0..1)} des Master-Reglers — das Panel pollt das
+        schnell fürs Live-VU + den Reglerstand. ``?device=<id>`` = bestimmtes Gerät (sonst Standard)."""
+        dev = request.query_params.get("device") or ""
+        return JSONResponse(get_service(request).winaudio_volume(dev))
+
+    @r.post("/api/winaudio/volume")
+    def winaudio_set_volume(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Stufenloser Master-Fader: Lautstärke (0..100) setzen. {level, device_id?}"""
+        b = body or {}
+        if "level" not in b:
+            raise HTTPException(status_code=400, detail="level erforderlich")
+        return JSONResponse(get_service(request).winaudio_set_volume(b.get("level"), b.get("device_id", "")))
+
+    @r.post("/api/winaudio/mute")
+    def winaudio_set_mute(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Master-Mute setzen/umschalten. {muted?, device_id?} (muted weglassen = toggle)."""
+        b = body or {}
+        return JSONResponse(get_service(request).winaudio_set_mute(b.get("muted"), b.get("device_id", "")))
+
     @r.post("/api/streamdeck/preset")
     def streamdeck_preset(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Editor-Vorlage für eine Aktion: {monitor, states, default} (+ render?) — füllt Symbol +
         Logik vor. Body {action:{…}}."""
         return JSONResponse(get_service(request).button_preset((body or {}).get("action") or {}))
+
+    @r.post("/api/streamdeck/pick_folder")
+    async def streamdeck_pick_folder() -> JSONResponse:
+        """Nativer Ordner-Dialog (Windows) für die open_folder-Aktion. {path, name} (cancelled=true)."""
+        ps = r'''
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.FolderBrowserDialog
+$f.Description = 'Ordner waehlen'
+if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
+(@{ path = $f.SelectedPath } | ConvertTo-Json -Compress)
+'''
+        import subprocess
+
+        def _run() -> str:
+            try:
+                pr = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps],
+                                    capture_output=True, text=True, timeout=180,
+                                    creationflags=0x08000000)
+                return (pr.stdout or "").strip()
+            except Exception:  # noqa: BLE001
+                return ""
+        out = await asyncio.to_thread(_run)
+        try:
+            data = json.loads(out) if out else {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return JSONResponse({"ok": False, "cancelled": True})
+        return JSONResponse({"ok": True, "path": path, "name": Path(path).name})
 
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:

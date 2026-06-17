@@ -24,6 +24,7 @@ const ACTION_LABELS = {
   events_action: '⭐ Action auslösen (aus Events & Actions)',
   process_action: '🟢 Prozess-Aktion (start/stop/toggle/mute)',
   launch: '🚀 Programm/Script starten (beliebige .exe/.py/.lnk …)',
+  open_folder: '📂 Ordner im Explorer öffnen (beliebiger Pfad)',
   open_deck: '📁 Ordner öffnen (Sub-Deck / Radial-Menü)',
   displayfusion: '🖥 DisplayFusion — Monitor-Profil laden',
   media: '⏯ Media-Taste (Play/Pause · ⏭⏮ · Lauter/Leiser · Mute)',
@@ -55,6 +56,7 @@ const MONITOR_LABELS = {
   obs_scene: 'Welche OBS-Szene ist aktiv? (Szenenname)',
   displayfusion_profile: 'Welches DisplayFusion-Profil ist aktiv? (Profilname)',
   winaudio_default: 'Ist dieses Gerät das Windows-Standard-Ausgabegerät? (an/aus)',
+  winaudio_volume: 'Windows-Lautstärke (0..100) — Master-Regler + VU',
 }
 const MONITOR_INFO = {
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
@@ -72,6 +74,7 @@ const MONITOR_INFO = {
   obs_scene: { text: 'Liefert den Namen der aktiven OBS-Szene. Nutze „= gleich" + Szenenname → der Button hebt sich hervor, wenn SEINE Szene gerade aktiv ist.', values: null, bool: false },
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
   winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
+  winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -338,7 +341,7 @@ function DeckLayout({ deck, onReload }) {
       <div class="sd-lay-ctl">
         <label>Spalten
           <select value={lay.cols} onChange={(e) => save({ cols: Number(e.currentTarget.value) }, true)}>
-            <option value="0">Auto</option>{[1, 2, 3, 4, 5, 6, 7, 8].map((n) => <option value={n}>{n}</option>)}
+            <option value="0">Auto</option>{Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option value={n}>{n}</option>)}
           </select>
         </label>
         <label>Größe <input type="range" min="60" max="200" step="2" value={lay.button_size}
@@ -396,8 +399,8 @@ function ItemInspector({ deck, item, onReload }) {
         <Sel k="title_pos" label="Titel-Position" opts={[['inherit', 'unten'], ['bottom', 'unten'], ['top', 'oben']]} />
       </div>
       <div class="sd-lay-ctl" style="margin-top:8px">
-        <Span k="w" label="Breite (Spalten)" max={4} />
-        <Span k="h" label="Höhe (Reihen)" max={3} />
+        <Span k="w" label="Breite (Spalten)" max={6} />
+        <Span k="h" label="Höhe (Reihen)" max={6} />
       </div>
       <p class="muted sd-help" style="margin:6px 0 0">⚠ Größe gilt <b>nur im Touch-Panel</b> (z. B. breite Graph-/Sensor-Kachel). Auf einem echten Stream Deck bleibt der Button immer <b>1×1</b> (Icon + Wert) — die Größe wird dort ignoriert.</p>
       <p class="muted sd-help" style="margin:6px 0 0">Der „Titel" ist der große Text (aus „Aussehen → Standard/Status"); er liegt bei Bild-Buttons als Overlay oben oder unten drauf — wie im Stream Deck.</p>
@@ -464,12 +467,22 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
     <div>
       <div class="sd-wys-head-row">
         <span class="muted" style="font-size:12px">🧩 <b>Frei platzieren</b> — Kacheln ziehen, an der <b>Ecke unten-rechts</b> ziehen = vergrößern. Speichert automatisch. ⚠ Position/Größe gelten NUR im Touch-Panel; ein echtes Stream Deck zeigt jeden Button 1×1.</span>
-        <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
+        <span class="sd-inline">
+          <label class="muted" style="font-size:12px;display:inline-flex;gap:6px;align-items:center">Spalten
+            <select class="so-delay" value={layout.cols || 0}
+                    onChange={(e) => postJSON(`/api/streamdeck/deck/${deck.id}/layout`, { ...layout, cols: Number(e.currentTarget.value) }).then(() => onReload && onReload()).catch(() => {})}>
+              <option value="0">Auto (6)</option>
+              {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option value={n}>{n}</option>)}
+            </select>
+          </label>
+          <button class="btn ghost small" onClick={onExit} title="Zurück zum Kategorie-Raster (Positionen bleiben gespeichert)">↩ Kategorie-Raster</button>
+        </span>
       </div>
       <div class="sd-free" style={`--sd-size:${cell}px;--sd-font:${layout.font_scale || 1};max-width:${cols * (cell + 6) + 8}px`}
            onDragOver={(e) => { if (dragId.current) e.preventDefault() }}
            onDrop={(e) => { e.preventDefault(); const bid = dragId.current; dragId.current = null; if (bid && !inDeck.has(bid)) dropAt(bid, e.clientX, e.clientY) }}>
-        <div class="grid-stack sd-gs" ref={elRef} key={deck.id + ':' + items.length}>
+        <div class="grid-stack sd-gs" ref={elRef} key={deck.id + ':' + items.length}
+             style={`min-width:${cols * cell + (cols + 1) * 5}px`}>
           {items.map((it) => {
             const w = Math.min(cols, Math.max(1, it.w || 1)), h = Math.max(1, it.h || 1)
             const attrs = { 'gs-id': it.button, 'gs-w': w, 'gs-h': h, 'gs-max-w': cols }
@@ -518,6 +531,8 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   const [dfMsg, setDfMsg] = useState(null)
   const [wlBusy, setWlBusy] = useState(false)
   const [wlMsg, setWlMsg] = useState(null)
+  const [waBusy, setWaBusy] = useState(false)
+  const [waMsg, setWaMsg] = useState(null)
 
   const layout = { ...L_DEF, ...(deck.layout || {}) }
   const free = !!layout.free
@@ -600,6 +615,19 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
     }
     setWlBusy(false)
   }
+  // Allgemeinen Windows-Lautstärke-Regler (Master-Fader + VU) in DIESES Deck (idempotent).
+  const importWinaudio = async () => {
+    setWaBusy(true); setWaMsg(null)
+    try {
+      const r = await postJSON('/api/streamdeck/winaudio/build', { deck_id: deck.id })
+      setWaMsg({ ok: true, t: r.created ? 'Lautstärke-Fader angelegt ✓' : 'schon vorhanden ✓' })
+      onReload && onReload()
+    } catch (e) {
+      const m = String(e.message || e)
+      setWaMsg({ ok: false, t: m === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).' : m })
+    }
+    setWaBusy(false)
+  }
 
   const size = (layout.button_size || 116) + 'px'
   const gridCols = layout.cols > 0 ? `repeat(${layout.cols}, 1fr)` : `repeat(auto-fill, minmax(${size}, 1fr))`
@@ -628,10 +656,15 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
                   title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler in DIESES Deck. Idempotent.">
             {wlBusy ? '… liest Wave Link' : '🎚 Wave-Link-Fader importieren'}
           </button>
+          <button class="btn ghost small" disabled={waBusy} onClick={importWinaudio}
+                  title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU in DIESES Deck (folgt dem Standard-Ausgabegerät). Idempotent.">
+            {waBusy ? '… Windows-Audio' : '🔊 Windows-Lautstärke-Fader'}
+          </button>
           <InlineAdd label="➕ Kategorie" placeholder="Neue Kategorie" onAdd={addCat} />
           {obsMsg && <span class={'msg ' + (obsMsg.ok ? 'ok' : 'err')}>{obsMsg.t}</span>}
           {dfMsg && <span class={'msg ' + (dfMsg.ok ? 'ok' : 'err')}>{dfMsg.t}</span>}
           {wlMsg && <span class={'msg ' + (wlMsg.ok ? 'ok' : 'err')}>{wlMsg.t}</span>}
+          {waMsg && <span class={'msg ' + (waMsg.ok ? 'ok' : 'err')}>{waMsg.t}</span>}
         </span>
       </div>
 
@@ -675,6 +708,18 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
                             <button class="sd-tile-act" title="vom Deck nehmen"
                                     onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
                           </span>
+                          {sel === it.button && (
+                            <div class="sd-tile-size" onClick={(e) => e.stopPropagation()}
+                                 title="Kachelgröße — Spalten × Reihen (nur Touch-Panel; echtes Stream Deck bleibt 1×1)">
+                              <select value={sw} onChange={(e) => patchItem(it.button, { w: +e.currentTarget.value, h: sh }).then(() => onReload && onReload())}>
+                                {[1, 2, 3, 4, 5, 6].map((n) => <option value={n}>{n}</option>)}
+                              </select>
+                              <span class="sd-tile-x">×</span>
+                              <select value={sh} onChange={(e) => patchItem(it.button, { w: sw, h: +e.currentTarget.value }).then(() => onReload && onReload())}>
+                                {[1, 2, 3, 4, 5, 6].map((n) => <option value={n}>{n}</option>)}
+                              </select>
+                            </div>
+                          )}
                         </div>
                       )
                     })}
@@ -713,13 +758,16 @@ function PoolList({ buttons, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
   const [genBusy, setGenBusy] = useState('')
   const [genMsg, setGenMsg] = useState(null)
-  // Presets generieren: OBS/DisplayFusion NUR in den Pool; Wave Link baut ein komplettes Fader-Deck.
+  // Presets generieren: OBS/DisplayFusion NUR in den Pool; Wave Link / Windows-Lautstärke bauen ein Fader-Deck.
   const gen = async (kind) => {
     setGenBusy(kind); setGenMsg(null)
     try {
       if (kind === 'wl') {
         const r = await postJSON('/api/streamdeck/wavelink/build', {})
         setGenMsg({ ok: true, t: `Wave-Link-Deck: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.mixes || 0} Mixes · ${r.channels || 0} Channels · ${r.outputs || 0} Ausgänge) — Tab „Wave Link"` })
+      } else if (kind === 'wa') {
+        const r = await postJSON('/api/streamdeck/winaudio/build', {})
+        setGenMsg({ ok: true, t: `Windows-Lautstärke-Fader angelegt (${r.created || 0} neu) — Tab „Audio"` })
       } else {
         const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
         setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
@@ -727,7 +775,8 @@ function PoolList({ buttons, resolved, options, onReload }) {
       onReload && onReload()
     } catch (e) {
       const m = String(e.message || e)
-      setGenMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.' : m })
+      setGenMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.'
+        : m === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).' : m })
     }
     setGenBusy('')
   }
@@ -739,6 +788,7 @@ function PoolList({ buttons, resolved, options, onReload }) {
         {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und baut ein komplettes Wave-Link-Deck: pro Mix/Channel einen Fader + pro Ausgang einen Wähler. Idempotent.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
+        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wa')} title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU an (Tab Audio). Folgt automatisch dem Standard-Ausgabegerät.">{genBusy === 'wa' ? '… Windows' : '🔊 Windows-Lautstärke-Fader'}</button>
         {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
@@ -1064,6 +1114,17 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
     } catch (e) { setPickMsg({ ok: false, t: 'Auswahl fehlgeschlagen: ' + (e.message || e) }) }
     setPicking(false)
   }
+  const pickFolder = async () => {
+    setPicking(true); setPickMsg(null)
+    try {
+      const r = await postJSON('/api/streamdeck/pick_folder', {})
+      if (r && r.cancelled) { setPicking(false); return }
+      if (!r || !r.ok || !r.path) throw new Error('kein Ordner')
+      onChange({ path: r.path })
+      setPickMsg({ ok: true, t: 'Ordner übernommen: ' + r.path })
+    } catch (e) { setPickMsg({ ok: false, t: 'Auswahl fehlgeschlagen: ' + (e.message || e) }) }
+    setPicking(false)
+  }
   // open_deck-Preset: einen befüllten Ordner anlegen (DisplayFusion-Profile / OBS-Szenen) und
   // direkt als Ziel dieses Ordner-Buttons setzen. Die Deck-Liste lokal nachladen, damit das
   // Dropdown den frischen Ordner sofort zeigt.
@@ -1169,6 +1230,28 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
           <p class="muted sd-help">Startet beim Druck das gewählte Programm/Script (eigener Prozess).
             „📂 Datei wählen" öffnet den Datei-Dialog auf dem Stream-PC und übernimmt — wenn möglich —
             gleich Icon + Name in „Aussehen → Standard".</p>
+        </>
+      )}
+      {t === 'open_folder' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Ordner</span>
+            <input class="reward-input" placeholder="z. B. C:/Spiele  ·  %USERPROFILE%/Desktop  ·  shell:Desktop"
+                   value={action.path || ''} onInput={(e) => onChange({ path: e.currentTarget.value })} />
+            <button class="btn ghost small" disabled={picking} onClick={pickFolder}>{picking ? '… wählt' : '📂 Ordner wählen'}</button>
+          </div>
+          <div class="reward-row">
+            <span class="muted conn-label">Schnell</span>
+            <button class="btn ghost small" onClick={() => onChange({ path: 'shell:Desktop' })}>Desktop</button>
+            <button class="btn ghost small" onClick={() => onChange({ path: 'shell:Downloads' })}>Downloads</button>
+            <button class="btn ghost small" onClick={() => onChange({ path: 'shell:Personal' })}>Dokumente</button>
+          </div>
+          {pickMsg && <p class={'sd-help ' + (pickMsg.ok ? 'msg ok' : 'msg err')}>{pickMsg.t}</p>}
+          <p class="muted sd-help">Öffnet beim Druck den <b>Windows-Explorer</b> direkt in diesem Ordner
+            (z. B. den Desktop, wenn die Symbole ausgeblendet sind). Erlaubt sind feste Pfade,
+            <code>%ENV%</code>-Variablen (z. B. <code>%USERPROFILE%/Desktop</code>) und <code>shell:</code>-Kürzel
+            (<code>shell:Desktop</code>, <code>shell:Downloads</code>). Zeigt der Pfad auf eine Datei, wird sie im
+            Ordner markiert.</p>
         </>
       )}
       {t === 'displayfusion' && (
@@ -1324,26 +1407,62 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       {t === 'winaudio' && (
         <>
           <div class="reward-row">
-            <span class="muted conn-label">Gerät</span>
-            <select class="reward-input" value={action.device_name || ''}
-                    onChange={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value, device_id: undefined })}>
-              <option value="">— wählen —</option>
-              {winDevs.map((d) => <option value={d.name}>{d.name}</option>)}
+            <span class="muted conn-label">Modus</span>
+            <select class="reward-input"
+                    value={['set_volume', 'toggle_mute'].includes(action.wa_action) ? 'volume' : 'set_default'}
+                    onChange={(e) => replace(e.currentTarget.value === 'volume'
+                      ? { type: 'winaudio', wa_action: 'toggle_mute' }
+                      : { type: 'winaudio', wa_action: 'set_default' })}>
+              <option value="set_default">Standard-Ausgabegerät umschalten</option>
+              <option value="volume">🎚 Lautstärke-Regler (Fader + VU)</option>
             </select>
           </div>
-          {!winDevs.length && (
-            <div class="reward-row">
-              <span class="muted conn-label">Gerätename</span>
-              <input class="reward-input" placeholder="Teil des Namens, z. B. ROG CETRA / Realtek USB"
-                     value={action.device_name || ''}
-                     onInput={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value })} />
-            </div>
+          {['set_volume', 'toggle_mute'].includes(action.wa_action) ? (
+            <>
+              <div class="reward-row">
+                <span class="muted conn-label">Gerät</span>
+                <select class="reward-input" value={action.device_id || ''}
+                        onChange={(e) => {
+                          const id = e.currentTarget.value
+                          const dev = winDevs.find((d) => d.id === id)
+                          onChange({ wa_action: 'toggle_mute', device_id: id || undefined, device_name: dev ? dev.name : undefined })
+                          if (onPicked) onPicked({ name: dev ? dev.name : 'Windows-Lautstärke' })
+                        }}>
+                  <option value="">🔊 Windows-Hauptlautstärke (Standard)</option>
+                  {winDevs.map((d) => <option value={d.id}>{d.name}</option>)}
+                </select>
+              </div>
+              <p class="muted sd-help">Vertikaler <b>Lautstärke-Regler + Live-VU</b> (oben <b>Darstellung → 🎚 Fader</b>
+                bzw. „✨ Vorlage anwenden"; Tippen = Stumm). <b>Leer</b> = die allgemeine Windows-Lautstärke (folgt dem
+                Standardgerät), oder ein <b>bestimmtes</b> Ausgabegerät. Den <b>Anzeigenamen</b> setzt du oben im Feld
+                „Name". <b>Mehrere</b> Fader (für mehrere Geräte): einfach mehrere Buttons anlegen — oder
+                „🔊 Windows-Lautstärke-Fader" mehrmals klicken.{winDevs.length ? '' : ' (Geräteliste leer — läuft die App auf diesem PC?)'}</p>
+            </>
+          ) : (
+            <>
+              <div class="reward-row">
+                <span class="muted conn-label">Gerät</span>
+                <select class="reward-input" value={action.device_name || ''}
+                        onChange={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value, device_id: undefined })}>
+                  <option value="">— wählen —</option>
+                  {winDevs.map((d) => <option value={d.name}>{d.name}</option>)}
+                </select>
+              </div>
+              {!winDevs.length && (
+                <div class="reward-row">
+                  <span class="muted conn-label">Gerätename</span>
+                  <input class="reward-input" placeholder="Teil des Namens, z. B. ROG CETRA / Realtek USB"
+                         value={action.device_name || ''}
+                         onInput={(e) => onChange({ wa_action: 'set_default', device_name: e.currentTarget.value })} />
+                </div>
+              )}
+              <p class="muted sd-help">Schaltet beim Druck das <b>Windows-Standard-Ausgabegerät</b> auf dieses Gerät
+                (z. B. Kopfhörer ⟷ Lautsprecher). Erkannt über den <b>Namen</b> (robust gegen wechselnde Geräte-IDs
+                beim Neu-Einstecken). Tipp: unten Überwachung „Ist dieses Gerät das Windows-Standardgerät?" mit
+                demselben Gerät → der Button leuchtet grün, wenn es aktiv ist.
+                {winDevs.length ? '' : ' (Geräteliste leer — läuft die App auf diesem PC? Sonst Namen oben eintippen.)'}</p>
+            </>
           )}
-          <p class="muted sd-help">Schaltet beim Druck das <b>Windows-Standard-Ausgabegerät</b> auf dieses Gerät
-            (z. B. Kopfhörer ⟷ Lautsprecher). Erkannt über den <b>Namen</b> (robust gegen wechselnde Geräte-IDs
-            beim Neu-Einstecken). Tipp: unten Überwachung „Ist dieses Gerät das Windows-Standardgerät?" mit
-            demselben Gerät → der Button leuchtet grün, wenn es aktiv ist.
-            {winDevs.length ? '' : ' (Geräteliste leer — läuft die App auf diesem PC? Sonst Namen oben eintippen.)'}</p>
         </>
       )}
     </div>
@@ -1486,6 +1605,11 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
           )}
         </>
       )}
+      {t === 'winaudio_volume' && (
+        <p class="muted sd-help">Reglerstand (0..100) für die Fader-Kachel + {'{value}'}-Titel. Das <b>Gerät</b> wählst du
+          oben bei der <b>Aktion</b> (🔊 Windows-Audio → Lautstärke-Regler) — leer = Windows-Hauptlautstärke. Darstellung
+          oben als <b>🎚 Fader</b>.</p>
+      )}
     </div>
   )
 }
@@ -1546,7 +1670,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="graph">📈 Graph (Verlaufskurve)</option>
           <option value="text">🔤 Text / Überschrift</option>
           <option value="clock">🕐 Uhr</option>
-          <option value="fader">🎚 Fader (Wave Link)</option>
+          <option value="fader">🎚 Fader (Wave Link / Windows-Lautstärke)</option>
         </select>
         <span class="muted conn-label" style="margin-left:8px">Größe</span>
         <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
@@ -1560,7 +1684,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
         <>
           <p class="muted sd-help">
             {render === 'fader'
-              ? 'Vertikaler Wave-Link-Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Quelle = der wavelink_level-Monitor (Ziel-Mix/Channel). Am einfachsten per „🎚 Wave-Link-Deck bauen" erzeugen.'
+              ? 'Vertikaler Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Quelle = der Monitor: „Wave-Link Mix/Channel" (wavelink_level) ODER „Windows-Lautstärke" (winaudio_volume). Am einfachsten per „🎚 Wave-Link-Fader" bzw. „🔊 Windows-Lautstärke-Fader" in der Button-Liste erzeugen.'
               : render === 'graph'
               ? 'Der Graph zeichnet den Verlauf des Überwachungs-Werts; die „Farbe" unten ist die Linienfarbe. Titel „{value}" zeigt zusätzlich die Zahl.'
               : stateless

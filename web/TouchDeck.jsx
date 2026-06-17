@@ -120,26 +120,30 @@ function Sparkline({ data, color }) {
   )
 }
 
-// Vertikaler Wave-Link-Fader: Schieberegler (vertikal ziehen = Level setzen) + Live-VU-Säule daneben;
+// Vertikaler Fader: Schieberegler (vertikal ziehen = Level setzen) + Live-VU-Säule daneben;
 // Tippen OHNE Ziehen = Mute-Toggle. REINE Panel-Kachel — das physische Stream Deck zeigt stattdessen
-// Titel/Level% + Druck=Mute (Backend _act_wavelink). meters/state = vom Deck GETEILTE Polls (ein Request
-// für ALLE Fader, nicht pro Kachel). target/typ kommen aus dem wavelink_level-Monitor des Buttons.
-function Fader({ id, v, mon, meters, state, onMute }) {
+// Titel/Level% + Druck=Mute (Backend _act_wavelink / _act_winaudio). Zwei Quellen über den Monitor-Typ:
+//   • wavelink_level → Wave-Link Mix/Channel (meters/state = geteilte Wave-Link-Polls).
+//   • winaudio_volume → der allgemeine Windows-Master-Lautstärkeregler (wa = geteilter winaudio-Poll).
+// Alle Polls sind vom Deck GETEILT (ein Request für ALLE Fader, nicht pro Kachel).
+function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
+  const isWa = mon.type === 'winaudio_volume'
   const ttype = mon.target_type || 'mix'
   const targetId = mon.id || mon.target || ''
   const mixId = mon.mix_id || ''
   const meterId = mon.id || mon.target || targetId
   const trackRef = useRef(null)
   const movedRef = useRef(false)
+  const downYRef = useRef(null)                 // Start-Y eines aktiven Zeigers (null = inaktiv) — Tap/Drag-Guard
   const sentRef = useRef(0)
   const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
   const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
 
-  const st = state[targetId] || {}
+  const st = isWa ? (wa || {}) : (state[targetId] || {})
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
   const level = drag != null ? drag : baseLevel
   const muted = optMute != null ? optMute : !!st.muted
-  const mlvl = Math.max(0, Math.min(1, meters[meterId] || 0))
+  const mlvl = Math.max(0, Math.min(1, (isWa ? st.peak : meters[meterId]) || 0))
   const accent = (v.color && v.color !== '#222') ? v.color : 'var(--accent2, #3b82f6)'
   const name = v.label || v.title || id
 
@@ -153,52 +157,62 @@ function Fader({ id, v, mon, meters, state, onMute }) {
     const t = Date.now()
     if (!force && t - sentRef.current < 45) return     // ~22 Hz drosseln
     sentRef.current = t
-    postJSON('/api/wavelink/level', { target_type: ttype, id: targetId, level: lvl, mix_id: mixId }).catch(() => {})
+    if (isWa) postJSON('/api/winaudio/volume', { level: lvl, device_id: dev || '' }).catch(() => {})
+    else postJSON('/api/wavelink/level', { target_type: ttype, id: targetId, level: lvl, mix_id: mixId }).catch(() => {})
   }
+  // Tap vs. Drag NUR über Refs (kein State-Timing/Closure-Problem): „bewegt" = >4 px gegen die DOWN-
+  // Position (NICHT gegen den Füllstand — sonst gilt jeder Tap neben dem Knopf als Drag → kein Mute).
   const onDown = (e) => {
     e.stopPropagation()
     movedRef.current = false
-    setDrag(levelAt(e.clientY))
+    downYRef.current = e.clientY
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
   }
   const onMove = (e) => {
-    if (drag == null) return
+    if (downYRef.current == null) return
     e.stopPropagation()
-    const l = levelAt(e.clientY)
-    if (Math.abs(l - baseLevel) > 2) movedRef.current = true
-    setDrag(l)
-    push(l, false)
+    if (!movedRef.current && Math.abs(e.clientY - downYRef.current) > 4) movedRef.current = true
+    if (movedRef.current) {
+      const l = levelAt(e.clientY)
+      setDrag(l)
+      push(l, false)
+    }
   }
   const onUp = (e) => {
-    if (drag == null) return
+    if (downYRef.current == null) return
     e.stopPropagation()
+    downYRef.current = null
     if (movedRef.current) {
-      push(drag, true)                              // finalen Wert sicher senden
-    } else {                                         // Tap ohne Bewegung = Mute
-      setOptMute(!muted); onMute()
+      push(levelAt(e.clientY), true)                 // finalen Wert sicher senden
+    } else {                                          // Tap ohne Bewegung = Mute (toggle)
+      setOptMute(!muted)
+      if (isWa) postJSON('/api/winaudio/mute', { device_id: dev || '' }).catch(() => {})
+      else onMute()                                   // Wave Link: über den Button-Press (mix/channel_mute)
       setTimeout(() => setOptMute(null), 1500)
     }
     setDrag(null)
   }
 
+  // VU-Färbung: oberes Drittel (ab 2/3) orange, oberes Viertel (ab 3/4) rot, sonst grün.
   const SEGS = 14, segs = []
   for (let i = 0; i < SEGS; i++) {
     const thr = (i + 1) / SEGS
-    const cls = thr > 0.86 ? 'r' : thr > 0.6 ? 'y' : 'g'
+    const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
     segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
   }
   return (
-    <div class={'t-fader' + (muted ? ' muted' : '')}>
+    <div class={'t-fader' + (muted ? ' muted' : '')}
+         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>{name}</div>
       <div class="t-fader-body">
-        <div class="t-fader-track" ref={trackRef} onPointerDown={onDown} onPointerMove={onMove}
-             onPointerUp={onUp} onPointerCancel={onUp}>
+        <div class="t-fader-track" ref={trackRef}>
           <div class="t-fader-fill" style={`height:${level}%;background:${accent}`} />
           <div class="t-fader-knob" style={`bottom:${level}%`} />
         </div>
         <div class="t-fader-vu">{segs}</div>
       </div>
-      <div class="t-fader-foot">{muted ? '🔇 stumm' : level + '%'}</div>
+      <div class="t-fader-foot">{isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
+      {v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
     </div>
   )
 }
@@ -264,6 +278,7 @@ export function TouchDeck() {
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const [wlMeters, setWlMeters] = useState({})       // Wave-Link VU-Pegel {id:0..1} (geteilter schneller Poll)
   const [wlState, setWlState] = useState({})         // Wave-Link {id:{level,muted}} (geteilter langsamer Poll)
+  const [waSnap, setWaSnap] = useState({})           // Windows-Master {available,level,muted,peak} (geteilter Poll)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
   const [fullscreen, setFullscreen] = useState(false) // Vollbild-Deck: nur das aktive Deck, Chrome weg
@@ -292,11 +307,18 @@ export function TouchDeck() {
     'streamdeck:layout': () => loadReg(),
   })
 
-  // Wave-Link-Fader brauchen Live-VU (schnell) + Level/Mute (langsam) — EIN geteilter Poll für ALLE
-  // Fader (nicht pro Kachel). Läuft nur, wenn überhaupt eine Fader-Kachel existiert.
-  const hasFaders = Object.values(renderById).some((r) => r === 'fader')
+  // Fader brauchen Live-Daten — EIN geteilter Poll JE QUELLE (nicht pro Kachel), nur wenn eine solche
+  // Fader-Kachel existiert. Wave Link: VU schnell + Level/Mute langsam. Windows-Master: ein Poll (der
+  // Peak ändert schnell, Level/Mute kommen gratis mit). Quelle = der Monitor-Typ des Fader-Buttons.
+  const faderMons = Object.entries(monById).filter(([fid]) => renderById[fid] === 'fader')
+  const hasWlFader = faderMons.some(([, m]) => (m || {}).type !== 'winaudio_volume')
+  // Windows-Volume-Fader können je auf ein anderes Gerät zeigen ('' = Standard) → pro DISTINKTEM Gerät ein Poll.
+  // Das Gerät steht an der AKTION des Fader-Buttons (device_id), nicht am Monitor.
+  const waDevices = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'winaudio_volume')
+    .map(([fid]) => (actionById[fid] || {}).device_id || ''))]
+  const waKey = waDevices.join('|')
   useEffect(() => {
-    if (!hasFaders) return
+    if (!hasWlFader) return
     let alive = true
     const buildState = (snap) => {
       const m = {}
@@ -309,7 +331,17 @@ export function TouchDeck() {
     pollMeters(); pollState()
     const im = setInterval(pollMeters, 90), is = setInterval(pollState, 1600)
     return () => { alive = false; clearInterval(im); clearInterval(is) }
-  }, [hasFaders])
+  }, [hasWlFader])
+  useEffect(() => {
+    if (!waDevices.length) return
+    let alive = true
+    const poll = () => waDevices.forEach((dev) =>
+      getJSON('/api/winaudio/volume' + (dev ? '?device=' + encodeURIComponent(dev) : ''))
+        .then((d) => { if (alive) setWaSnap((s) => ({ ...s, [dev]: d || {} })) }).catch(() => {}))
+    poll()
+    const iv = setInterval(poll, 90)
+    return () => { alive = false; clearInterval(iv) }
+  }, [waKey])
 
   // Vollbild: body-Klasse umschalten (die Host-Hülle blendet darüber ihre EIGENE Nav aus), Escape
   // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
@@ -400,7 +432,9 @@ export function TouchDeck() {
     const id = it.button
     const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
     const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
-    const positioned = Number.isInteger(it.x) && Number.isInteger(it.y)
+    // Freie x/y-Position gilt NUR im Frei-Modus. Sonst (Kategorie-Raster) ignorieren — sonst „springt"
+    // ein Deck, das mal frei platziert war, im Grid-Modus herum (Items kleben an alten x/y).
+    const positioned = freeMode && Number.isInteger(it.x) && Number.isInteger(it.y)
     const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
       : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
     const v = vis[id] || {}
@@ -416,7 +450,8 @@ export function TouchDeck() {
       return (
         <div key={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + (spanned ? ' spanned' : '')}
              style={'background:var(--bg)' + place}>
-          <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} onMute={() => onTap(id)} />
+          <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState}
+                 dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}} onMute={() => onTap(id)} />
         </div>
       )
     }

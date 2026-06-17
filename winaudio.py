@@ -1,195 +1,152 @@
 """
-WinAudio — das Windows-Standard-Ausgabegerät LESEN und SETZEN (Windows Core Audio + IPolicyConfig).
+WinAudio — Client für den Out-of-Process Core-Audio-Helfer (``winaudio_helper.py``).
 
-Generisch und host-agnostisch. Dient zwei Zwecken:
-  • die Kopplung „Wave Link folgt Windows-Standardgerät" (lesen, was Windows als Standard hat),
-  • Deck-Knöpfe „Windows-Standard setzen" (auf ein bestimmtes Gerät schalten) + Aktiv-Statuslicht.
+DIESES Modul macht KEIN COM. Das gesamte ``comtypes``/``pycaw``-COM lebt im Helfer-SUBPROZESS,
+weil es den Host sonst gelegentlich hart mit ``0xC0000005`` (Access Violation in ``_ctypes.pyd``)
+crasht — uncatchbar auf C-Ebene (nebenläufige/zyklisch-GC'te COM-Objekte). Im Subprozess killt ein
+COM-Fehler nur den Helfer; der Host (Cockpit/RigzDeck) läuft weiter und startet ihn mit Cooldown neu.
 
-Eigenschaften:
-  • LAZY: ``comtypes``/``pycaw`` werden erst beim ersten echten Zugriff importiert — ``import
-    deckcore.winaudio`` zieht nichts (Kern bleibt schlank, überall importierbar; nur Windows).
-  • Setzen über das (undokumentierte, aber seit Windows 7 stabile) ``IPolicyConfig``-COM-Interface —
-    dasselbe, das SoundVolumeView / AudioDeviceCmdlets / NirCmd nutzen.
-  • COM wird pro aufrufendem Thread initialisiert (die Deck-Handler/der Watcher laufen in Worker-
-    Threads) — sonst „CoInitialize has not been called".
-  • Graceful: jede Methode fängt Fehler ab und liefert ein klares Ergebnis statt zu werfen.
+Öffentliche API unverändert (Aufrufer in service.py): ``available`` · ``default_render_id`` ·
+``set_default`` · ``is_default_render`` · ``render_devices`` · ``resolve_render_id`` ·
+``volume_snapshot`` · ``set_master_volume`` · ``set_master_mute`` · ``master_volume`` · ``master_muted``.
 
-Geräte-IDs sind das Windows-Endpoint-Format ``{0.0.0.00000000}.{GUID}`` — IDENTISCH mit Wave Links
-``outputDeviceId``. Darum ist die Kopplung ein direkter ID-Abgleich (kein Namens-Matching).
+IPC: JSON-Zeilen über stdin/stdout. Der Helfer pusht ~12 Hz den vollen Zustand (Geräte/Standard/
+Snapshots); dieser Client cached ihn und sendet Befehle (watch/set_*). Reads sind also nie blockierend
+und nie COM — sie liefern den letzten gepushten Zustand (leer/`available:false`, solange der Helfer
+gerade (neu) startet).
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
+import sys
 import threading
-import warnings
+import time
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("deckcore.winaudio")
 
-# eConsole / eMultimedia / eCommunications — das „Standardgerät" (Media) = console+multimedia,
-# Kommunikation (eComm) ist getrennt (z.B. ein anderes Headset für Calls) und bleibt unangetastet.
-_ROLE = {"console": 0, "multimedia": 1, "communications": 2}
-
-_IPolicyConfig = None   # comtypes-Interface, einmal gebaut (lazy)
-
-
-def _build_policy_iface():
-    """IPolicyConfig-Interface einmalig definieren (Vtable-Reihenfolge zählt; nur SetDefaultEndpoint
-    wird aufgerufen, die übrigen Slots sind Platzhalter für die korrekte Slot-Position)."""
-    global _IPolicyConfig
-    if _IPolicyConfig is not None:
-        return _IPolicyConfig
-    from ctypes import HRESULT, c_int, c_wchar_p
-    from comtypes import COMMETHOD, GUID, IUnknown
-
-    class IPolicyConfig(IUnknown):
-        _iid_ = GUID("{f8679f50-850a-41cf-9c72-430f290290c8}")
-        _methods_ = [
-            COMMETHOD([], HRESULT, "GetMixFormat"),
-            COMMETHOD([], HRESULT, "GetDeviceFormat"),
-            COMMETHOD([], HRESULT, "ResetDeviceFormat"),
-            COMMETHOD([], HRESULT, "SetDeviceFormat"),
-            COMMETHOD([], HRESULT, "GetProcessingPeriod"),
-            COMMETHOD([], HRESULT, "SetProcessingPeriod"),
-            COMMETHOD([], HRESULT, "GetShareMode"),
-            COMMETHOD([], HRESULT, "SetShareMode"),
-            COMMETHOD([], HRESULT, "GetPropertyValue"),
-            COMMETHOD([], HRESULT, "SetPropertyValue"),
-            COMMETHOD([], HRESULT, "SetDefaultEndpoint",
-                      (["in"], c_wchar_p, "deviceId"), (["in"], c_int, "role")),
-            COMMETHOD([], HRESULT, "SetEndpointVisibility"),
-        ]
-
-    _IPolicyConfig = IPolicyConfig
-    return IPolicyConfig
-
-
-# CLSID_CPolicyConfigClient
-_CLSID_POLICY = "{870af99c-171d-4f9e-af0d-e63df40c2bc9}"
+_PKG_DIR = Path(__file__).resolve().parent
+_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+_SPAWN_COOLDOWN = 3.0       # s — nach Helfer-Tod/Spawn-Fehler so lange nicht erneut starten
+_STATE_STALE = 5.0          # s — ohne frischen Push gilt der Zustand als veraltet
 
 
 class WinAudio:
-    """Windows-Standard-Ausgabegerät lesen/setzen. Thread-safe, lazy, graceful."""
+    """Dünner Client zum Audio-Helfer-Subprozess. Thread-safe, lazy, graceful."""
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._lib_ok: Optional[bool] = None
+        self._proc: Optional[subprocess.Popen] = None
+        self._reader: Optional[threading.Thread] = None
+        self._state = {"available": False, "default_id": None, "devices": [], "snaps": {}}
+        self._state_ts = 0.0
+        self._last_fail = 0.0
 
-    # ── Lib / COM ────────────────────────────────────────────────────────
-    def _ensure_lib(self) -> bool:
-        if self._lib_ok is None:
+    # ── Prozess-Lebenszyklus ─────────────────────────────────────────────
+    def _helper_args(self):
+        # Eingefroren (.exe): der Host-Entrypoint MUSS `--deckcore-winaudio-helper` abfangen und
+        # winaudio_helper.main() ausführen. Sonst: als Modul über denselben Interpreter (-u = unbuffered,
+        # damit die JSON-Zeilen sofort durch die Pipe kommen).
+        if getattr(sys, "frozen", False):
+            return [sys.executable, "--deckcore-winaudio-helper"]
+        return [sys.executable, "-u", "-m", "deckcore.winaudio_helper"]
+
+    def _ensure_proc(self) -> bool:
+        with self._lock:
+            p = self._proc
+            if p is not None and p.poll() is None:
+                return True
+            if self._last_fail and (time.monotonic() - self._last_fail) < _SPAWN_COOLDOWN:
+                return False
+            self._proc = None
             try:
-                import comtypes  # noqa: F401
-                from pycaw.pycaw import IMMDeviceEnumerator, EDataFlow  # noqa: F401
-                self._lib_ok = True
-            except Exception:  # noqa: BLE001
-                self._lib_ok = False
-        return self._lib_ok
+                p = subprocess.Popen(
+                    self._helper_args(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                    bufsize=1, cwd=str(_PKG_DIR.parent), creationflags=_CREATE_NO_WINDOW)
+            except Exception as e:  # noqa: BLE001
+                self._last_fail = time.monotonic()
+                log.warning("Audio-Helfer-Start fehlgeschlagen: %r", e)
+                return False
+            self._proc = p
+            self._reader = threading.Thread(target=self._read_loop, args=(p,), name="winaudio-reader", daemon=True)
+            self._reader.start()
+            return True
 
-    @staticmethod
-    def _co_init() -> None:
-        """COM auf dem AKTUELLEN Thread initialisieren (Deck-Handler/Watcher laufen in Worker-
-        Threads). Idempotent — mehrfaches CoInitialize ist ungefährlich."""
+    def _read_loop(self, proc: subprocess.Popen) -> None:
         try:
-            import comtypes
-            comtypes.CoInitialize()
+            for line in proc.stdout:                # blockiert; EOF = Helfer weg/tot
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                if obj.get("type") == "state":
+                    with self._lock:
+                        self._state = {"available": bool(obj.get("available")),
+                                       "default_id": obj.get("default_id"),
+                                       "devices": obj.get("devices") or [],
+                                       "snaps": obj.get("snaps") or {}}
+                        self._state_ts = time.monotonic()
         except Exception:  # noqa: BLE001
             pass
-
-    def available(self) -> bool:
-        return self._ensure_lib()
-
-    # ── Lesen ────────────────────────────────────────────────────────────
-    def default_render_id(self, role: str = "multimedia") -> Optional[str]:
-        """ID des aktuellen Windows-Standard-AUSGABEgeräts (Default Render Endpoint). None bei Fehler."""
-        if not self._ensure_lib():
-            return None
+        # Helfer ist weg → Zustand auf „nicht verfügbar", Cooldown vor Respawn.
         with self._lock:
-            return self._read_default_id(role)
+            if self._proc is proc:
+                self._proc = None
+                self._state = {"available": False, "default_id": None, "devices": [], "snaps": {}}
+                self._last_fail = time.monotonic()
+        log.warning("Audio-Helfer beendet (EOF) — wird bei Bedarf neu gestartet.")
 
-    def _read_default_id(self, role: str = "multimedia") -> Optional[str]:
-        """Standard-Render-ID lesen — OHNE Lock (der Aufrufer hält ihn bereits)."""
+    def _send(self, obj: dict) -> bool:
+        if not self._ensure_proc():
+            return False
+        with self._lock:
+            p = self._proc
+        if p is None or p.poll() is not None or p.stdin is None:
+            return False
         try:
-            import comtypes
-            from pycaw.pycaw import IMMDeviceEnumerator, EDataFlow
-            from pycaw.constants import CLSID_MMDeviceEnumerator
-            self._co_init()
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                enum = comtypes.CoCreateInstance(
-                    CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER)
-                dev = enum.GetDefaultAudioEndpoint(EDataFlow.eRender.value, _ROLE.get(role, 1))
-                return dev.GetId()
-        except Exception as e:  # noqa: BLE001
-            log.debug("default_render_id fehlgeschlagen: %s", e)
-            return None
-
-    # ── Setzen ───────────────────────────────────────────────────────────
-    def set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:
-        """Windows-Standard-Ausgabegerät auf ``device_id`` setzen (für die gegebenen Rollen;
-        Default = Media-Standard = console+multimedia, Kommunikation bleibt unangetastet)."""
-        if not self._ensure_lib():
-            return {"success": False, "message": "Windows-Audio (comtypes/pycaw) nicht verfügbar"}
-        device_id = str(device_id or "")
-        if not device_id:
-            return {"success": False, "message": "Kein Gerät gewählt"}
-        with self._lock:
+            p.stdin.write(json.dumps(obj) + "\n")
+            p.stdin.flush()
+            return True
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                if self._proc is p:
+                    self._proc = None
+                    self._last_fail = time.monotonic()
             try:
-                from comtypes import GUID, CLSCTX_ALL, CoCreateInstance
-                self._co_init()
-                iface = _build_policy_iface()
-                pc = CoCreateInstance(GUID(_CLSID_POLICY), interface=iface, clsctx=CLSCTX_ALL)
-                for role in roles:
-                    pc.SetDefaultEndpoint(device_id, _ROLE.get(role, 1))
-                # Verifizieren: ein NICHT vorhandenes Gerät (z.B. ausgestöpselte Kopfhörer) meldet zwar
-                # S_OK, wechselt den Standard aber NICHT → ehrlich als Fehler zurückmelden statt Schein-OK.
-                cur = self._read_default_id("multimedia")
-                if cur and cur != device_id:
-                    return {"success": False, "message": "Gerät nicht verfügbar (Standard unverändert)"}
-                return {"success": True, "message": "Windows-Standard gesetzt"}
-            except Exception as e:  # noqa: BLE001
-                return {"success": False, "message": f"Setzen fehlgeschlagen: {e}"}
+                p.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            return False
 
-    def is_default_render(self, device_id: str, role: str = "multimedia") -> Optional[bool]:
-        """True, wenn ``device_id`` das aktuelle Standard-Ausgabegerät ist (für das Statuslicht)."""
-        device_id = str(device_id or "")
-        if not device_id:
-            return None
-        cur = self.default_render_id(role)
-        if cur is None:
-            return None
-        return cur == device_id
+    def _fresh(self) -> dict:
+        with self._lock:
+            if self._state_ts and (time.monotonic() - self._state_ts) > _STATE_STALE:
+                return {"available": False, "default_id": None, "devices": [], "snaps": {}}
+            return self._state
 
-    # ── Geräte per Name auflösen (robust gegen wechselnde IDs beim Neu-Einstecken) ──
+    # ── Status / Lesen ───────────────────────────────────────────────────
+    def available(self) -> bool:
+        self._ensure_proc()
+        return bool(self._fresh().get("available"))
+
+    def default_render_id(self, role: str = "multimedia") -> Optional[str]:
+        self._ensure_proc()
+        return self._fresh().get("default_id")
+
     def render_devices(self) -> list:
-        """Aktive Ausgabegeräte ``[{id, name}]`` — für Namens-Auflösung + Editor-Picker. Nur Render
-        (Ausgänge, ID-Präfix ``{0.0.0.``), nur Status Active."""
-        if not self._ensure_lib():
-            return []
-        from pycaw.pycaw import AudioUtilities
-        out = []
-        with self._lock:
-            try:
-                self._co_init()
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    for d in AudioUtilities.GetAllDevices():
-                        did = d.id or ""
-                        if not did.startswith("{0.0.0."):                 # nur Render-Endpoints
-                            continue
-                        if str(getattr(d, "state", "")).split(".")[-1] != "Active":
-                            continue
-                        name = d.FriendlyName or ""
-                        if name:
-                            out.append({"id": did, "name": name})
-            except Exception as e:  # noqa: BLE001
-                log.debug("render_devices fehlgeschlagen: %s", e)
-        return out
+        """Aktive Ausgabegeräte ``[{id, name}]`` (vom Helfer gepusht)."""
+        self._ensure_proc()
+        return list(self._fresh().get("devices") or [])
 
     def resolve_render_id(self, name_substring: str) -> Optional[str]:
-        """ID des AKTIVEN Ausgabegeräts, dessen Name ``name_substring`` enthält (case-insensitive).
-        Robust gegen wechselnde Endpoint-IDs / „-2"-Namenssuffixe (Bluetooth/Wireless beim Neu-
-        Einstecken). None, wenn gerade kein passendes aktives Gerät da ist."""
         sub = (name_substring or "").lower()
         if not sub:
             return None
@@ -197,3 +154,67 @@ class WinAudio:
             if sub in (d.get("name") or "").lower():
                 return d.get("id")
         return None
+
+    def is_default_render(self, device_id: str, role: str = "multimedia") -> Optional[bool]:
+        device_id = str(device_id or "")
+        if not device_id:
+            return None
+        cur = self.default_render_id(role)
+        return None if cur is None else (cur == device_id)
+
+    def volume_snapshot(self, device_id: Optional[str] = None) -> dict:
+        """{available, level(0..100|None), muted(bool|None), peak(0..1)} des Geräts (leer = Standard).
+        Sendet zugleich „watch" → der Helfer hält dieses Gerät offen + sampelt es."""
+        key = str(device_id or "")
+        self._send({"cmd": "watch", "target": key})
+        s = dict((self._fresh().get("snaps") or {}).get(key) or {})
+        if not s:
+            return {"available": False, "level": None, "muted": None, "peak": 0.0}
+        return s
+
+    def set_master_volume(self, level_0_100, device_id: Optional[str] = None) -> dict:
+        key = str(device_id or "")
+        self._send({"cmd": "watch", "target": key})          # sicherstellen, dass der Helfer das Gerät offen hat
+        ok = self._send({"cmd": "set_volume", "target": key, "level": level_0_100})
+        try:
+            pct = round(float(level_0_100))
+        except (TypeError, ValueError):
+            pct = level_0_100
+        return {"success": ok, "message": (f"Lautstärke -> {pct}%" if ok else "Audio-Helfer nicht verfügbar")}
+
+    def set_master_mute(self, muted: Optional[bool] = None, device_id: Optional[str] = None) -> dict:
+        key = str(device_id or "")
+        self._send({"cmd": "watch", "target": key})
+        ok = self._send({"cmd": "set_mute", "target": key, "muted": None if muted is None else bool(muted)})
+        return {"success": ok, "message": ("Mute umgeschaltet" if ok else "Audio-Helfer nicht verfügbar")}
+
+    def master_volume(self, device_id: Optional[str] = None) -> Optional[int]:
+        return self.volume_snapshot(device_id).get("level")
+
+    def master_muted(self, device_id: Optional[str] = None) -> Optional[bool]:
+        return self.volume_snapshot(device_id).get("muted")
+
+    # ── Setzen: Windows-Standard-Ausgabegerät ────────────────────────────
+    def set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:
+        """Windows-Standard-Ausgabegerät setzen (im Helfer via IPolicyConfig). Optimistisch — das
+        Statuslicht (winaudio_default-Monitor) zeigt anschließend die Wahrheit aus dem gepushten Zustand."""
+        device_id = str(device_id or "")
+        if not device_id:
+            return {"success": False, "message": "Kein Gerät gewählt"}
+        ok = self._send({"cmd": "set_default", "device_id": device_id, "roles": list(roles)})
+        return {"success": ok, "message": ("Windows-Standard gesetzt" if ok else "Audio-Helfer nicht verfügbar")}
+
+    def close(self) -> None:
+        with self._lock:
+            p = self._proc
+            self._proc = None
+        if p is not None:
+            try:
+                if p.stdin:
+                    p.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass

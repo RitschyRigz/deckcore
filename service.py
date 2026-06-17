@@ -131,7 +131,7 @@ _LAYOUT_DEFAULT = {
     "show_category_titles": True, # Kategorie-Überschriften am Deck anzeigen
 }
 _LAYOUT_BOUNDS = {  # (min, max) für die numerischen Felder
-    "cols": (0, 12), "button_size": (60, 260), "gap": (0, 48), "font_scale": (0.6, 2.0),
+    "cols": (0, 16), "button_size": (60, 260), "gap": (0, 48), "font_scale": (0.6, 2.0),
 }
 _LAYOUT_BOOLS = ("show_label", "show_title", "frame", "show_category_titles", "free")
 # Pro-Item-Stil-Felder (was ein Item im Deck an Stil überschreiben darf).
@@ -141,8 +141,8 @@ _STYLE_KEYS = ("frame", "label", "label_pos", "title", "title_pos")
 # Kachel-Span im Touch-Panel — w = Spalten, h = Reihen (Default 1). ⚠ REIN ANZEIGE: das physische
 # Stream-Deck-Plugin liest nur resolved[button] und rendert IMMER 1×1; Größe betrifft nur das Web-Panel.
 # Geclampt auf sinnvolle Grenzen; nur >1 wird gespeichert (Default-Items bleiben byte-identisch).
-_SPAN_W_MAX = 4
-_SPAN_H_MAX = 3
+_SPAN_W_MAX = 6
+_SPAN_H_MAX = 6
 
 
 def _clamp_span(v, hi: int) -> int:
@@ -521,6 +521,7 @@ class DeckCoreService:
         A, M = self.register_action, self.register_monitor
         A("none", self._act_none)
         A("launch", self._act_launch)
+        A("open_folder", self._act_open_folder)
         A("displayfusion", self._act_displayfusion)
         A("media", self._act_media)
         A("hotkey", self._act_hotkey)
@@ -547,6 +548,7 @@ class DeckCoreService:
         M("wavelink_mute", self._mon_wavelink_mute)
         M("wavelink_main_output", self._mon_wavelink_main_output)
         M("winaudio_default", self._mon_winaudio_default)
+        M("winaudio_volume", self._mon_winaudio_volume)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1207,7 +1209,7 @@ class DeckCoreService:
                 "id": "wl_mix_" + _slug(mid), "label": name, "render": "fader",
                 "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
                 "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
-                "states": [], "default": {"title": "{value}%", "color": "#2563eb"},
+                "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#2563eb"},
             })
             _place("wl_mix_" + _slug(mid), cats["mix"], {}, h=2)
 
@@ -1221,13 +1223,44 @@ class DeckCoreService:
                 "id": "wl_chan_" + _slug(cid), "label": name, "render": "fader",
                 "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
                 "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
-                "states": [], "default": {"title": "{value}%", "color": "#7c3aed"},
+                "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#7c3aed"},
             })
             _place("wl_chan_" + _slug(cid), cats["chan"], {}, h=2)
 
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
                 "mixes": len(mixes), "channels": len(channels), "outputs": len(outputs)}
+
+    def populate_winaudio_volume(self, deck_id: str) -> dict:
+        """Legt EINEN Windows-Lautstärke-Fader (render=fader) ins Deck + Pool: Ziehen = Lautstärke,
+        Tippen = Mute, Live-VU. Default = Windows-Hauptlautstärke; WELCHES Gerät der Fader regelt, wählt
+        man danach in der AKTION (Geräte-Dropdown). Jeder Aufruf legt einen NEUEN Fader mit eindeutiger
+        id an (``wa_master``, dann ``wa_vol_2``/``…``) → man kann MEHRERE Fader für verschiedene Geräte
+        haben (überschreibt nie einen bestehenden)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        # KEIN available()-Gate: der Audio-Helfer braucht nach Start ~1 s, bis er „verfügbar" meldet —
+        # der Fader ist nur eine Definition und zeigt notfalls „n/v", bis der Helfer da ist.
+        existing = {b.get("id") for b in self._buttons}
+        bid, n = "wa_master", 2
+        while bid in existing:
+            bid = f"wa_vol_{n}"; n += 1
+        cat = "Audio"
+        if cat not in deck["categories"]:
+            deck["categories"].append(cat)
+        fn = {
+            "id": bid, "label": "Windows-Lautstärke", "render": "fader",
+            "action": {"type": "winaudio", "wa_action": "toggle_mute"},   # Tippen = Mute (auch Hardware)
+            "monitor": {"type": "winaudio_volume"},                       # Reglerstand (Gerät = aus der Aktion)
+            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#16a34a"},
+        }
+        self._buttons.append(fn)
+        self._removed.discard(bid)
+        deck["items"].append({"button": bid, "category": cat,
+                              "style": {}, "hidden": False, "h": 2})       # hochkant (reine Panel-Größe)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "created": 1, "button": bid}
 
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Pool-Ansicht ──
     def generate_obs_scene_buttons(self, scenes: list) -> dict:
@@ -1385,6 +1418,20 @@ class DeckCoreService:
         res = self._winaudio.set_default(device_id, roles=tuple(roles))
         self._winaudio_cache = (None, 0.0)
         return res
+
+    # ── Windows-Master-Lautstärke + VU (der „allgemeine Lautstärke-Regler") ──
+    def winaudio_volume(self, device_id: str = "") -> dict:
+        """{available, level(0..100), muted, peak(0..1)} des Master-Reglers (Default-Render, wenn
+        ``device_id`` leer). Die Volume-Fader-Kachel pollt das schnell für VU + Reglerstand."""
+        return self._winaudio.volume_snapshot(device_id or None)
+
+    def winaudio_set_volume(self, level, device_id: str = "") -> dict:
+        """Master-Lautstärke (0..100) setzen — stufenloser Fader (Default-Render, wenn device_id leer)."""
+        return self._winaudio.set_master_volume(level, device_id or None)
+
+    def winaudio_set_mute(self, muted=None, device_id: str = "") -> dict:
+        """Master-Mute setzen/umschalten (``muted=None`` = toggle)."""
+        return self._winaudio.set_master_mute(muted, device_id or None)
 
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
@@ -1584,6 +1631,30 @@ class DeckCoreService:
         # Beliebiges Programm/Script starten (eigener Prozess, detached).
         return self._launch_program(action)
 
+    def _act_open_folder(self, action: dict, btn: dict) -> dict:
+        # Windows-Explorer auf einen BELIEBIGEN Ordner öffnen (z.B. Desktop). Pfad mit %ENV%/~ wird
+        # expandiert; zeigt der Pfad auf eine Datei → im Ordner markiert; `shell:`-Verknüpfungen
+        # (z.B. `shell:Desktop` / `shell:Downloads`) gehen direkt an den Explorer.
+        import os
+        import subprocess
+        raw = (action.get("path") or "").strip().strip('"')
+        if not raw:
+            return {"success": False, "message": "Kein Ordner angegeben"}
+        try:
+            if raw.lower().startswith("shell:"):
+                subprocess.Popen(["explorer", raw], close_fds=True)
+                return {"success": True, "message": f"geöffnet: {raw}"}
+            path = os.path.expandvars(os.path.expanduser(raw))
+            if os.path.isdir(path):
+                os.startfile(path)                              # Ordner im Explorer öffnen
+            elif os.path.exists(path):
+                subprocess.Popen(["explorer", "/select,", path], close_fds=True)  # Datei → markiert
+            else:
+                return {"success": False, "message": f"Ordner nicht gefunden: {raw}"}
+            return {"success": True, "message": f"geöffnet: {path}"}
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "message": f"Öffnen fehlgeschlagen: {e}"}
+
     def _act_displayfusion(self, action: dict, btn: dict) -> dict:
         return self._df_load_profile(action.get("profile", ""))
 
@@ -1667,19 +1738,29 @@ class DeckCoreService:
         return self._wl.set_channel_level(cid, lvl, mix_id=mix_id)
 
     def _act_winaudio(self, action: dict, btn: dict) -> dict:
-        # Windows-Standard-Ausgabegerät setzen (Deck-Knopf „Windows-Standard"). Bei aktiver Kopplung
-        # (Flag wavelink_follow_default) zieht Wave Link automatisch nach (der Coupling-Loop sieht es).
+        # Windows-Audio: Standard-Ausgabegerät setzen ODER Master-Lautstärke/Mute (Volume-Fader).
+        # device_name (robust gegen wechselnde IDs beim Neu-Einstecken) bevorzugt; sonst feste
+        # device_id; sonst leer = Standard-Render-Gerät (der „allgemeine" Windows-Lautstärke-Regler).
         sub = str(action.get("wa_action") or "set_default")
+        name = action.get("device_name")
+        device_id = self._winaudio_resolve(name) if name else str(action.get("device_id", "") or "")
         if sub == "set_default":
-            # device_name (robust gegen wechselnde IDs beim Neu-Einstecken) bevorzugt; sonst feste device_id.
-            name = action.get("device_name")
-            device_id = self._winaudio_resolve(name) if name else str(action.get("device_id", "") or "")
             if name and not device_id:
                 return {"success": False, "message": f"{name}: gerade nicht verfügbar"}
             roles = tuple(action.get("roles") or ("console", "multimedia"))
             res = self._winaudio.set_default(device_id, roles=roles)
             self._winaudio_cache = (None, 0.0)   # Statuslicht sofort neu lesen
             return res
+        if sub == "set_volume":
+            # DISKRETER Druck (auch Hardware): absolut ``level`` ODER relativ ``delta`` nudgen.
+            # Der STUFENLOSE Fader zieht über /api/winaudio/volume, NICHT über diesen Press-Pfad.
+            delta = action.get("delta")
+            if delta is not None:
+                cur = self._winaudio.master_volume(device_id)
+                return self._winaudio.set_master_volume((cur or 0) + float(delta), device_id)
+            return self._winaudio.set_master_volume(float(action.get("level", 0)), device_id)
+        if sub == "toggle_mute":
+            return self._winaudio.set_master_mute(None, device_id)
         return {"success": False, "message": f"Unbekannte wa_action: {sub}"}
 
     # (host-spezifische Aktions-Handler leben in der Hülle und werden
@@ -1694,13 +1775,14 @@ class DeckCoreService:
             flags = sorted(p.name for p in self._flags_dir.glob("*.flag"))
         except Exception:  # noqa: BLE001
             pass
-        _ACTION_ORDER = ["process_action", "launch", "open_deck", "displayfusion", "media", "hotkey",
-                         "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs", "wavelink",
-                         "winaudio", "events_action", "none"]
+        _ACTION_ORDER = ["process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
+                         "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
+                         "wavelink", "winaudio", "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
-                          "winaudio_default", "obs_source_visible", "obs_scene", "displayfusion_profile", "none"]
+                          "winaudio_default", "winaudio_volume", "obs_source_visible", "obs_scene",
+                          "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         out = {
@@ -1970,6 +2052,19 @@ class DeckCoreService:
                 return None
         cur = self._winaudio_default_id(mon.get("role", "multimedia"))
         return None if cur is None else (cur == target)
+
+    def _mon_winaudio_volume(self, mon: dict, btn: dict) -> Any:
+        # Aktueller Reglerstand (0..100) — Knopf-Stellung + {value}-Titel. Das Live-VU + der schnelle
+        # Reglerstand laufen zusätzlich über /api/winaudio/volume (Volume-Fader-Kachel). Das GERÄT steht
+        # an der AKTION (device_id/device_name) — leer = Windows-Hauptlautstärke; Monitor-Felder = Fallback.
+        a = btn.get("action") or {}
+        dev = str(a.get("device_id") or mon.get("device_id") or "")
+        name = a.get("device_name") or mon.get("device_name")
+        if not dev and name:
+            dev = self._winaudio_resolve(name) or ""
+            if not dev:
+                return None                        # benanntes Gerät gerade nicht aktiv
+        return self._winaudio.master_volume(dev)
 
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)

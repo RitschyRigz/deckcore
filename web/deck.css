@@ -111,7 +111,7 @@
 .sd-wys-grid { display: grid; grid-auto-rows: var(--sd-size); justify-content: start; }
 .sd-wys-key-wrap.spanned .sd-prev-key { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; }
 /* 🧩 Freier Drag-Editor (gridstack): LiveKey füllt das Widget; Aktionen oben rechts; Canvas-Hintergrund. */
-.sd-free { margin: 6px 0; }
+.sd-free { margin: 6px 0; overflow-x: auto; }
 .sd-gs.grid-stack { background: rgba(255, 255, 255, .025); border: 1px dashed var(--line); border-radius: 12px; min-height: 140px; }
 .sd-gs .grid-stack-item-content { display: flex; inset: 0; }
 .sd-gs .sd-prev-key { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; cursor: grab; }
@@ -140,6 +140,12 @@
 .sd-tile-act { background: rgba(0,0,0,.6); color: #fff; border: 0; border-radius: 6px; width: 20px; height: 20px;
   font-size: 11px; cursor: pointer; line-height: 1; padding: 0; }
 .sd-tile-act:hover { background: rgba(0,0,0,.9); }
+/* Inline-Größenwähler an der AUSGEWÄHLTEN Kachel (Grid-Modus) — Spalten×Reihen direkt sichtbar. */
+.sd-tile-size { position: absolute; bottom: 3px; left: 3px; z-index: 4; display: flex; align-items: center; gap: 3px;
+  background: rgba(0,0,0,.78); border-radius: 8px; padding: 2px 5px; }
+.sd-tile-size select { background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 4px; font-size: 12px; line-height: 1.2; cursor: pointer; }
+.sd-tile-x { color: #fff; font-size: 11px; line-height: 1; }
 .sd-inspect { margin: 12px 0; padding: 10px 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; }
 .sd-palette { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .sd-pal-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -282,7 +288,7 @@ body.dc-deck-fs .t-deck { padding: 10px; }
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */
 .t-fader-key { padding: 0; overflow: hidden; }
 .t-fader { display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
-  padding: 5px 4px; gap: 3px; align-items: center; }
+  padding: 5px 4px; gap: 3px; align-items: center; cursor: ns-resize; touch-action: none; }
 .t-fader-name { font-size: 11cqw; line-height: 1.1; color: var(--fg); max-width: 100%; text-align: center;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 8%;
@@ -296,9 +302,10 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   display: flex; flex-direction: column-reverse; gap: 6%; }
 .t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 1.5px; background: rgba(255,255,255,.10); }
 .t-vu-seg.on.g { background: #3fb950; }
-.t-vu-seg.on.y { background: #d8a000; }
-.t-vu-seg.on.r { background: #e5534b; }
+.t-vu-seg.on.y { background: #ff8c1a; }   /* oberes Drittel: orange */
+.t-vu-seg.on.r { background: #e5534b; }   /* oberes Viertel: rot */
 .t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--muted); min-height: 1em; }
+.t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
 .t-fader.muted { opacity: .5; }
 .t-fader.muted .t-fader-fill { background: var(--muted) !important; }
 .t-fader.muted .t-fader-foot { color: #e5534b; }
