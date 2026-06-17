@@ -1168,6 +1168,18 @@ class DeckCoreService:
                 item_by_id[bid] = it
                 created += 1
 
+        # Kopplungs-Toggle „Wave Link folgt Windows-Standardgerät" — reiner Flag-Schalter; die Coupling-
+        # Schleife in service.start() überwacht genau dieses Flag. Wird beim Sync gleich mit angelegt, damit
+        # die Kopplung discoverable ist (kein „magischer" Flag-Name mehr von Hand nötig).
+        _upsert({
+            "id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
+            "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
+            "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
+            "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
+            "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"},
+        })
+        _place("wl_couple_toggle", cats["out"], {"label": "off"})
+
         # Ausgabegeräte → Main-Output-Wähler (normaler Button; grün, wenn aktiver Monitor-Hauptausgang).
         for d in outputs:
             did = str(d.get("id") or "")
