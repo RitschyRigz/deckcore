@@ -135,6 +135,16 @@ function darken(hex, f) {
   return 'rgb(' + c((n >> 16) & 255) + ',' + c((n >> 8) & 255) + ',' + c(n & 255) + ')'
 }
 
+// Windows-Audio liefert einen ROHEN Linear-Peak (0..1) — optisch sehr niedrig (anders als Wave Links
+// perzeptueller Prozent-Pegel). Auf eine dBFS-Skala (-48..0 dB) mappen, damit die VU genauso lebendig
+// füllt wie die Wave-Link-Säulen. (-48 dB = leer, 0 dB = voll; Empfindlichkeit über die 48 justierbar.)
+function waMeter(p) {
+  p = +p
+  if (!(p > 0)) return 0
+  const db = 20 * Math.log10(p)
+  return Math.max(0, Math.min(1, (db + 48) / 48))
+}
+
 function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   const isWa = mon.type === 'winaudio_volume'
   const ttype = mon.target_type || 'mix'
@@ -152,7 +162,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
   const level = drag != null ? drag : baseLevel
   const muted = optMute != null ? optMute : !!st.muted
-  const mlvl = Math.max(0, Math.min(1, (isWa ? st.peak : meters[meterId]) || 0))
+  const mlvl = isWa ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
   const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
   const accentDim = darken(accentHex, 0.34)
   const name = v.label || v.title || id
@@ -353,7 +363,7 @@ export function TouchDeck() {
   // Das Gerät steht an der AKTION des Fader-Buttons (device_id), nicht am Monitor.
   const waDevices = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'winaudio_volume')
     .map(([fid]) => (actionById[fid] || {}).device_id || ''))]
-  const waKey = waDevices.join('|')
+  const waKey = JSON.stringify(waDevices)   // [] vs [''] MUSS sich unterscheiden — join('|') macht beide zu '', dann startet der Poll nie
   useEffect(() => {
     if (!hasWlFader) return
     let alive = true
