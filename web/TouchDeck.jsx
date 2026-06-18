@@ -126,6 +126,15 @@ function Sparkline({ data, color }) {
 //   • wavelink_level → Wave-Link Mix/Channel (meters/state = geteilte Wave-Link-Polls).
 //   • winaudio_volume → der allgemeine Windows-Master-Lautstärkeregler (wa = geteilter winaudio-Poll).
 // Alle Polls sind vom Deck GETEILT (ein Request für ALLE Fader, nicht pro Kachel).
+// Akzentfarbe abdunkeln (unteres Ende des Fill-Gradients) — reines Hex -> rgb().
+function darken(hex, f) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '')
+  if (!m) return hex || '#173a63'
+  const n = parseInt(m[1], 16)
+  const c = (x) => Math.max(0, Math.min(255, Math.round(x * f)))
+  return 'rgb(' + c((n >> 16) & 255) + ',' + c((n >> 8) & 255) + ',' + c(n & 255) + ')'
+}
+
 function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   const isWa = mon.type === 'winaudio_volume'
   const ttype = mon.target_type || 'mix'
@@ -144,8 +153,31 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   const level = drag != null ? drag : baseLevel
   const muted = optMute != null ? optMute : !!st.muted
   const mlvl = Math.max(0, Math.min(1, (isWa ? st.peak : meters[meterId]) || 0))
-  const accent = (v.color && v.color !== '#222') ? v.color : 'var(--accent2, #3b82f6)'
+  const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
+  const accentDim = darken(accentHex, 0.34)
   const name = v.label || v.title || id
+
+  // Peak-Hold („Schlepp-Zeiger"): trackt den Spitzenpegel, hält ihn ~1,2 s, fällt dann weich.
+  // Bewegt das Marker-Element direkt per DOM (rAF) → kein Re-Render, butterweich.
+  const peakRef = useRef(null)
+  const mlvlRef = useRef(0); mlvlRef.current = mlvl
+  const mutedRef = useRef(false); mutedRef.current = muted
+  useEffect(() => {
+    let raf, last = 0
+    const pk = { v: 0, t: 0 }, HOLD = 1200, FALL = 0.0011
+    const loop = (now) => {
+      if (!last) last = now
+      const dt = now - last; last = now
+      const m = mutedRef.current ? 0 : mlvlRef.current
+      if (m >= pk.v) { pk.v = m; pk.t = now }
+      else if (now - pk.t > HOLD) { pk.v = Math.max(0, pk.v - FALL * dt) }
+      const el = peakRef.current
+      if (el) { el.style.bottom = (pk.v * 100) + '%'; el.style.opacity = (!mutedRef.current && pk.v > 0.04) ? '1' : '0' }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [])
 
   const levelAt = (clientY) => {
     const el = trackRef.current
@@ -194,22 +226,22 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   }
 
   // VU-Färbung: oberes Drittel (ab 2/3) orange, oberes Viertel (ab 3/4) rot, sonst grün.
-  const SEGS = 14, segs = []
+  const SEGS = 19, segs = []
   for (let i = 0; i < SEGS; i++) {
     const thr = (i + 1) / SEGS
     const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
     segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
   }
   return (
-    <div class={'t-fader' + (muted ? ' muted' : '')}
+    <div class={'t-fader' + (muted ? ' muted' : '')} style={`--acc:${accentHex};--acc-dim:${accentDim}`}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>{name}</div>
       <div class="t-fader-body">
         <div class="t-fader-track" ref={trackRef}>
-          <div class="t-fader-fill" style={`height:${level}%;background:${accent}`} />
+          <div class="t-fader-fill" style={`height:${level}%`} />
           <div class="t-fader-knob" style={`bottom:${level}%`} />
         </div>
-        <div class="t-fader-vu">{segs}</div>
+        <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
       </div>
       <div class="t-fader-foot">{isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
@@ -225,10 +257,15 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
   useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
   const items = (deck && deck.items || []).filter((it) => !it.hidden)
   const N = items.length
-  const margin = 14, keyHalf = 46
+  // Tasten-Größe = button_size des Ordner-Decks (derselbe Layout-Schieber wie im Raster; bei Ordnern
+  // sonst ungenutzt) → die Radial-Größe ist ganz normal im UI einstellbar. Default 88 = wie bisher.
+  const size = Math.max(48, Math.min(240, ((deck && deck.layout && deck.layout.button_size) || 88)))
+  const margin = 14, keyHalf = Math.round(size / 2) + 2
   const vw = (typeof window !== 'undefined' ? window.innerWidth : 1024)
   const vh = (typeof window !== 'undefined' ? window.innerHeight : 768)
-  let R = Math.min(230, Math.max(116, 60 + N * 16))   // Radius wächst mit der Knopf-Zahl …
+  // Radius wächst mit Knopf-Zahl UND -Größe → genug Bogen-Abstand, dass sich nichts überlappt.
+  const minR = (size * N) / (2 * Math.PI) * 1.08
+  let R = Math.max(60 + N * 16, minR)
   // Randerkennung 1/2: Radius so weit verkleinern, dass der ganze Kreis in den Viewport passt.
   const maxR = Math.max(64, Math.min((vw - 2 * margin) / 2 - keyHalf, (vh - 2 * margin) / 2 - keyHalf))
   R = Math.min(R, maxR)
@@ -238,7 +275,7 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
   const cy = Math.min(Math.max(anchor.y, margin + ext), vh - margin - ext)
   return (
     <div class="t-radial-backdrop" onClick={onClose}>
-      <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${cx}px;top:${cy}px`}
+      <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${cx}px;top:${cy}px;--rk:${size}px`}
            onClick={(e) => e.stopPropagation()}>
         <span class="t-radial-hub">{(deck && deck.icon) || '📁'}</span>
         {N === 0 && <div class="t-radial-empty">leer</div>}
@@ -444,6 +481,7 @@ export function TouchDeck() {
     const isGraph = render === 'graph'
     const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
     const isFader = render === 'fader'
+    const isFlat = !v.image && !isWidget && !isGraph   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Fader)
     const o = optsById[id] || {}
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
@@ -457,8 +495,8 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + ((isWidget || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={'background:' + (isWidget ? 'transparent' : (isGraph ? 'var(--bg)' : (v.color || '#222'))) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : (isGraph ? 'var(--bg)' : (v.color || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>

@@ -922,6 +922,51 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
   )
 }
 
+// 🎚 Eingabequelle eines Faders wählen/umhängen — lädt die LIVE Wave-Link-Quellen (Mixes/Channels)
+// + Windows-Lautstärke und schreibt action + monitor + label der bestehenden Kachel um. Erkennt
+// verwaiste Quellen (id nicht mehr in der Live-Liste, z. B. nach Geräte-Neuzuordnung durch Windows).
+function FaderSource({ b, onPick }) {
+  const [src, setSrc] = useState(null)
+  useEffect(() => {
+    let off = false
+    fetch('/api/wavelink/state').then((r) => r.json()).then((d) => { if (!off) setSrc(d || {}) }).catch(() => { if (!off) setSrc({}) })
+    return () => { off = true }
+  }, [])
+  const a = b.action || {}, m = b.monitor || {}
+  const isWa = m.type === 'winaudio_volume' || a.type === 'winaudio'
+  const curId = isWa ? '__wa__' : (m.id || a.mix_id || a.channel_id || '')
+  const mixes = (src && src.mixes) || [], channels = (src && src.channels) || []
+  const known = isWa || (!!curId && (mixes.some((x) => x.id === curId) || channels.some((x) => x.id === curId)))
+  const orphan = !!curId && !known
+  const pick = (val) => {
+    if (val === '__none__') return
+    if (val === '__wa__') { onPick({ action: { type: 'winaudio', wa_action: 'toggle_mute' }, monitor: { type: 'winaudio_volume' }, label: 'Windows-Lautstärke' }); return }
+    const mix = mixes.find((x) => x.id === val)
+    if (mix) { onPick({ action: { type: 'wavelink', wl_action: 'mix_mute', mix_id: mix.id }, monitor: { type: 'wavelink_level', target_type: 'mix', id: mix.id }, label: mix.name }); return }
+    const ch = channels.find((x) => x.id === val)
+    if (ch) onPick({ action: { type: 'wavelink', wl_action: 'channel_mute', channel_id: ch.id }, monitor: { type: 'wavelink_level', target_type: 'channel', id: ch.id }, label: ch.name })
+  }
+  return (
+    <div class="sd-block">
+      <p class="sd-block-h">🎚 Eingabequelle <span class="muted">— welche Wave-Link-Quelle / Windows-Lautstärke dieser Fader regelt (hier umhängen, falls Windows neu zuordnet)</span></p>
+      <div class="reward-row">
+        <select class="reward-input" value={known ? curId : '__none__'} onChange={(e) => pick(e.currentTarget.value)}>
+          <option value="__none__">{orphan ? '⚠ Quelle verloren — neu wählen …' : '— Eingabequelle wählen …'}</option>
+          <option value="__wa__">🔊 Windows-Hauptlautstärke</option>
+          {mixes.length > 0 && <optgroup label="Wave Link · Mixes">{mixes.map((x) => <option value={x.id}>{x.name}</option>)}</optgroup>}
+          {channels.length > 0 && <optgroup label="Wave Link · Channels">{channels.map((x) => <option value={x.id}>{x.name}</option>)}</optgroup>}
+        </select>
+        {src === null && <span class="muted" style="font-size:12px;margin-left:6px">lädt …</span>}
+      </div>
+      {src && mixes.length === 0 && channels.length === 0
+        ? <p class="muted sd-help" style="margin:4px 0 0">Wave Link nicht verbunden — nur „Windows-Hauptlautstärke" wählbar. Verbindung im OBS/Wave-Link-Tab prüfen.</p>
+        : orphan
+          ? <p class="msg err" style="font-size:12px;margin:4px 0 0">Die bisherige Quelle gibt's in Wave Link nicht mehr (Gerät neu zugeordnet?). Wähl oben die neue — der Fader wird umgehängt, ohne neu zu erzeugen.</p>
+          : null}
+    </div>
+  )
+}
+
 function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
   const [b, setB] = useState(() => JSON.parse(JSON.stringify(button)))
   const [msg, setMsg] = useState(null)
@@ -979,6 +1024,7 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
           <input class="reward-input" placeholder="Anzeigename" value={b.label}
                  onInput={(e) => set({ label: e.currentTarget.value })} />
         </div>
+        {b.render === 'fader' && <FaderSource b={b} onPick={(patch) => { stopPreset(); setB({ ...b, ...patch }) }} />}
         <ActionEditor action={b.action} options={options} onChange={setAction} replace={(a) => set({ action: a })}
           onPicked={(info) => set({
             label: b.label || info.name,
@@ -1684,7 +1730,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
         <>
           <p class="muted sd-help">
             {render === 'fader'
-              ? 'Vertikaler Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Quelle = der Monitor: „Wave-Link Mix/Channel" (wavelink_level) ODER „Windows-Lautstärke" (winaudio_volume). Am einfachsten per „🎚 Wave-Link-Fader" bzw. „🔊 Windows-Lautstärke-Fader" in der Button-Liste erzeugen.'
+              ? 'Vertikaler Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Die Quelle wählst/änderst du oben unter „🎚 Eingabequelle" (Wave-Link Mix/Channel oder Windows-Lautstärke) — auch zum Umhängen, falls Windows ein Gerät neu zuordnet.'
               : render === 'graph'
               ? 'Der Graph zeichnet den Verlauf des Überwachungs-Werts; die „Farbe" unten ist die Linienfarbe. Titel „{value}" zeigt zusätzlich die Zahl.'
               : stateless

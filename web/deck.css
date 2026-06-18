@@ -203,6 +203,16 @@
 .t-key-title { font-size: calc(13px * var(--sd-font)); font-weight: 800; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
 .t-key-label { font-size: calc(11px * var(--sd-font)); font-weight: 600; opacity: .85; text-shadow: 0 1px 2px rgba(0,0,0,.6);
   text-align: center; line-height: 1.1; }
+/* ── Flache Buttons (kein Bild): dunkle Kachel + Akzent-Glow (--acc kommt vom Button) — wie Fader/OBS-Buttons ── */
+.t-key.t-flat { background: linear-gradient(165deg, #171c26, #0c0f14); }
+.t-key.t-flat::before, .t-key.t-flat::after { content: ""; position: absolute; width: 16%; height: 16%;
+  min-width: 13px; min-height: 13px; max-width: 22px; max-height: 22px; pointer-events: none; opacity: .8; }
+.t-key.t-flat::before { top: 7px; left: 7px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
+.t-key.t-flat::after { bottom: 7px; right: 7px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
+.t-key.t-flat .t-key-icon { filter: drop-shadow(0 0 7px var(--acc)); }
+.t-key.t-flat .t-key-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
+.t-key.t-flat .t-key-label { text-transform: uppercase; letter-spacing: .05em; font-weight: 800; opacity: .95;
+  color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Stil-Optionen PRO BUTTON (button.style; Layout = Default) */
 .t-key.lbl-top .t-key-label { order: -2; }
 .t-key.lbl-top .t-key-title { order: -1; }
@@ -252,7 +262,7 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   font-size: 23px; background: var(--bg3); border: 1px solid var(--accent); box-shadow: 0 0 0 4px rgba(0,0,0,.35); }
 .t-radial-empty { position: absolute; left: 0; top: 0; transform: translate(-50%, 42px); color: var(--muted); font-size: 13px; }
-.t-radial-key { position: absolute; left: 0; top: 0; width: 88px; height: 88px; max-width: none; aspect-ratio: auto;
+.t-radial-key { position: absolute; left: 0; top: 0; width: var(--rk, 88px); height: var(--rk, 88px); max-width: none; aspect-ratio: auto;
   opacity: 0; will-change: transform, opacity; transform: translate(-50%, -50%) scale(.25);
   transition: transform .28s cubic-bezier(.2,.9,.3,1.35), opacity .2s ease; transition-delay: calc(var(--i) * 26ms); }
 .t-radial.in .t-radial-key { opacity: 1; transform: translate(-50%, -50%) translate(var(--rx), var(--ry)) scale(1); }
@@ -287,25 +297,36 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 /* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */
 .t-fader-key { padding: 0; overflow: hidden; }
-.t-fader { display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
-  padding: 5px 4px; gap: 3px; align-items: center; cursor: ns-resize; touch-action: none; }
-.t-fader-name { font-size: 11cqw; line-height: 1.1; color: var(--fg); max-width: 100%; text-align: center;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 8%;
+/* Fader-Kachel: dunkler Verlauf + Eck-Brackets (Akzentfarbe = --acc, kommt vom Button). */
+.t-fader { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
+  padding: 10cqw 5cqw; gap: 5cqw; align-items: center; cursor: ns-resize; touch-action: none;
+  background: linear-gradient(165deg, #171c26, #0c0f14); }
+.t-fader::before, .t-fader::after { content: ""; position: absolute; width: 18cqw; height: 18cqw; max-width: 24px; max-height: 24px; pointer-events: none; opacity: .75; }
+.t-fader::before { top: 6px; left: 6px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
+.t-fader::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
+.t-fader-name { font-size: 10cqw; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; line-height: 1.1;
+  color: var(--fg); opacity: .82; max-width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 10%;
   align-items: stretch; justify-content: center; }
-.t-fader-track { position: relative; width: 34%; max-width: 40px; border-radius: 7px; cursor: ns-resize;
-  touch-action: none; background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.10); }
-.t-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 0 0 6px 6px; opacity: .9; }
-.t-fader-knob { position: absolute; left: -14%; right: -14%; height: 9px; margin-bottom: -4px; border-radius: 3px;
-  background: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.6); pointer-events: none; }
-.t-fader-vu { position: relative; width: 26%; max-width: 26px; padding: 2px 0;
-  display: flex; flex-direction: column-reverse; gap: 6%; }
-.t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 1.5px; background: rgba(255,255,255,.10); }
-.t-vu-seg.on.g { background: #3fb950; }
-.t-vu-seg.on.y { background: #ff8c1a; }   /* oberes Drittel: orange */
-.t-vu-seg.on.r { background: #e5534b; }   /* oberes Viertel: rot */
-.t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--muted); min-height: 1em; }
+.t-fader-track { position: relative; width: 30cqw; max-width: 40px; border-radius: 999px; cursor: ns-resize;
+  touch-action: none; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.05); box-shadow: inset 0 0 7px rgba(0,0,0,.75); }
+.t-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 999px;
+  background: linear-gradient(to top, var(--acc-dim, #173a63), var(--acc, var(--accent2)));
+  box-shadow: 0 0 12px var(--acc, var(--accent2)), 0 -1px 7px var(--acc, var(--accent2)); }
+.t-fader-knob { position: absolute; left: -16%; right: -16%; height: 2px; margin-bottom: -1px; border-radius: 2px;
+  background: #fff; box-shadow: 0 0 9px var(--acc, var(--accent2)), 0 0 3px #fff; pointer-events: none; }
+.t-fader-vu { position: relative; width: 26cqw; max-width: 34px; padding: 3cqw 0;
+  display: flex; flex-direction: column-reverse; gap: 2cqw; }
+.t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); transition: background .08s, box-shadow .08s; }
+.t-vu-seg.on.g { background: #34d39a; box-shadow: 0 0 6px rgba(52,211,154,.85); }
+.t-vu-seg.on.y { background: #ffc24b; box-shadow: 0 0 6px rgba(255,194,75,.85); }   /* oberes Drittel: amber */
+.t-vu-seg.on.r { background: #ff5d5d; box-shadow: 0 0 7px rgba(255,93,93,.9); }     /* oberes Viertel: rot */
+/* Roter Max-Schleppzeiger (Peak-Hold) — Position kommt per rAF aus der Fader-Komponente. */
+.t-vu-peak { position: absolute; left: -2px; right: -2px; height: 2px; border-radius: 2px; background: #ff2f2f;
+  box-shadow: 0 0 8px rgba(255,47,47,.95), 0 0 2px #fff; pointer-events: none; opacity: 0; }
+.t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--fg); opacity: .9; font-weight: 700; min-height: 1em; }
 .t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
-.t-fader.muted { opacity: .5; }
-.t-fader.muted .t-fader-fill { background: var(--muted) !important; }
-.t-fader.muted .t-fader-foot { color: #e5534b; }
+/* Mute = ausgegraut wie inaktive Buttons (Graustufe + abgedunkelt, Glow weg). */
+.t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
+.t-fader.muted .t-fader-knob { background: #9aa1ad; box-shadow: none; }
+.t-fader.muted .t-fader-foot { color: #ff8a8a; opacity: .95; }

@@ -1209,7 +1209,7 @@ class DeckCoreService:
                 "id": "wl_mix_" + _slug(mid), "label": name, "render": "fader",
                 "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
                 "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
-                "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#2563eb"},
+                "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"},
             })
             _place("wl_mix_" + _slug(mid), cats["mix"], {}, h=2)
 
@@ -1223,7 +1223,7 @@ class DeckCoreService:
                 "id": "wl_chan_" + _slug(cid), "label": name, "render": "fader",
                 "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
                 "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
-                "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#7c3aed"},
+                "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"},
             })
             _place("wl_chan_" + _slug(cid), cats["chan"], {}, h=2)
 
@@ -1253,7 +1253,7 @@ class DeckCoreService:
             "id": bid, "label": "Windows-Lautstärke", "render": "fader",
             "action": {"type": "winaudio", "wa_action": "toggle_mute"},   # Tippen = Mute (auch Hardware)
             "monitor": {"type": "winaudio_volume"},                       # Reglerstand (Gerät = aus der Aktion)
-            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#16a34a"},
+            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"},
         }
         self._buttons.append(fn)
         self._removed.discard(bid)

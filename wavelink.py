@@ -80,6 +80,7 @@ class WaveLinkDirect:
         self._inline_id = -1                      # negative ids für Inline-Requests (vor dem Dispatch-Loop)
         self._pending: dict[int, tuple[threading.Event, dict]] = {}
         self._meters: dict[str, dict] = {}        # id -> {l, r, ts}
+        self._subscribed: set = set()             # ids bereits fuer levelMeterChanged abonniert
         self._cache: dict[str, tuple[Any, float]] = {}   # mixes/channels/outputs -> (val, ts)
 
     # ── Konfiguration ────────────────────────────────────────────────────
@@ -220,6 +221,7 @@ class WaveLinkDirect:
             ws.send(json.dumps({"jsonrpc": "2.0", "id": self._inline_id, "method": "setSubscription",
                                 "params": {"levelMeterChanged": {"id": tid, "subId": "",
                                                                  "isEnabled": True, "type": typ}}}))
+            self._subscribed.add(tid)
         try:
             for c in (self._inline_request(ws, "getChannels") or {}).get("channels", []):
                 cid = c.get("id")
@@ -232,6 +234,30 @@ class WaveLinkDirect:
                     _sub(mid, "mix")                   # Mixes senden NUR mit explizitem type="mix"
         except Exception:  # noqa: BLE001
             pass
+
+    def _ensure_subscribed(self, ids, types) -> None:
+        """Neue (noch nicht abonnierte) Ziele fuer ``levelMeterChanged`` nachtraeglich abonnieren —
+        additiv + idempotent. So liefern auch Channels/Mixes, die NACH dem Connect in Wave Link
+        angelegt wurden (z. B. neu eingestecktes Capture-Geraet), ohne Reconnect Pegel. Aufruf beim
+        State-Poll (``channels()``/``mixes()``); nur ``ws.send`` (kein Inline-Read, loop-sicher)."""
+        ws = self._ws
+        if ws is None:
+            return
+        with self._lock:
+            new = [i for i in ids if i and i not in self._subscribed]
+        if not new:
+            return
+        try:
+            for tid in new:
+                for typ in types:
+                    self._inline_id -= 1
+                    ws.send(json.dumps({"jsonrpc": "2.0", "id": self._inline_id, "method": "setSubscription",
+                                        "params": {"levelMeterChanged": {"id": tid, "subId": "",
+                                                                         "isEnabled": True, "type": typ}}}))
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._subscribed.update(new)
 
     def _reader_loop(self) -> None:
         ws = self._try_connect()
@@ -261,6 +287,7 @@ class WaveLinkDirect:
             with self._lock:
                 self._ws = None
                 self._meters.clear()
+                self._subscribed.clear()
                 # ausstehende Anfragen freigeben (sonst hängen Wartende bis Timeout)
                 for evt, _slot in self._pending.values():
                     evt.set()
@@ -411,14 +438,17 @@ class WaveLinkDirect:
 
     def mixes(self) -> list:
         """Liste der Mixes/Busse: [{id,name,level,isMuted,image}]."""
-        return self._cached("mixes", "getMixes",
-                            lambda r: r.get("mixes", []) or []) or []
+        mx = self._cached("mixes", "getMixes",
+                          lambda r: r.get("mixes", []) or []) or []
+        self._ensure_subscribed([m.get("id") for m in mx], ("mix",))
+        return mx
 
     def channels(self, with_images: bool = False) -> list:
         """Liste der Input-Channels inkl. Master-Level + per-Mix-Sends. Das große Base64-
         Icon (``image.imgData``) wird standardmäßig entfernt (klein halten)."""
         ch = self._cached("channels", "getChannels",
                           lambda r: r.get("channels", []) or []) or []
+        self._ensure_subscribed([c.get("id") for c in ch], ("input", "channel"))
         if with_images:
             return ch
         out = []
