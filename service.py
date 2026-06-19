@@ -487,6 +487,7 @@ class DeckCoreService:
         self._default_buttons = list(default_buttons or [])   # Hülle seedet ihre Default-Buttons
         self._file = self._runtime / "streamdeck_buttons.json"
         self._buttons: list[dict] = []   # GLOBALER Funktions-Pool (id/label/action/monitor/states/default)
+        self._pool_categories: list[str] = []   # rein ORGANISATORISCH: klappbare Gruppen des Pools im Editor (≠ Deck-Item-categories)
         self._removed: set[str] = set()   # bewusst gelöschte Default-Button-IDs → NIE re-seeden
         self._decks: list[dict] = []   # Deck-TEMPLATES [{id,label,icon,layout,categories,items}] (Default-Deck garantiert in _load)
         self._tick = float(_TICK_SEC)              # globale Aktualisierungs-Rate (einstellbar)
@@ -597,6 +598,10 @@ class DeckCoreService:
                         self._removed = {str(x) for x in raw["removed"]}
                     if isinstance(raw.get("decks"), list):
                         raw_decks = raw["decks"]
+                    if isinstance(raw.get("pool_categories"), list):
+                        _seen: set = set()
+                        self._pool_categories = [s for s in (str(x).strip() for x in raw["pool_categories"])
+                                                 if s and not (s in _seen or _seen.add(s))]
                     # Legacy-Top-Level (v1): EIN globales Layout + EINE globale Kategorie-Liste.
                     if isinstance(raw.get("layout"), dict):
                         legacy_layout = raw["layout"]
@@ -720,7 +725,7 @@ class DeckCoreService:
             self._runtime.mkdir(parents=True, exist_ok=True)
             self._file.write_text(
                 json.dumps({"buttons": self._buttons, "tick_seconds": round(self._tick, 2),
-                            "decks": self._decks,
+                            "decks": self._decks, "pool_categories": self._pool_categories,
                             "removed": sorted(self._removed)},
                            ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -942,6 +947,65 @@ class DeckCoreService:
                 it["category"] = ""; moved += 1
         self._save(); self._publish_cfg()
         return {"ok": True, "categories": list(deck["categories"]), "uncategorized": moved}
+
+    # ── Pool-Kategorien (rein organisatorisch: klappbare Gruppen des Button-Pools im Editor) ─────
+    # Spiegelt das Deck-categories-Muster, aber für den GLOBALEN Pool (nicht pro Deck). Wirkt nur im
+    # Editor — das Panel/Plugin liest sie nicht (kein _publish_cfg nötig; der Editor lädt die Registry neu).
+    def set_pool_categories(self, names: list) -> dict:
+        out, seen = [], set()
+        for nm in (names or []):
+            s = str(nm).strip()
+            if s and s not in seen:
+                seen.add(s); out.append(s)
+        self._pool_categories = out
+        self._save()
+        return {"ok": True, "pool_categories": list(out)}
+
+    def add_pool_category(self, name: str) -> dict:
+        s = str(name or "").strip()
+        if not s:
+            return {"ok": False, "reason": "invalid"}
+        if s not in self._pool_categories:
+            self._pool_categories.append(s); self._save()
+        return {"ok": True, "pool_categories": list(self._pool_categories)}
+
+    def rename_pool_category(self, old: str, new: str) -> dict:
+        old, new = str(old).strip(), str(new).strip()
+        if not new or new == old:
+            return {"ok": False, "reason": "invalid"}
+        if new in self._pool_categories:
+            return {"ok": False, "reason": "exists"}
+        self._pool_categories = [new if c == old else c for c in self._pool_categories]
+        for b in self._buttons:
+            if b.get("pool_cat") == old:
+                b["pool_cat"] = new
+        self._save()
+        return {"ok": True, "pool_categories": list(self._pool_categories)}
+
+    def delete_pool_category(self, name: str) -> dict:
+        name = str(name).strip()
+        self._pool_categories = [c for c in self._pool_categories if c != name]
+        moved = 0
+        for b in self._buttons:
+            if b.get("pool_cat") == name:
+                b.pop("pool_cat", None); moved += 1
+        self._save()
+        return {"ok": True, "pool_categories": list(self._pool_categories), "uncategorized": moved}
+
+    def set_button_pool_category(self, bid: str, category: str) -> dict:
+        bid = str(bid or "")
+        cat = str(category or "").strip()
+        b = next((x for x in self._buttons if x.get("id") == bid), None)
+        if b is None:
+            return {"ok": False, "reason": "unknown_button"}
+        if cat:
+            b["pool_cat"] = cat
+            if cat not in self._pool_categories:
+                self._pool_categories.append(cat)
+        else:
+            b.pop("pool_cat", None)
+        self._save()
+        return {"ok": True, "pool_cat": cat}
 
     def assign_item_category(self, deck_id: str, button_id: str, category: str) -> dict:
         deck = self._deck(deck_id)
@@ -1523,6 +1587,7 @@ class DeckCoreService:
                 "tick_seconds": round(self._tick, 2),
                 "tick_min": _TICK_MIN, "tick_max": _TICK_MAX,
                 "refresh_min": _REFRESH_MIN, "refresh_max": _REFRESH_MAX,
+                "pool_categories": list(self._pool_categories),
                 "decks": self.decks(), "default_deck": _DEFAULT_DECK}
 
     def get_tick(self) -> float:
@@ -1568,6 +1633,15 @@ class DeckCoreService:
         # Platzierung gehört nicht in die Funktions-Definition.
         for f in ("deck", "group", "style"):
             button.pop(f, None)
+        # Pool-Kategorie (rein organisatorisch im Editor; KEINE Platzierung) — als getrimmten String halten,
+        # neue Kategorie automatisch in die Liste aufnehmen.
+        pc = str(button.get("pool_cat") or "").strip()
+        if pc:
+            button["pool_cat"] = pc
+            if pc not in self._pool_categories:
+                self._pool_categories.append(pc)
+        else:
+            button.pop("pool_cat", None)
         # Darstellung (render: graph|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
         if button.get("render") not in ("graph", "text", "clock", "fader"):
             button.pop("render", None)

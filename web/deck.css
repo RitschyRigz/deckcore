@@ -131,6 +131,14 @@
   text-align: center; font-weight: 800; color: var(--fg); padding: 4px 8px; line-height: 1.15; word-break: break-word;
   background: rgba(255, 255, 255, .05); border-radius: 12px; border: 1px dashed var(--line); }
 .sd-wys-empty { color: var(--muted); font-size: 12px; padding: 10px; text-align: center; }
+/* Pool-Kategorien (klappbare Gruppen im Button-Pool-Tab) */
+.sd-poolcat { margin-bottom: 12px; }
+.sd-poolcat-h { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border, #2a2d35); margin-bottom: 8px; position: sticky; top: 0; background: var(--bg, #111); z-index: 2; }
+.sd-poolcat-toggle { background: none; border: 0; color: var(--fg); font-size: 13px; cursor: pointer; width: 20px; padding: 0; }
+.sd-poolcat-name { font-size: 13px; font-weight: 800; letter-spacing: .03em; }
+.sd-poolcat-mv { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 2px; }
+.sd-poolcat-mv:hover { color: var(--fg); }
+.sd-pool-cat { font-size: 11px; max-width: 130px; padding: 2px 4px; border-radius: 6px; background: #1b1e25; color: var(--fg); border: 1px solid var(--border, #2a2d35); }
 .sd-wys-key-wrap { position: relative; cursor: grab; border-radius: 16px; }
 .sd-wys-key-wrap:active { cursor: grabbing; }
 .sd-wys-key-wrap.sel { outline: 2px solid var(--accent); outline-offset: 3px; }

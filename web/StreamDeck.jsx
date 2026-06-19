@@ -756,10 +756,36 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  BUTTON-POOL (Funktionen) — global, einmal definiert
 // ══════════════════════════════════════════════════════════════════════════════
-function PoolList({ buttons, resolved, options, onReload }) {
+const POOL_UNCAT = ' uncat'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
+
+function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
   const [genBusy, setGenBusy] = useState('')
   const [genMsg, setGenMsg] = useState(null)
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sd.poolcat.collapsed') || '{}') } catch (_) { return {} }
+  })
+  const toggleCol = (k) => setCollapsed((c) => {
+    const n = { ...c, [k]: !c[k] }
+    try { localStorage.setItem('sd.poolcat.collapsed', JSON.stringify(n)) } catch (_) {}
+    return n
+  })
+  const cats = poolCategories || []
+  const postCat = (url, body) => postJSON(url, body).then(() => onReload && onReload()).catch(() => {})
+  const addCat = (name) => postCat('/api/streamdeck/pool_category/add', { name })
+  const renameCat = (old, nw) => postCat('/api/streamdeck/pool_category/rename', { old, new: nw })
+  const delCat = (name) => postCat('/api/streamdeck/pool_category/delete', { name })
+  const moveCat = (name, dir) => {
+    const i = cats.indexOf(name); const j = i + dir
+    if (i < 0 || j < 0 || j >= cats.length) return
+    const next = cats.slice(); next.splice(i, 1); next.splice(j, 0, name)
+    postCat('/api/streamdeck/pool_categories', { categories: next })
+  }
+  const byCat = {}
+  for (const b of buttons) { const c = b.pool_cat || POOL_UNCAT; (byCat[c] = byCat[c] || []).push(b) }
+  const orphans = Object.keys(byCat).filter((c) => c !== POOL_UNCAT && !cats.includes(c)).sort()
+  const poolOrder = [...cats, ...orphans]
+  if (byCat[POOL_UNCAT]) poolOrder.push(POOL_UNCAT)
   // Presets generieren: OBS/DisplayFusion NUR in den Pool; Wave Link / Windows-Lautstärke bauen ein Fader-Deck.
   const gen = async (kind) => {
     setGenBusy(kind); setGenMsg(null)
@@ -786,6 +812,7 @@ function PoolList({ buttons, resolved, options, onReload }) {
     <div>
       <div class="conn-toolbar">
         <button class="btn ghost small" onClick={() => setAdding(true)}>➕ Neuer Button</button>
+        <InlineAdd label="➕ Kategorie" placeholder="Neue Pool-Kategorie" onAdd={addCat} />
         <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
         {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
@@ -794,21 +821,43 @@ function PoolList({ buttons, resolved, options, onReload }) {
         {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
-        <span class="muted">{buttons.length} Buttons im Pool · Funktion (Aktion/Überwachung/Zustände). Platzierung im <b>Decks</b>-Tab bzw. am Elgato-Plugin. <b>Presets</b> erzeugen Buttons nur im Pool — dann auf Decks/Ordner ziehen.</span>
+        <span class="muted">{buttons.length} Buttons im Pool · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks</b>-Tab. <b>Presets</b> erzeugen Buttons nur im Pool.</span>
       </div>
       {adding && (
         <FunctionEditor button={blankButton()} options={options} isNew
           onSaved={() => { setAdding(false); onReload && onReload() }} onCancel={() => setAdding(false)} />
       )}
-      <div class="cards">
-        {buttons.map((b) => <PoolCard key={b.id} b={b} vis={resolved[b.id]} options={options}
-                                      allIds={buttons.map((x) => x.id)} onChanged={onReload} />)}
-      </div>
+      {poolOrder.map((cat) => {
+        const isUncat = cat === POOL_UNCAT
+        const list = byCat[cat] || []
+        const idx = cats.indexOf(cat)
+        const isCol = !!collapsed[cat]
+        return (
+          <div class="sd-poolcat" key={cat}>
+            <div class="sd-poolcat-h">
+              <button class="sd-poolcat-toggle" onClick={() => toggleCol(cat)} title={isCol ? 'aufklappen' : 'zuklappen'}>{isCol ? '▸' : '▾'}</button>
+              <span class="sd-poolcat-name">{isUncat ? 'Ohne Kategorie' : cat}</span>
+              <span class="muted" style="font-size:11px">({list.length})</span>
+              {!isUncat && <>
+                <InlineEdit value={cat} title="Kategorie umbenennen" onSave={(nm) => renameCat(cat, nm)} />
+                {idx > 0 && <button class="sd-poolcat-mv" title="nach oben" onClick={() => moveCat(cat, -1)}>↑</button>}
+                {idx >= 0 && idx < cats.length - 1 && <button class="sd-poolcat-mv" title="nach unten" onClick={() => moveCat(cat, 1)}>↓</button>}
+                <ConfirmX title="Kategorie löschen — Buttons bleiben (werden Ohne Kategorie)" onConfirm={() => delCat(cat)} />
+              </>}
+            </div>
+            {!isCol && (list.length === 0
+              ? <div class="sd-wys-empty">— leer — weise Buttons über ihr Kategorie-Feld zu —</div>
+              : <div class="cards">{list.map((b) => <PoolCard key={b.id} b={b} vis={resolved[b.id]} options={options}
+                                                              cats={cats} allIds={buttons.map((x) => x.id)} onChanged={onReload} />)}</div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-function PoolCard({ b, vis, options, allIds, onChanged }) {
+function PoolCard({ b, vis, options, cats, allIds, onChanged }) {
   const [open, setOpen] = useState(false)
   const [msg, setMsg] = useState(null)
   const press = async () => {
@@ -841,6 +890,11 @@ function PoolCard({ b, vis, options, allIds, onChanged }) {
           <span class="card-title">{b.label || b.id}</span>
           <span class="muted conn-id">⚡{ACTION_LABELS[aType] ? aType : 'none'} · 👁{mType}</span>
         </button>
+        <select class="sd-pool-cat" value={b.pool_cat || ''} title="Pool-Kategorie (klappbare Gruppe im Pool)"
+                onChange={(e) => postJSON(`/api/streamdeck/buttons/${b.id}/pool_category`, { category: e.currentTarget.value }).then(() => onChanged && onChanged()).catch(() => {})}>
+          <option value="">— Kategorie —</option>
+          {(cats || []).map((c) => <option value={c}>{c}</option>)}
+        </select>
         <ConfirmX cls="btn ghost small danger" label="🗑" title="Button löschen (aus Pool + allen Decks)" onConfirm={del} />
       </div>
       {open && (
@@ -1117,7 +1171,7 @@ export function StreamDeck() {
           )}
         </>
       ) : (
-        <PoolList buttons={data.buttons || []} resolved={resolved} options={options} onReload={load} />
+        <PoolList buttons={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} options={options} onReload={load} />
       )}
     </div>
   )

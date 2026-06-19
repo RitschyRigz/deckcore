@@ -156,6 +156,28 @@ def build_streamdeck_router(
     def streamdeck_deck_cat_delete(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         return JSONResponse(get_service(request).delete_deck_category(deck_id, (body or {}).get("name", "")))
 
+    # ── Pool-Kategorien (klappbare Gruppen des Button-Pools im Editor) ──────────────────────
+    @r.post("/api/streamdeck/pool_categories")
+    def streamdeck_pool_categories(request: Request, body: dict = Body(...)) -> JSONResponse:
+        return JSONResponse(get_service(request).set_pool_categories((body or {}).get("categories") or []))
+
+    @r.post("/api/streamdeck/pool_category/add")
+    def streamdeck_pool_cat_add(request: Request, body: dict = Body(...)) -> JSONResponse:
+        return JSONResponse(get_service(request).add_pool_category((body or {}).get("name", "")))
+
+    @r.post("/api/streamdeck/pool_category/rename")
+    def streamdeck_pool_cat_rename(request: Request, body: dict = Body(...)) -> JSONResponse:
+        b = body or {}
+        return JSONResponse(get_service(request).rename_pool_category(b.get("old", ""), b.get("new", "")))
+
+    @r.post("/api/streamdeck/pool_category/delete")
+    def streamdeck_pool_cat_delete(request: Request, body: dict = Body(...)) -> JSONResponse:
+        return JSONResponse(get_service(request).delete_pool_category((body or {}).get("name", "")))
+
+    @r.post("/api/streamdeck/buttons/{bid}/pool_category")
+    def streamdeck_button_pool_cat(bid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        return JSONResponse(get_service(request).set_button_pool_category(bid, (body or {}).get("category", "")))
+
     @r.post("/api/streamdeck/deck/{deck_id}/reorder")
     def streamdeck_deck_reorder(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         return JSONResponse(get_service(request).reorder_deck(deck_id, (body or {}).get("ids") or []))
