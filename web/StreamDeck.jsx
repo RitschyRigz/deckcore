@@ -740,6 +740,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
   const [genBusy, setGenBusy] = useState('')
   const [genMsg, setGenMsg] = useState(null)
+  const [hwRender, setHwRender] = useState('value')
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem('sd.poolcat.collapsed') || '{}') } catch (_) { return {} }
   })
@@ -774,6 +775,9 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
       } else if (kind === 'wa') {
         const r = await postJSON('/api/streamdeck/winaudio/build', {})
         setGenMsg({ ok: true, t: `Windows-Lautstärke-Fader → Pool (${r.created || 0} neu) — Kategorie „Audio"` })
+      } else if (kind === 'hw') {
+        const r = await postJSON('/api/streamdeck/generate/hwinfo', { render: hwRender })
+        setGenMsg({ ok: true, t: `HWiNFO → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.render === 'graph' ? 'Graph' : 'Wert'}) — Kategorie „HWiNFO"` })
       } else {
         const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
         setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
@@ -782,7 +786,9 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
     } catch (e) {
       const m = String(e.message || e)
       setGenMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.'
-        : m === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).' : m })
+        : m === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).'
+        : m === 'hwinfo_unavailable' ? 'HWiNFO nicht verfügbar — HWiNFO starten + Sensoren fürs Gadget/Registry-Export (VSB) freigeben.'
+        : m === 'no_sensors' ? 'Keine HWiNFO-Sensoren freigegeben — in HWiNFO Sensoren fürs Gadget/VSB markieren.' : m })
     }
     setGenBusy('')
   }
@@ -796,6 +802,13 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler im POOL an (Kategorie Wave Link). Idempotent — dann auf Decks ziehen.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wa')} title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU an (Tab Audio). Folgt automatisch dem Standard-Ausgabegerät.">{genBusy === 'wa' ? '… Windows' : '🔊 Windows-Lautstärke-Fader'}</button>
+        <span class="sd-inline" style="gap:4px" title="Liest die in HWiNFO freigegebenen Sensoren (Gadget / Registry-VSB) und legt pro Sensor einen Anzeige-Button im Pool an (Kategorie HWiNFO).">
+          <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('hw')}>{genBusy === 'hw' ? '… HWiNFO' : '📊 HWiNFO-Sensoren'}</button>
+          <select class="sd-pool-cat" value={hwRender} onChange={(e) => setHwRender(e.currentTarget.value)} title="Darstellung der Sensor-Buttons">
+            <option value="value">als Wert</option>
+            <option value="graph">als Graph</option>
+          </select>
+        </span>
         {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">

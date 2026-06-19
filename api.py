@@ -269,6 +269,15 @@ def build_streamdeck_router(
             raise HTTPException(status_code=400, detail=res.get("reason", "keine Profile"))
         return JSONResponse(res)
 
+    @r.post("/api/streamdeck/generate/hwinfo")
+    def streamdeck_generate_hwinfo(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Pro freigegebenem HWiNFO-Sensor einen Anzeige-Button im Pool (Kategorie „HWiNFO").
+        body.render = 'value' | 'graph'."""
+        res = get_service(request).generate_hwinfo_buttons((body or {}).get("render", "value"))
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "keine Sensoren"))
+        return JSONResponse(res)
+
     @r.post("/api/streamdeck/generate/obs_scenes")
     def streamdeck_generate_obs(request: Request) -> JSONResponse:
         if obs_scenes is None:

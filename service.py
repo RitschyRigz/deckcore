@@ -1419,6 +1419,49 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated}
 
+    def generate_hwinfo_buttons(self, render: str = "value") -> dict:
+        """Pro in HWiNFO freigegebenem Sensor (Gadget/VSB) einen reinen ANZEIGE-Button NUR im Pool
+        (Pool-Kategorie „HWiNFO"). ``render`` = ``value`` (Zahl im Titel) ODER ``graph`` (Live-Verlauf).
+        KEINE Deck-Platzierung. Idempotent (id ``hw_<slug>``) — User-Kosmetik/Render/Kategorie bleiben via
+        _regen_preserve. Sensor-Verfügbarkeit wird gemeldet, nie vorausgesetzt (muss auf jedem PC gehen)."""
+        data = self._hwinfo.sensors()
+        if not data.get("available"):
+            return {"ok": False, "reason": "hwinfo_unavailable"}
+        sensors = data.get("sensors") or []
+        if not sensors:
+            return {"ok": False, "reason": "no_sensors"}
+        as_graph = (str(render).strip().lower() == "graph")
+        if "HWiNFO" not in self._pool_categories:
+            self._pool_categories.append("HWiNFO")
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        created = updated = 0
+        for s in sensors:
+            key = str(s.get("key") or "")
+            if not key:
+                continue
+            name = str(s.get("label") or key)
+            unit = str(s.get("unit") or "").strip()
+            bid = "hw_" + _slug(key)
+            fn = {
+                "id": bid, "label": name, "pool_cat": "HWiNFO",
+                "action": {"type": "none"},
+                "monitor": {"type": "hwinfo", "sensor": key},
+                "states": [],
+                "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"},
+            }
+            if as_graph:
+                fn["render"] = "graph"
+            ex = pool_by_id.get(bid)
+            if ex is not None:
+                fn = _regen_preserve(ex, fn); updated += 1
+                self._buttons[self._buttons.index(ex)] = fn
+            else:
+                self._buttons.append(fn); created += 1
+            pool_by_id[bid] = fn; self._removed.discard(bid)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "created": created, "updated": updated,
+                "total": created + updated, "render": "graph" if as_graph else "value"}
+
     def displayfusion_profiles(self) -> dict:
         """DisplayFusion-Monitor-Profile (+ aktiv-Markierung) + ob DisplayFusion verfügbar ist."""
         return {"available": bool(_df_command_path()), "profiles": _df_list_profiles()}
