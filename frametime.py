@@ -49,8 +49,8 @@ _DLL_CANDIDATES = [
 ]
 _WINDOW_MS = 140.0       # Statistik-Fenster der dynamischen Query (Spike-erfassend)
 _PCT_WINDOW_MS = 60000.0 # rollendes 60-s-Fenster für 1%-low / avg (Perzentile brauchen viele Frames)
-_POLL_HZ = 30.0          # Sampler-Rate (fängt Spikes; CPU-billig)
-_RING = 600              # Ringpuffer-Tiefe (~20 s @ 30 Hz)
+_POLL_HZ = 60.0          # Sampler-Rate (fängt Spikes; CPU-billig) — 60 Hz für flüssigere/feinere Kurven
+_RING = 1200             # Ringpuffer-Tiefe (~20 s @ 60 Hz)
 _RECONNECT_COOLDOWN = 8.0
 _DEAD_TIMEOUT = 6.0      # so lange JEDER Poll fehlschlägt (trotz Versuchen) → Service tot → Reconnect
 _BLOB = 16384            # großzügiger Poll-Blob (mehrere Swapchains)

@@ -88,12 +88,13 @@ function FastGraph({ kind, color }) {
       n++
     }
     tick()
-    const iv = setInterval(tick, 110)
+    const iv = setInterval(tick, 55)   // ~18 Hz Render (Backend sampelt 60 Hz) → flüssiger, weniger „abgehakt"
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
-  if (kind === 'frametime') return <FrametimeSpark data={data} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
-  return <Sparkline data={data} color={isDim(color) ? '#37e0a3' : color} pct={pct} />
+  // Frametime: nur das letzte Fenster (~7 s @ 60 Hz) → läuft ~3× schneller durch. FPS: volle ~20 s, ausgedünnt.
+  if (kind === 'frametime') return <FrametimeSpark data={data.slice(-420)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+  return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} pct={pct} />
 }
 
 // Frametime-Spike-Graph wie in der Vorschau: LOG-Skala relativ zur Baseline (Median) — normale Frames sitzen
@@ -155,20 +156,22 @@ function Sparkline({ data, color }) {
   for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
   let lo = min, hi = max
   if (lo === hi) { lo -= 1; hi += 1 }            // flache Linie nicht durch 0 teilen
+  const span = (hi - lo) || 1
+  lo -= span * 0.5; hi += span * 0.5             // Standard-Bereich VERDOPPELN → ruhigere Kurve mit Headroom
   const W = 100, H = 36, n = arr.length
   const px = (i) => (i / (n - 1)) * W
   const py = (v) => H - ((v - lo) / (hi - lo)) * H
-  const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
+  const path = smoothPath(arr.map((v, i) => [px(i), py(v)]))   // weiche Bezier-Kurve statt kantiger Geraden
   const lx = px(n - 1), ly = py(arr[n - 1])
   const c = isDim(color) ? '#39d8ff' : color
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <polygon points={`0,${H} ${line} ${W},${H}`} fill={c} opacity="0.2" stroke="none" />
-        <polyline points={line} fill="none" stroke={c} stroke-width="2"
-                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
-                  style={`filter:drop-shadow(0 0 2.5px ${c})`} />
+        <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={c} opacity="0.18" stroke="none" />
+        <path d={path} fill="none" stroke={c} stroke-width="2"
+              stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+              style={`filter:drop-shadow(0 0 2.5px ${c})`} />
       </svg>
       <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
       <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>
@@ -209,6 +212,26 @@ function isDim(hex) {
   if (!m) return true
   const n = parseInt(m[1], 16)
   return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 70
+}
+
+// Catmull-Rom → kubische Bezier: weiche Kurve durch die Punkte (statt kantiger Geraden).
+function smoothPath(pts) {
+  if (!pts || pts.length < 3) return 'M ' + (pts || []).map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L ')
+  let d = 'M ' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1)
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6
+    d += ' C ' + c1x.toFixed(1) + ' ' + c1y.toFixed(1) + ' ' + c2x.toFixed(1) + ' ' + c2y.toFixed(1) + ' ' + p2[0].toFixed(1) + ' ' + p2[1].toFixed(1)
+  }
+  return d
+}
+// Auf ~target Punkte ausdünnen (kleine Kachel braucht keine 1200 Punkte; hält den Spline performant).
+function downsample(arr, target) {
+  if (!arr || arr.length <= target) return arr || []
+  const step = arr.length / target, out = []
+  for (let i = 0; i < target; i++) out.push(arr[Math.floor(i * step)])
+  return out
 }
 
 function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
