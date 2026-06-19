@@ -74,20 +74,66 @@ function _accumHist(hist, buttons) {
 // (kein Spiel / PresentMon fehlt) — nie stumm leer.
 function FastGraph({ kind, color }) {
   const [data, setData] = useState([])
+  const [pct, setPct] = useState(null)
   const [msg, setMsg] = useState(null)
   useEffect(() => {
-    let alive = true
-    const tick = () => getJSON('/api/frametime/series?kind=' + kind).then((d) => {
-      if (!alive) return
-      setData(d.data || [])
-      setMsg((d.data && d.data.length > 1) ? null : (d.reason || (d.available ? 'warte auf ein Spiel' : 'PresentMon fehlt')))
-    }).catch(() => {})
+    let alive = true, n = 0
+    const tick = () => {
+      getJSON('/api/frametime/series?kind=' + kind).then((d) => {
+        if (!alive) return
+        setData(d.data || [])
+        setMsg((d.data && d.data.length > 1) ? null : (d.reason || (d.available ? 'warte auf ein Spiel' : 'PresentMon fehlt')))
+      }).catch(() => {})
+      if (n % 9 === 0) getJSON('/api/frametime/status').then((d) => { if (alive) setPct(d.percentiles || null) }).catch(() => {})  // ~1 Hz: Perzentile fürs Readout
+      n++
+    }
     tick()
     const iv = setInterval(tick, 110)
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
-  return <Sparkline data={data} color={color} />
+  if (kind === 'frametime') return <FrametimeSpark data={data} pct={pct} color={color} />
+  return <Sparkline data={data} color={color} pct={pct} />
+}
+
+// Frametime-Spike-Graph: ADAPTIV (kein fixes 16,7 ms) — Spike = Frame > Median×1.6, skaliert relativ zum
+// Median (Median bei 1/3 Höhe) → Spikes knallen bei JEDER fps. Über-Schwelle-Frames = rote Glow-Beams
+// (Intensität ∝ Überschuss), Live-Punkt + 1%-low/avg-Readout aus den echten PresentMon-Perzentilen.
+function FrametimeSpark({ data, pct, color }) {
+  const arr = (data || []).filter((v) => v > 0)
+  if (arr.length < 2) return <div class="t-spark t-spark-wait" />
+  const sorted = arr.slice().sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)] || 1
+  const W = 100, H = 36, n = arr.length, scale = Math.max(median * 3, 0.1)
+  const px = (i) => (i / (n - 1)) * W
+  const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * H
+  const c = color || '#39d8ff'
+  const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
+  const baseY = py(median)
+  const beams = []
+  for (let i = 0; i < n; i++) {
+    if (arr[i] > median * 1.6) {
+      const x = px(i), y = py(arr[i]), inten = Math.max(0.3, Math.min(1, (arr[i] - median) / (median * 2.5)))
+      beams.push({ x, y, inten, k: i })
+    }
+  }
+  const lx = px(n - 1), ly = py(arr[n - 1])
+  return (
+    <div class="t-graph">
+      <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        <line x1="0" y1={baseY.toFixed(1)} x2={W} y2={baseY.toFixed(1)} stroke={c} stroke-width="0.6"
+              stroke-dasharray="2 3" opacity="0.4" vector-effect="non-scaling-stroke" />
+        {beams.map((s) => <line key={s.k} x1={s.x.toFixed(1)} y1={H} x2={s.x.toFixed(1)} y2={s.y.toFixed(1)}
+              stroke="#ff5d5d" stroke-width={(0.8 + s.inten * 1.4).toFixed(1)} opacity={(0.3 + s.inten * 0.55).toFixed(2)}
+              vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1.5 + s.inten * 4).toFixed(0)}px #ff5d5d)`} />)}
+        <polyline points={line} fill="none" stroke={c} stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
+                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2px ${c})`} />
+      </svg>
+      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
+      {pct && pct.fps_1pct_low ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span> : null}
+      {pct && pct.fps_avg ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span> : null}
+    </div>
+  )
 }
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.

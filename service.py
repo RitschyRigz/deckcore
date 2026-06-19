@@ -1466,6 +1466,20 @@ class DeckCoreService:
             else:
                 self._buttons.append(fn); created += 1
             pool_by_id[bid] = fn; self._removed.discard(bid)
+        # PresentMon-Perf-Buttons mit dranhängen (HWiNFO ⊃ PresentMon) — Quelle = PresentMon DIREKT (30 Hz,
+        # spike-erhaltend), NICHT das HWiNFO-Gadget (wäre 1 Hz geglättet). Immer angelegt; zeigen graceful
+        # „kein Spiel / PresentMon fehlt". Frametime-Graph = adaptiver Spike-Look mit 1%-low-Readout.
+        for pm in ({"id": "pm_fps", "label": "FPS", "mon": {"type": "fps"}, "icon": "🎯", "title": "{value}"},
+                   {"id": "pm_frametime", "label": "Frametime", "mon": {"type": "frametime"}, "icon": "📉", "title": "{value} ms"}):
+            fn = {"id": pm["id"], "label": pm["label"], "pool_cat": "HWiNFO", "render": "graph",
+                  "action": {"type": "none"}, "monitor": pm["mon"], "states": [],
+                  "default": {"icon": pm["icon"], "title": pm["title"], "color": "#222"}}
+            ex = pool_by_id.get(pm["id"])
+            if ex is not None:
+                fn = _regen_preserve(ex, fn); self._buttons[self._buttons.index(ex)] = fn; updated += 1
+            else:
+                self._buttons.append(fn); created += 1
+            pool_by_id[pm["id"]] = fn; self._removed.discard(pm["id"])
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated,
                 "total": created + updated, "render": "graph" if as_graph else "value"}
