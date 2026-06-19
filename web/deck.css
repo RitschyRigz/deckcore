@@ -139,6 +139,11 @@
 .sd-poolcat-mv { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 2px; }
 .sd-poolcat-mv:hover { color: var(--fg); }
 .sd-pool-cat { font-size: 11px; max-width: 130px; padding: 2px 4px; border-radius: 6px; background: #1b1e25; color: var(--fg); border: 1px solid var(--border, #2a2d35); }
+/* Paletten-Kategorien (Decks-Tab: klappbare Gruppen der zum Reinziehen verfügbaren Pool-Buttons) */
+.sd-palcat { margin: 4px 0; }
+.sd-palcat-h { display: flex; align-items: center; gap: 8px; width: 100%; background: #16181d; border: 1px solid var(--border, #2a2d35); border-radius: 8px; padding: 5px 9px; cursor: pointer; color: var(--fg); text-align: left; }
+.sd-palcat-h:hover { border-color: var(--accent2, #555); }
+.sd-palcat .sd-pal-chips { padding: 6px 2px 2px; }
 .sd-wys-key-wrap { position: relative; cursor: grab; border-radius: 16px; }
 .sd-wys-key-wrap:active { cursor: grabbing; }
 .sd-wys-key-wrap.sel { outline: 2px solid var(--accent); outline-offset: 3px; }

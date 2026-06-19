@@ -410,10 +410,51 @@ function ItemInspector({ deck, item, onReload }) {
   )
 }
 
+const POOL_UNCAT = '__uncat__'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
+
+// Geteilte Paletten-Auswahl (Decks-Tab): Pool-Buttons nach pool_cat gruppiert, klappbar, DEFAULT ZUGEKLAPPT.
+// renderChip rendert den Drag-Chip (Mechanik unterscheidet sich je Editor → als Prop reingereicht).
+function PalettePicker({ palette, poolCategories, hint, renderChip }) {
+  const [open, setOpen] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sd.palcat.open') || '{}') } catch (_) { return {} }
+  })
+  const toggle = (cat) => setOpen((o) => {
+    const n = { ...o, [cat]: !o[cat] }
+    try { localStorage.setItem('sd.palcat.open', JSON.stringify(n)) } catch (_) {}
+    return n
+  })
+  const cats = poolCategories || []
+  const byCat = {}
+  for (const b of palette) { const c = b.pool_cat || POOL_UNCAT; (byCat[c] = byCat[c] || []).push(b) }
+  const orphans = Object.keys(byCat).filter((c) => c !== POOL_UNCAT && !cats.includes(c)).sort()
+  const order = [...cats, ...orphans, POOL_UNCAT].filter((c) => (byCat[c] || []).length > 0)
+  return (
+    <div class="sd-palette">
+      <span class="muted" style="font-size:12px">{hint}</span>
+      {palette.length === 0
+        ? <div class="muted" style="font-size:12px">— alle Pool-Buttons sind auf diesem Deck —</div>
+        : order.map((cat) => {
+          const list = byCat[cat] || []
+          const isOpen = !!open[cat]   // DEFAULT zugeklappt — nur explizit geöffnete Kategorien sind auf
+          return (
+            <div class="sd-palcat" key={cat}>
+              <button class="sd-palcat-h" onClick={() => toggle(cat)}>
+                <span class="sd-poolcat-toggle">{isOpen ? '▾' : '▸'}</span>
+                <span class="sd-poolcat-name">{cat === POOL_UNCAT ? 'Ohne Kategorie' : cat}</span>
+                <span class="muted" style="font-size:11px">({list.length})</span>
+              </button>
+              {isOpen && <div class="sd-pal-chips">{list.map(renderChip)}</div>}
+            </div>
+          )
+        })}
+    </div>
+  )
+}
+
 // 🧩 Freier Drag-/Resize-Editor (gridstack) — Kachel-Positionen sind DATEN (Item x/y/w/h), kein Auto-Flow.
 // Spiegelt das Muster des Stream-Tab-Layout-Editors. ⚠ Position/Größe gelten NUR im Touch-Panel; das physische
 // Elgato-Plugin liest nur resolved[button] und rendert JEDEN Button 1×1.
-function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
+function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }) {
   const elRef = useRef(null)
   const gridRef = useRef(null)
   const saveT = useRef(null)
@@ -505,25 +546,21 @@ function FreeDeckGrid({ deck, pool, resolved, onReload, onExit }) {
           })}
         </div>
       </div>
-      <div class="sd-palette">
-        <span class="muted" style="font-size:12px">🧩 Pool — in den Canvas <b>ziehen</b> (oder klicken = landet automatisch):</span>
-        <div class="sd-pal-chips">
-          {palette.length === 0 ? <span class="muted" style="font-size:12px">— alle Pool-Buttons sind auf diesem Deck —</span>
-            : palette.map((b) => (
-              <button key={b.id} class="sd-pal-chip" draggable
-                      onDragStart={() => { dragId.current = b.id }}
-                      onClick={() => addItem(b.id)} title="In den Canvas ziehen — oder klicken (landet automatisch)">
-                <Swatch vis={resolved[b.id]} />
-                <span class="sd-pal-name">{b.label || b.id}</span>
-              </button>
-            ))}
-        </div>
-      </div>
+      <PalettePicker palette={palette} poolCategories={poolCategories}
+        hint="🧩 Pool — Kategorie aufklappen, dann in den Canvas ziehen (oder klicken = landet automatisch):"
+        renderChip={(b) => (
+          <button key={b.id} class="sd-pal-chip" draggable
+                  onDragStart={() => { dragId.current = b.id }}
+                  onClick={() => addItem(b.id)} title="In den Canvas ziehen — oder klicken (landet automatisch)">
+            <Swatch vis={resolved[b.id]} />
+            <span class="sd-pal-name">{b.label || b.id}</span>
+          </button>
+        )} />
     </div>
   )
 }
 
-function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
+function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable }) {
   const [sel, setSel] = useState('')
   const drag = useRef(null)   // {id, from:'grid'|'palette'}
   const [hot, setHot] = useState('')   // Kategorie-Name unter dem Cursor (Drop-Highlight)
@@ -541,7 +578,7 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
   const toggleFree = () => postJSON(`/api/streamdeck/deck/${deck.id}/layout`, { ...layout, free: !free })
     .then(() => onReload && onReload()).catch(() => {})
   // Freie Anordnung (gridstack) ist ein eigener Editor → früh raus (alle Hooks oben liefen bereits).
-  if (free) return <FreeDeckGrid deck={deck} pool={pool} resolved={resolved} onReload={onReload} onExit={toggleFree} />
+  if (free) return <FreeDeckGrid deck={deck} pool={pool} poolCategories={poolCategories} resolved={resolved} onReload={onReload} onExit={toggleFree} />
   const cats = deck.categories || []
   const itemsById = {}; for (const it of deck.items || []) itemsById[it.button] = it
   const btnById = {}; for (const b of pool) btnById[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
@@ -712,21 +749,17 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
 
       <ItemInspector deck={deck} item={selItem} onReload={onReload} />
 
-      <div class="sd-palette">
-        <span class="muted" style="font-size:12px">🧩 Pool — Buttons NICHT auf diesem Deck (ziehen oder klicken zum Hinzufügen):</span>
-        <div class="sd-pal-chips">
-          {palette.length === 0 ? <span class="muted" style="font-size:12px">— alle Pool-Buttons sind auf diesem Deck —</span>
-            : palette.map((b) => (
-              <button key={b.id} class="sd-pal-chip" draggable
-                      onDragStart={() => { drag.current = { id: b.id, from: 'palette' } }}
-                      onClick={() => addItem(b.id, '').then(() => onReload && onReload())}
-                      title={'Hinzufügen: ' + (b.label || b.id)}>
-                <Swatch vis={resolved[b.id]} />
-                <span class="sd-pal-name">{b.label || b.id}</span>
-              </button>
-            ))}
-        </div>
-      </div>
+      <PalettePicker palette={palette} poolCategories={poolCategories}
+        hint="🧩 Pool — Kategorie aufklappen, dann ziehen oder klicken zum Hinzufügen:"
+        renderChip={(b) => (
+          <button key={b.id} class="sd-pal-chip" draggable
+                  onDragStart={() => { drag.current = { id: b.id, from: 'palette' } }}
+                  onClick={() => addItem(b.id, '').then(() => onReload && onReload())}
+                  title={'Hinzufügen: ' + (b.label || b.id)}>
+            <Swatch vis={resolved[b.id]} />
+            <span class="sd-pal-name">{b.label || b.id}</span>
+          </button>
+        )} />
     </div>
   )
 }
@@ -734,7 +767,6 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  BUTTON-POOL (Funktionen) — global, einmal definiert
 // ══════════════════════════════════════════════════════════════════════════════
-const POOL_UNCAT = '__uncat__'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
 
 function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
@@ -1156,7 +1188,7 @@ export function StreamDeck() {
             <div class="card" style="max-width:1100px">
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
               <DeckLayout deck={deck} onReload={load} />
-              <DeckGrid deck={deck} pool={data.buttons || []} resolved={resolved} onReload={load}
+              <DeckGrid deck={deck} pool={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
                         dfAvailable={options.displayfusion_available} />
             </div>
           )}
