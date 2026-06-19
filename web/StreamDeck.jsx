@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import { Clock, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -223,7 +223,10 @@ function LiveKey({ v, eff, base, render, opts }) {
       </div>
     )
   }
-  const isFlat = !v.image && render !== 'graph' && render !== 'fader'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
+  if (render === 'gauge') {
+    return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
+  }
+  const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat' : '')}
          style={isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (v.color || '#222'))}>
@@ -1781,6 +1784,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
   const knownValues = info.values || null
   const stateless = mType === 'none'
   const isWidget = render === 'text' || render === 'clock'
+  const isGauge = render === 'gauge'
   const add = () => onStates([...(states || []), { when: { op: knownValues ? 'eq' : 'any' }, title: '', icon: '', color: '#2a2a2a' }])
   const upd = (i, st) => onStates(states.map((s, j) => (j === i ? st : s)))
   const rm = (i) => onStates(states.filter((_, j) => j !== i))
@@ -1796,6 +1800,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="text">🔤 Text / Überschrift</option>
           <option value="clock">🕐 Uhr</option>
           <option value="fader">🎚 Fader (Wave Link / Windows-Lautstärke)</option>
+          <option value="gauge">🎯 Gauge (Glow-Bogen)</option>
         </select>
         <span class="muted conn-label" style="margin-left:8px">Größe</span>
         <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
@@ -1805,6 +1810,25 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
       </div>
       {isWidget ? (
         <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} />
+      ) : isGauge ? (
+        <>
+          <p class="muted sd-help">Radial-Gauge mit Glow-Bogen: der Überwachungs-Wert füllt den Bogen. <b>Min/Max</b> = Wertebereich, <b>Einheit</b> = Suffix (°C, %, …). Farbe automatisch grün→amber→rot nach Schwellwert, oder feste Farbe. Skaliert mit der Kachelgröße.</p>
+          <div class="reward-row sd-state" style="margin-top:8px;flex-wrap:wrap">
+            <span class="muted conn-label">Bereich</span>
+            <input class="so-delay" style="width:64px" type="number" placeholder="Min" value={(opts || {}).min ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), min: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted">…</span>
+            <input class="so-delay" style="width:64px" type="number" placeholder="Max" value={(opts || {}).max ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), max: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <input class="so-delay" style="width:60px" placeholder="Einheit" value={(opts || {}).unit || ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), unit: e.currentTarget.value || undefined })} />
+            <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:6px">
+              <input type="checkbox" checked={!(opts || {}).color}
+                     onChange={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.checked ? undefined : '#39d8ff' })} /> Schwellwert-Farbe</label>
+            {(opts || {}).color && <input type="color" class="sd-color" value={(opts || {}).color}
+                   onInput={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.value })} />}
+          </div>
+        </>
       ) : (
         <>
           <p class="muted sd-help">

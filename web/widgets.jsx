@@ -68,3 +68,37 @@ export function Clock({ opts, fs }) {
           style={`color:${color};font-family:${fontStack(o.font || 'mono')};font-size:${widgetFontSize(o, 'clock')}`}>{t}</span>
   )
 }
+
+// Schwellwert-Farbe grün→amber→rot (0..1). Feste Akzentfarbe (opts.color) gewinnt, wenn gesetzt.
+export const gaugeColor = (t, fixed) => fixed || (t < 0.6 ? '#37e0a3' : t < 0.85 ? '#ffb454' : '#ff5d5d')
+
+// Radial-Gauge im Deck-Stil: Glow-Bogen (270°, Gap unten) + Schleppzeiger-Punkt + großer Wert mit Glow.
+// Wertbereich aus opts.min/max (Default 0..100), Einheit opts.unit. Skaliert via cqw (wie Text/Uhr).
+// Reine Panel-Darstellung — physisches Stream Deck zeigt nur Titel/Wert.
+export function Gauge({ value, opts }) {
+  const o = opts || {}
+  const min = Number.isFinite(+o.min) ? +o.min : 0
+  const max = Number.isFinite(+o.max) ? +o.max : 100
+  const span = (max - min) || 1
+  const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
+  const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
+  const col = gaugeColor(t, o.color)
+  const cx = 50, cy = 50, r = 38, A0 = 135, SW = 270
+  const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)] }
+  const arc = (a0, a1) => { const [x0, y0] = pol(a0), [x1, y1] = pol(a1); const lg = Math.abs(a1 - a0) > 180 ? 1 : 0
+    return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${lg} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}` }
+  const [tx, ty] = pol(A0 + SW * t)
+  const disp = v === null ? '–' : (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  return (
+    <div class="t-gauge" style={`--acc:${col}`}>
+      <svg class="t-gauge-svg" viewBox="0 0 100 74" preserveAspectRatio="xMidYMid meet">
+        <path d={arc(A0, A0 + SW)} fill="none" stroke="#1a2230" stroke-width="9" stroke-linecap="round" />
+        {v !== null && <path d={arc(A0, A0 + SW * t)} fill="none" stroke={col} stroke-width="9" stroke-linecap="round"
+                             style={`filter:drop-shadow(0 0 4px ${col})`} />}
+        {v !== null && <circle cx={tx.toFixed(2)} cy={ty.toFixed(2)} r="4.6" fill="#fff"
+                               style={`filter:drop-shadow(0 0 6px ${col})`} />}
+      </svg>
+      <div class="t-gauge-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-gauge-u">{o.unit || ''}</span></div>
+    </div>
+  )
+}

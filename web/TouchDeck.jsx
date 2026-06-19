@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
-import { Clock, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, fontStack, widgetFontSize } from './widgets.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -111,9 +111,10 @@ function Sparkline({ data, color }) {
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
         <polygon points={`0,${H} ${line} ${W},${H}`} fill={c} opacity="0.2" stroke="none" />
         <polyline points={line} fill="none" stroke={c} stroke-width="2"
-                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+                  stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+                  style={`filter:drop-shadow(0 0 2.5px ${c})`} />
       </svg>
-      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c}`} />
+      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
       <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>
       <span class="t-graph-lbl t-graph-min">{fmt(min)}</span>
     </div>
@@ -491,9 +492,10 @@ export function TouchDeck() {
     const folder = (actionById[id] || {}).type === 'open_deck'
     const render = renderById[id]
     const isGraph = render === 'graph'
+    const isGauge = render === 'gauge'
     const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
     const isFader = render === 'fader'
-    const isFlat = !v.image && !isWidget && !isGraph   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Fader)
+    const isFlat = !v.image && !isWidget && !isGraph && !isGauge   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Fader)
     const o = optsById[id] || {}
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
@@ -507,8 +509,8 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : (isGraph ? 'var(--bg)' : (v.color || '#222'))))) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge) ? 'var(--bg)' : (v.color || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
@@ -519,6 +521,8 @@ export function TouchDeck() {
                 ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
                 : <Sparkline data={histRef.current[id]} color={v.color} />}
             </>
+          ) : isGauge ? (
+            <Gauge value={v.value} opts={o} />
           ) : (
             <>
               {v.image ? <img class="t-key-img" src={v.image} alt="" />

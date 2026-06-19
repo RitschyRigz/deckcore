@@ -316,6 +316,13 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   line-height: 1; color: var(--fg); text-shadow: 0 1px 2px rgba(0, 0, 0, .9); pointer-events: none; }
 .t-graph-max { top: 1px; opacity: .85; }
 .t-graph-min { bottom: 1px; opacity: .6; }
+/* Radial-Gauge (Glow-Bogen) — reine Panel-Kachel, Wert skaliert via cqw mit der Kachelbreite. */
+.t-key.is-gauge, .sd-prev-key.is-gauge { padding: 3px; }
+.t-gauge { position: relative; width: 100%; height: 100%; display: block; container-type: inline-size; }
+.t-gauge-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.t-gauge-v { position: absolute; left: 0; right: 0; top: 54%; transform: translateY(-50%); text-align: center;
+  font-weight: 700; color: #eef4ff; line-height: 1; text-shadow: 0 0 8px var(--acc); }
+.t-gauge-u { font-size: .5em; font-weight: 600; color: #9fb0c6; margin-left: 1px; }
 
 /* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */

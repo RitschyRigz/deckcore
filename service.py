@@ -199,6 +199,14 @@ def _sanitize_opts(o) -> dict:
         out["seconds"] = bool(o.get("seconds"))
     if "format24" in o:
         out["format24"] = bool(o.get("format24"))
+    for k in ("min", "max"):                          # Gauge-Wertebereich
+        try:
+            if o.get(k) is not None and o.get(k) != "":
+                out[k] = float(o[k])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(o.get("unit"), str) and o["unit"].strip():
+        out["unit"] = o["unit"].strip()[:8]            # Gauge-Einheit (°C, %, …)
     return out
 
 
@@ -1696,7 +1704,7 @@ class DeckCoreService:
         else:
             button.pop("pool_cat", None)
         # Darstellung (render: graph|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "text", "clock", "fader"):
+        if button.get("render") not in ("graph", "gauge", "text", "clock", "fader"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))
