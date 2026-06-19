@@ -604,6 +604,17 @@ class WaveLinkDirect:
             return None
         return main.get("outputDeviceId") == output_device_id
 
+    def main_output_name(self) -> Optional[str]:
+        """Name des aktuell aktiven Monitor-Hauptausgangs (für reine Anzeige-Buttons mit Titel ``{value}``).
+        None wenn unbekannt — der ID→Name-Lookup nutzt die Geräte-Liste."""
+        did = (self.main_output() or {}).get("outputDeviceId")
+        if not did:
+            return None
+        for d in self.outputs():
+            if d.get("id") == did:
+                return d.get("name") or did
+        return did
+
     def close(self) -> None:
         with self._lock:
             self._teardown()

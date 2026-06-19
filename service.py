@@ -2326,8 +2326,10 @@ class DeckCoreService:
         return self._wl.mix_muted(mon.get("id", ""))
 
     def _mon_wavelink_main_output(self, mon: dict, btn: dict) -> Any:
-        # True, wenn DIESES Gerät aktuell der Monitor-Hauptausgang ist (grünes Statuslicht).
-        return self._wl.is_main_output(mon.get("output_device_id", ""))
+        # Dual-Modus: GERÄT gewählt → True/False (ist es der aktive Haupt-Ausgang? = Statuslicht); KEIN Gerät
+        # gewählt → der NAME des aktiven Haupt-Ausgangs (für reine Anzeige-Buttons mit Titel „{value}").
+        did = mon.get("output_device_id", "")
+        return self._wl.is_main_output(did) if did else self._wl.main_output_name()
 
     def _winaudio_default_id(self, role: str = "multimedia") -> Any:
         """Aktuelles Windows-Standard-Ausgabegerät — EIN geteilter ~1s-Cache für alle winaudio_default-

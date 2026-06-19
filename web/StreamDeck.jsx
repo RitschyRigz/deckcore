@@ -75,6 +75,7 @@ const MONITOR_INFO = {
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
   winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
   winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
+  wavelink_main_output: { text: 'Zeigt den aktiven Wave-Link-Monitor-Hauptausgang. Einfach „{value}" in den Titel setzen → der Button zeigt live den GERÄTE-NAMEN (keine Status-Regel, kein Gerät-Wählen nötig). Tipp: als „🔢 Stat" eine schöne große Anzeige.', values: null, bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
