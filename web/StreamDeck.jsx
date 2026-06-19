@@ -643,30 +643,8 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
         <span class="muted" style="font-size:12px">🖱 Buttons <b>direkt im Raster</b> ziehen — ordnen + zwischen Kategorien schieben. Aus der <b>Palette</b> unten reinziehen. Klick = auswählen.</span>
         <span class="sd-inline">
           <button class="btn ghost small" onClick={toggleFree} title="Freie Drag-Platzierung (gridstack): Kacheln frei verschieben/vergrößern statt Kategorie-Raster">⊞ Frei anordnen</button>
-          <span class="muted" style="font-size:12px;font-weight:700">Presets generieren:</span>
-          <button class="btn ghost small" disabled={obsBusy} onClick={importScenes}
-                  title="Pro OBS-Szene einen Szenen-Wechsel-Button in DIESES Deck (aktive Szene wird live grün hervorgehoben). Idempotent.">
-            {obsBusy ? '… lädt OBS' : '🎬 OBS-Szenen importieren'}
-          </button>
-          {dfAvailable && (
-            <button class="btn ghost small" disabled={dfBusy} onClick={importDf}
-                    title="Pro DisplayFusion-Monitor-Profil einen Lade-Button in DIESES Deck (aktives Profil live grün). Idempotent.">
-              {dfBusy ? '… lädt DF' : '🖥 DisplayFusion-Profile importieren'}
-            </button>
-          )}
-          <button class="btn ghost small" disabled={wlBusy} onClick={importWavelink}
-                  title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler in DIESES Deck. Idempotent.">
-            {wlBusy ? '… liest Wave Link' : '🎚 Wave-Link-Fader importieren'}
-          </button>
-          <button class="btn ghost small" disabled={waBusy} onClick={importWinaudio}
-                  title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU in DIESES Deck (folgt dem Standard-Ausgabegerät). Idempotent.">
-            {waBusy ? '… Windows-Audio' : '🔊 Windows-Lautstärke-Fader'}
-          </button>
-          <InlineAdd label="➕ Kategorie" placeholder="Neue Kategorie" onAdd={addCat} />
-          {obsMsg && <span class={'msg ' + (obsMsg.ok ? 'ok' : 'err')}>{obsMsg.t}</span>}
-          {dfMsg && <span class={'msg ' + (dfMsg.ok ? 'ok' : 'err')}>{dfMsg.t}</span>}
-          {wlMsg && <span class={'msg ' + (wlMsg.ok ? 'ok' : 'err')}>{wlMsg.t}</span>}
-          {waMsg && <span class={'msg ' + (waMsg.ok ? 'ok' : 'err')}>{waMsg.t}</span>}
+          <InlineAdd label="➕ Kategorie" placeholder="Neue Deck-Kategorie" onAdd={addCat} />
+          <span class="muted" style="font-size:11px">· Buttons/Fader generierst du im <b>🧩 Button-Pool</b>-Tab (Presets, landen dort kategorisiert) und ziehst sie dann hierher.</span>
         </span>
       </div>
 
@@ -756,7 +734,7 @@ function DeckGrid({ deck, pool, resolved, onReload, dfAvailable }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  BUTTON-POOL (Funktionen) — global, einmal definiert
 // ══════════════════════════════════════════════════════════════════════════════
-const POOL_UNCAT = ' uncat'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
+const POOL_UNCAT = '__uncat__'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
 
 function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
@@ -792,10 +770,10 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
     try {
       if (kind === 'wl') {
         const r = await postJSON('/api/streamdeck/wavelink/build', {})
-        setGenMsg({ ok: true, t: `Wave-Link-Deck: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.mixes || 0} Mixes · ${r.channels || 0} Channels · ${r.outputs || 0} Ausgänge) — Tab „Wave Link"` })
+        setGenMsg({ ok: true, t: `Wave Link → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.mixes || 0} Mixes · ${r.channels || 0} Channels · ${r.outputs || 0} Ausgänge) — Kategorie „Wave Link"` })
       } else if (kind === 'wa') {
         const r = await postJSON('/api/streamdeck/winaudio/build', {})
-        setGenMsg({ ok: true, t: `Windows-Lautstärke-Fader angelegt (${r.created || 0} neu) — Tab „Audio"` })
+        setGenMsg({ ok: true, t: `Windows-Lautstärke-Fader → Pool (${r.created || 0} neu) — Kategorie „Audio"` })
       } else {
         const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
         setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
@@ -816,7 +794,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
         <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
         {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
-        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und baut ein komplettes Wave-Link-Deck: pro Mix/Channel einen Fader + pro Ausgang einen Wähler. Idempotent.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
+        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler im POOL an (Kategorie Wave Link). Idempotent — dann auf Decks ziehen.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wa')} title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU an (Tab Audio). Folgt automatisch dem Standard-Ausgabegerät.">{genBusy === 'wa' ? '… Windows' : '🔊 Windows-Lautstärke-Fader'}</button>
         {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>

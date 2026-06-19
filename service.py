@@ -204,7 +204,7 @@ def _sanitize_opts(o) -> dict:
 
 # Kosmetik-Felder, die der NUTZER besitzt — beim Neu-Generieren eines bestehenden Buttons
 # behalten (action/monitor + interne Marker bleiben die Funktions-Wahrheit des Generators).
-_REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v")
+_REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v", "pool_cat")
 
 
 def _regen_preserve(existing: dict, fresh: dict) -> dict:
@@ -1206,33 +1206,34 @@ class DeckCoreService:
         return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
                 "total": created + updated}
 
-    def populate_wavelink(self, deck_id: str) -> dict:
-        """Baut/aktualisiert aus dem LIVE-Wave-Link-Zustand ein komplettes Audio-Deck:
-        pro Ausgabegerät einen Main-Output-Wähler (Tap = als Monitor-Hauptausgang setzen, grün=aktiv),
-        pro Mix UND pro Channel einen vertikalen Fader (render=fader; Ziehen=Level, Tippen=Mute, Live-VU).
-        Stabile Button-ids (``wl_out_``/``wl_mix_``/``wl_chan_``) → wiederholtes Befüllen aktualisiert
-        statt zu duplizieren; die User-Platzierung im Deck bleibt erhalten."""
-        deck = self._deck(deck_id)
-        if not deck:
-            return {"ok": False, "reason": "unknown_deck"}
+    def populate_wavelink(self, deck_id: str = "") -> dict:
+        """Legt aus dem LIVE-Wave-Link-Zustand die Audio-Buttons IM POOL an (Pool-Kategorie „Wave Link"):
+        pro Ausgabegerät einen Main-Output-Wähler, pro Mix UND pro Channel einen vertikalen Fader
+        (render=fader). Stabile ids (``wl_out_``/``wl_mix_``/``wl_chan_``) → idempotent (User-Kosmetik +
+        Kategorie-Verschiebung bleiben via _regen_preserve). KEINE Deck-Anlage — Platzierung per Drag&Drop
+        im Decks-Tab. Optionales ``deck_id`` (legacy): platziert zusätzlich aufs angegebene Deck."""
         snap = self._wl.snapshot()
         if not snap.get("app"):
             return {"ok": False, "reason": "wavelink_offline"}
+        deck = self._deck(deck_id) if deck_id else None
         mixes = snap.get("mixes", []) or []
         channels = snap.get("channels", []) or []
         outputs = snap.get("outputDevices", []) or []
+        POOL_CAT = "Wave Link"
         cats = {"out": "Ausgänge", "mix": "Mixes", "chan": "Channels"}
-        for c in cats.values():
-            if c not in deck["categories"]:
-                deck["categories"].append(c)
+        if deck:
+            for c in cats.values():
+                if c not in deck["categories"]:
+                    deck["categories"].append(c)
         pool_by_id = {b.get("id"): b for b in self._buttons}
-        item_by_id = {it["button"]: it for it in deck["items"]}
+        item_by_id = {it["button"]: it for it in deck["items"]} if deck else {}
         created = updated = 0
 
         def _upsert(fn: dict) -> None:
+            fn["pool_cat"] = POOL_CAT   # Pool-Kategorie; auf Update via _regen_preserve respektiert (User-Verschiebung bleibt)
             ex = pool_by_id.get(fn["id"])
             if ex is not None:
-                fn = _regen_preserve(ex, fn)   # User-Kosmetik (Symbol/Label/Farbe) behalten
+                fn = _regen_preserve(ex, fn)   # User-Kosmetik (Symbol/Label/Farbe/Kategorie) behalten
                 self._buttons[self._buttons.index(ex)] = fn
             else:
                 self._buttons.append(fn)
@@ -1241,6 +1242,8 @@ class DeckCoreService:
 
         def _place(bid: str, category: str, style: dict, h: int = 1) -> None:
             nonlocal created, updated
+            if not deck:   # pool-only (Default) → keine Deck-Platzierung
+                return
             ex = item_by_id.get(bid)
             if ex is not None:
                 if h and h > 1:
@@ -1313,40 +1316,43 @@ class DeckCoreService:
             })
             _place("wl_chan_" + _slug(cid), cats["chan"], {}, h=2)
 
+        if POOL_CAT not in self._pool_categories:
+            self._pool_categories.append(POOL_CAT)
         self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
+        return {"ok": True, "deck": deck_id or None, "created": created, "updated": updated,
                 "mixes": len(mixes), "channels": len(channels), "outputs": len(outputs)}
 
-    def populate_winaudio_volume(self, deck_id: str) -> dict:
+    def populate_winaudio_volume(self, deck_id: str = "") -> dict:
         """Legt EINEN Windows-Lautstärke-Fader (render=fader) ins Deck + Pool: Ziehen = Lautstärke,
         Tippen = Mute, Live-VU. Default = Windows-Hauptlautstärke; WELCHES Gerät der Fader regelt, wählt
         man danach in der AKTION (Geräte-Dropdown). Jeder Aufruf legt einen NEUEN Fader mit eindeutiger
         id an (``wa_master``, dann ``wa_vol_2``/``…``) → man kann MEHRERE Fader für verschiedene Geräte
         haben (überschreibt nie einen bestehenden)."""
-        deck = self._deck(deck_id)
-        if not deck:
-            return {"ok": False, "reason": "unknown_deck"}
+        deck = self._deck(deck_id) if deck_id else None
         # KEIN available()-Gate: der Audio-Helfer braucht nach Start ~1 s, bis er „verfügbar" meldet —
         # der Fader ist nur eine Definition und zeigt notfalls „n/v", bis der Helfer da ist.
         existing = {b.get("id") for b in self._buttons}
         bid, n = "wa_master", 2
         while bid in existing:
             bid = f"wa_vol_{n}"; n += 1
-        cat = "Audio"
-        if cat not in deck["categories"]:
-            deck["categories"].append(cat)
+        POOL_CAT = "Audio"
         fn = {
-            "id": bid, "label": "Windows-Lautstärke", "render": "fader",
+            "id": bid, "label": "Windows-Lautstärke", "render": "fader", "pool_cat": POOL_CAT,
             "action": {"type": "winaudio", "wa_action": "toggle_mute"},   # Tippen = Mute (auch Hardware)
             "monitor": {"type": "winaudio_volume"},                       # Reglerstand (Gerät = aus der Aktion)
             "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"},
         }
         self._buttons.append(fn)
         self._removed.discard(bid)
-        deck["items"].append({"button": bid, "category": cat,
-                              "style": {}, "hidden": False, "h": 2})       # hochkant (reine Panel-Größe)
+        if POOL_CAT not in self._pool_categories:
+            self._pool_categories.append(POOL_CAT)
+        if deck:
+            if POOL_CAT not in deck["categories"]:
+                deck["categories"].append(POOL_CAT)
+            deck["items"].append({"button": bid, "category": POOL_CAT,
+                                  "style": {}, "hidden": False, "h": 2})   # hochkant (reine Panel-Größe)
         self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "deck": deck_id, "created": 1, "button": bid}
+        return {"ok": True, "deck": deck_id or None, "created": 1, "button": bid}
 
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Pool-Ansicht ──
     def generate_obs_scene_buttons(self, scenes: list) -> dict:
@@ -1355,6 +1361,8 @@ class DeckCoreService:
         names = [str(s) for s in (scenes or []) if str(s).strip()]
         if not names:
             return {"ok": False, "reason": "no_scenes"}
+        if "OBS-Szenen" not in self._pool_categories:
+            self._pool_categories.append("OBS-Szenen")
         pool_by_id = {b.get("id"): b for b in self._buttons}
         used = set(pool_by_id.keys())
         created = updated = 0
@@ -1364,7 +1372,7 @@ class DeckCoreService:
                 base = bid; n = 2
                 while bid in used:
                     bid = f"{base}_{n}"; n += 1
-            fn = {"id": bid, "label": name, "_scene": name,
+            fn = {"id": bid, "label": name, "_scene": name, "pool_cat": "OBS-Szenen",
                   "action": {"type": "obs", "obs_action": "scene", "scene": name},
                   "monitor": {"type": "obs_scene"},
                   "states": [{"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": "#1f9d55"}],
@@ -1384,6 +1392,8 @@ class DeckCoreService:
         profs = _df_list_profiles()
         if not profs:
             return {"ok": False, "reason": "no_profiles"}
+        if "DisplayFusion" not in self._pool_categories:
+            self._pool_categories.append("DisplayFusion")
         pool_by_id = {b.get("id"): b for b in self._buttons}
         used = set(pool_by_id.keys())
         created = updated = 0
@@ -1394,7 +1404,7 @@ class DeckCoreService:
                 base = bid; n = 2
                 while bid in used:
                     bid = f"{base}_{n}"; n += 1
-            fn = {"id": bid, "label": name, "_df_profile": name,
+            fn = {"id": bid, "label": name, "_df_profile": name, "pool_cat": "DisplayFusion",
                   "action": {"type": "displayfusion", "profile": name},
                   "monitor": {"type": "displayfusion_profile"},
                   "states": [{"when": {"op": "eq", "value": name}, "icon": "🖥", "title": name, "color": "#1f9d55"}],

@@ -245,32 +245,18 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/wavelink/build")
     def streamdeck_wavelink_build(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        """Baut/aktualisiert ein komplettes Wave-Link-Deck (Geräte/Mixes/Channels) aus dem Live-Zustand.
-        Legt das Deck an, wenn keins angegeben/vorhanden (Default-Label „Wave Link")."""
-        svc = get_service(request)
-        b = body or {}
-        deck_id = (b.get("deck_id") or "").strip()
-        if not deck_id:
-            label = (b.get("deck_label") or "Wave Link").strip() or "Wave Link"
-            existing = next((d for d in svc.decks() if d["label"].lower() == label.lower()), None)
-            deck_id = existing["id"] if existing else svc.add_deck(label, b.get("deck_icon") or "🎚")["id"]
-        res = svc.populate_wavelink(deck_id)
+        """Legt die Wave-Link-Buttons (Geräte/Mixes/Channels) aus dem Live-Zustand IM POOL an
+        (Pool-Kategorie „Wave Link") — KEINE Deck-Anlage. Platzierung per Drag&Drop im Decks-Tab."""
+        res = get_service(request).populate_wavelink()
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)
 
     @r.post("/api/streamdeck/winaudio/build")
     def streamdeck_winaudio_build(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        """Legt den „allgemeinen Windows-Lautstärke-Regler" (Master-Fader + VU) ins Deck.
-        Legt das Deck an, wenn keins angegeben/vorhanden (Default-Label „Audio")."""
-        svc = get_service(request)
-        b = body or {}
-        deck_id = (b.get("deck_id") or "").strip()
-        if not deck_id:
-            label = (b.get("deck_label") or "Audio").strip() or "Audio"
-            existing = next((d for d in svc.decks() if d["label"].lower() == label.lower()), None)
-            deck_id = existing["id"] if existing else svc.add_deck(label, b.get("deck_icon") or "🔊")["id"]
-        res = svc.populate_winaudio_volume(deck_id)
+        """Legt einen „Windows-Lautstärke-Regler" (Master-Fader + VU) IM POOL an (Pool-Kategorie
+        „Audio") — KEINE Deck-Anlage. Platzierung per Drag&Drop im Decks-Tab."""
+        res = get_service(request).populate_winaudio_volume()
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)
