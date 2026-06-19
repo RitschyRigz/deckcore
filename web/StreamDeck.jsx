@@ -215,7 +215,7 @@ function LiveKey({ v, eff, base, render, opts }) {
   v = v || {}
   const o = opts || {}
   if (render === 'clock') {
-    return <div class={keyClass(eff, base) + ' t-widget'} style="background:transparent"><Clock opts={o} fs={26} /></div>
+    return <div class={keyClass(eff, base) + ' t-widget is-clock'} style="background:transparent"><Clock opts={o} /></div>
   }
   if (render === 'text') {
     return (
@@ -1077,10 +1077,12 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
       )}
       <label>Farbe
         <input type="color" class="so-delay" style="width:46px;height:30px;padding:2px"
-               value={o.color || '#ffffff'} onChange={(e) => setO({ color: e.currentTarget.value })} />
+               value={o.color || (isClock ? '#8ec5ff' : '#ffffff')} onChange={(e) => setO({ color: e.currentTarget.value })} />
       </label>
       {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.seconds !== false} onChange={(e) => setO({ seconds: e.currentTarget.checked })} /> Sekunden</label>}
       {isClock && digital && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.format24 !== false} onChange={(e) => setO({ format24: e.currentTarget.checked })} /> 24-Std</label>}
+      {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!o.date} onChange={(e) => setO({ date: e.currentTarget.checked })} /> Datum</label>}
+      {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.frame !== false} onChange={(e) => setO({ frame: e.currentTarget.checked })} /> Rahmen</label>}
     </div>
   )
 }

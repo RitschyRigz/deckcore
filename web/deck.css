@@ -123,8 +123,24 @@
 .t-key.cqsize { container-type: inline-size; }   /* Schrift in cqw skaliert mit der Kachel-BREITE (4 Felder = 4×) */
 .sd-prev-key.t-widget { container-type: inline-size; border: 0; box-shadow: none; align-items: center; justify-content: center; }
 .t-label-text { font-weight: 800; text-align: center; line-height: 1.15; color: var(--fg); width: 100%; word-break: break-word; }
-.t-clock-digital { font-weight: 800; line-height: 1; letter-spacing: 1px; white-space: nowrap; }
+/* ── Uhr-Kachel: dunkler Verlauf + Eck-Brackets + Glow-Ziffern (gleiches Design wie Flat-/Fader-Buttons) ── */
+.t-key.is-clock, .sd-prev-key.is-clock { padding: 0; }   /* Karte füllt die Kachel randlos */
+.t-clock-card { position: relative; box-sizing: border-box; width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4cqw;
+  padding: 7cqw; border-radius: 16px; overflow: hidden; container-type: inline-size; }
+.t-clock-card.framed { background: linear-gradient(165deg, #171c26, #0c0f14);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
+.t-clock-card.framed::before, .t-clock-card.framed::after { content: ""; position: absolute;
+  width: 15cqw; height: 15cqw; min-width: 11px; min-height: 11px; max-width: 22px; max-height: 22px;
+  pointer-events: none; opacity: .85; }
+.t-clock-card.framed::before { top: 6px; left: 6px; border-top: 2px solid var(--acc); border-left: 2px solid var(--acc); border-radius: 6px 0 0 0; }
+.t-clock-card.framed::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc); border-right: 2px solid var(--acc); border-radius: 0 0 6px 0; }
+.t-clock-digital { font-weight: 800; line-height: 1; letter-spacing: 1px; white-space: nowrap;
+  color: var(--acc, #8ec5ff); text-shadow: 0 0 9px var(--acc), 0 0 2px rgba(255,255,255,.55); }
 .t-clock-analog { width: 100%; height: 100%; display: block; }
+.t-clock-card .t-clock-analog { flex: 1 1 auto; min-height: 0; filter: drop-shadow(0 0 3px var(--acc)); }
+.t-clock-date { font-size: 8.5cqw; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; line-height: 1;
+  color: var(--fg); opacity: .6; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .sd-gs .t-clock-analog { width: 100%; height: 100%; }
 .sd-gs .t-clock-digital { font-weight: 800; }
 .sd-gs .sd-label { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;

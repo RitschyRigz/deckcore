@@ -653,7 +653,7 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
               style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (v.color || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />

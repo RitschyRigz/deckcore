@@ -24,17 +24,31 @@ export const widgetFontSize = (opts, kind) => {
 }
 
 const pad = (n) => (n < 10 ? '0' + n : '' + n)
+// Wochentag + Datum, lokalisiert via Intl (offline — kein Netz/Web-Font nötig); Fallback = DD.MM.YYYY.
+const fmtDate = (d) => {
+  try {
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' })
+  } catch (_e) {
+    return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear()
+  }
+}
 
-// Live-Uhr — digital (Text) ODER analog (SVG). Läuft client-seitig aus der lokalen Browser-Zeit.
-export function Clock({ opts, fs }) {
+// Live-Uhr — digital (Text) ODER analog (SVG), in einer Deck-Kachel mit Rahmen+Glow (passt zum Flat-/Fader-Design).
+// Läuft client-seitig aus der lokalen Browser-Zeit. Optionen: mode, seconds, format24, date, frame, color, font, size.
+// Die Farbe (opts.color) treibt Ziffern-Glow + Eck-Brackets (--acc) — Default ein kühles Blau.
+export function Clock({ opts }) {
   const o = opts || {}
   const withSeconds = o.seconds !== false
+  const withDate = !!o.date
+  const framed = o.frame !== false
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
     const iv = setInterval(() => setNow(new Date()), withSeconds ? 1000 : 15000)
     return () => clearInterval(iv)
   }, [withSeconds])
-  const color = o.color || 'var(--fg)'
+  const accent = o.color || '#8ec5ff'
+  const cardCls = 't-clock-card' + (framed ? ' framed' : '')
+  const dateEl = withDate ? <span class="t-clock-date">{fmtDate(now)}</span> : null
 
   if (o.mode === 'analog') {
     const h = now.getHours() % 12, m = now.getMinutes(), s = now.getSeconds()
@@ -44,18 +58,21 @@ export function Clock({ opts, fs }) {
                    stroke={col} stroke-width={w} stroke-linecap="round" vector-effect="non-scaling-stroke" />
     }
     return (
-      <svg class="t-clock t-clock-analog" viewBox="0 0 100 100" style={`color:${color}`}>
-        <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" stroke-width="2" opacity="0.45" />
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((i) => {
-          const r = (i * 30 - 90) * Math.PI / 180
-          return <circle key={i} cx={(50 + Math.cos(r) * 41).toFixed(1)} cy={(50 + Math.sin(r) * 41).toFixed(1)}
-                         r={i % 3 === 0 ? 2.2 : 1.3} fill="currentColor" opacity="0.65" />
-        })}
-        {hand((h + m / 60) * 30, 25, 3.2, 'currentColor')}
-        {hand((m + s / 60) * 6, 35, 2.2, 'currentColor')}
-        {withSeconds && hand(s * 6, 39, 1, '#e0564b')}
-        <circle cx="50" cy="50" r="2.6" fill="currentColor" />
-      </svg>
+      <div class={cardCls} style={`--acc:${accent}`}>
+        <svg class="t-clock t-clock-analog" viewBox="0 0 100 100" style={`color:${accent}`}>
+          <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" stroke-width="2" opacity="0.4" />
+          {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((i) => {
+            const r = (i * 30 - 90) * Math.PI / 180
+            return <circle key={i} cx={(50 + Math.cos(r) * 41).toFixed(1)} cy={(50 + Math.sin(r) * 41).toFixed(1)}
+                           r={i % 3 === 0 ? 2.2 : 1.3} fill="currentColor" opacity="0.6" />
+          })}
+          {hand((h + m / 60) * 30, 25, 3.2, 'currentColor')}
+          {hand((m + s / 60) * 6, 35, 2.2, 'currentColor')}
+          {withSeconds && hand(s * 6, 39, 1, '#e0564b')}
+          <circle cx="50" cy="50" r="2.6" fill="currentColor" />
+        </svg>
+        {dateEl}
+      </div>
     )
   }
 
@@ -64,8 +81,11 @@ export function Clock({ opts, fs }) {
   let t = pad(hr) + ':' + pad(now.getMinutes())
   if (withSeconds) t += ':' + pad(now.getSeconds())
   return (
-    <span class="t-clock t-clock-digital"
-          style={`color:${color};font-family:${fontStack(o.font || 'mono')};font-size:${widgetFontSize(o, 'clock')}`}>{t}</span>
+    <div class={cardCls} style={`--acc:${accent}`}>
+      <span class="t-clock t-clock-digital"
+            style={`font-family:${fontStack(o.font || 'mono')};font-size:${widgetFontSize(o, 'clock')}`}>{t}</span>
+      {dateEl}
+    </div>
   )
 }
 

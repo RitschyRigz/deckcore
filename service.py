@@ -199,6 +199,10 @@ def _sanitize_opts(o) -> dict:
         out["seconds"] = bool(o.get("seconds"))
     if "format24" in o:
         out["format24"] = bool(o.get("format24"))
+    if "date" in o:
+        out["date"] = bool(o.get("date"))              # Uhr: Datumszeile mit anzeigen
+    if "frame" in o:
+        out["frame"] = bool(o.get("frame"))            # Uhr: Rahmen/Glow-Kachel (Default an) ein/aus
     for k in ("min", "max"):                          # Gauge-Wertebereich
         try:
             if o.get(k) is not None and o.get(k) != "":
