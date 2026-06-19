@@ -75,6 +75,7 @@ function _accumHist(hist, buttons) {
 function FastGraph({ kind, color }) {
   const [data, setData] = useState([])
   const [pct, setPct] = useState(null)
+  const [fps, setFps] = useState(0)
   const [msg, setMsg] = useState(null)
   useEffect(() => {
     let alive = true, n = 0
@@ -84,7 +85,7 @@ function FastGraph({ kind, color }) {
         setData(d.data || [])
         setMsg((d.data && d.data.length > 1) ? null : (d.reason || (d.available ? 'warte auf ein Spiel' : 'PresentMon fehlt')))
       }).catch(() => {})
-      if (n % 9 === 0) getJSON('/api/frametime/status').then((d) => { if (alive) setPct(d.percentiles || null) }).catch(() => {})  // ~1 Hz: Perzentile fürs Readout
+      if (n % 9 === 0) getJSON('/api/frametime/status').then((d) => { if (alive) { setPct(d.percentiles || null); setFps(d.fps || 0) } }).catch(() => {})  // ~2.5 Hz: Perzentile + fps fürs Zeitfenster
       n++
     }
     tick()
@@ -92,34 +93,37 @@ function FastGraph({ kind, color }) {
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
-  // Frametime: nur letztes Fenster (~3 s @ 60 Hz) → läuft schnell durch + Spikes breit genug zum Sehen. FPS: ~20 s.
-  if (kind === 'frametime') return <FrametimeSpark data={data.slice(-200)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+  // Frametime: FESTES ~2,6-s-Zeitfenster (fps-abhängige Frame-Zahl, da echte Per-Frame-Daten) → ruhiger, RTSS-
+  //   ähnlicher Verlauf statt sub-sekündlichem Geflacker. FPS: ~20 s, ausgedünnt + geglättet.
+  if (kind === 'frametime') {
+    const winN = Math.max(240, Math.min(1100, Math.round((fps || 120) * 2.6)))
+    return <FrametimeSpark data={data.slice(-winN)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+  }
   return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
 }
 
-// Frametime-Spike-Graph: SPIKES NIE STAUCHEN/GLÄTTEN — LINEAR + fit-to-peak. Normale Frames sitzen ruhig im
-// unteren Drittel (Boden = Median×3.5), der Top skaliert zum Fenster-Max → größter Spike steht immer fast
-// ganz oben, scharf. Flächen-Glow drunter, rote Glow-Beams bei echten Spikes (>2× Baseline) + Peak-Hold-
-// Schlepp-Linie am Fenster-Max + 1%-low/avg-Readout aus echten PresentMon-Perzentilen.
+// Frametime-Spike-Graph im RTSS/Afterburner-Stil: FESTE, ruhige Y-Skala (base×4, Median über mehrere Sekunden →
+// atmet NICHT bei jedem Spike), Spikes clippen oben statt die ganze Kurve zu reskalieren. Fixe ms-Referenzlinien
+// (60/120/144 fps), Flächen-Glow, scharfe Per-Frame-Linie, rote Glow-Beams bei echten Spikes (>2.2× Baseline) +
+// 1%-low/avg-Readout aus echten PresentMon-Perzentilen. Daten = ECHT pro Frame (pmConsumeFrames, kein Aggregat).
 function FrametimeSpark({ data, pct, color }) {
   const arr = (data || []).filter((v) => v > 0)
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const sorted = arr.slice().sort((a, b) => a - b)
-  const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median = robuste Baseline (Spikes ziehen ihn nicht hoch)
-  const wMax = sorted[sorted.length - 1]                           // Fenster-Max = natürlicher Peak-Hold
+  const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median über das ganze (mehrsekündige) Fenster = sehr stabil
   const W = 100, H = 36, n = arr.length
-  // LINEAR + fit-to-peak: Spikes bleiben SCHARF und in voller Höhe (KEIN Log-Stauchen!). Boden bei base×3.5,
-  // sonst skaliert der Top zum Fenster-Max → größter Spike immer fast ganz oben, Baseline ruhig im unteren Drittel.
-  const scale = Math.max(base * 3.5, wMax * 1.06, 0.1)
+  // FESTE Skala = base×4: der Median ist über Sekunden stabil → die Skala ATMET NICHT mehr bei jedem Spike.
+  // Spikes clippen oben („an die Decke", prominent) statt die ganze Kurve groß/klein zu reskalieren (= das Geflacker).
+  const scale = Math.max(base * 4, 0.1)
   const px = (i) => (i / (n - 1)) * W
   const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * (H - 2) - 1
   const c = color || '#39d8ff'
   const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
-  const baseY = py(base), peakY = py(wMax)
+  const refs = [[16.67, '60'], [8.33, '120'], [6.94, '144']].filter(([ms]) => ms < scale * 0.96)   // fixe ms-Linien, nur wenn im Bild
   const beams = []
   for (let i = 0; i < n; i++) {
-    if (arr[i] > base * 2) {                                       // echter Spike (>2× Baseline)
-      const inten = Math.max(0.35, Math.min(1, (arr[i] - base * 2) / (base * 3)))
+    if (arr[i] > base * 2.2) {                                     // echter Spike (deutlich über Baseline)
+      const inten = Math.max(0.3, Math.min(1, (arr[i] - base * 2.2) / (base * 4)))
       beams.push({ x: px(i), y: py(arr[i]), inten, k: i })
     }
   }
@@ -132,17 +136,16 @@ function FrametimeSpark({ data, pct, color }) {
           <stop offset="0" stop-color={c} stop-opacity="0.30" /><stop offset="1" stop-color={c} stop-opacity="0" />
         </linearGradient></defs>
         <polygon points={`0,${H} ${line} ${W},${H}`} fill={`url(#${gid})`} />
-        <line x1="0" y1={baseY.toFixed(1)} x2={W} y2={baseY.toFixed(1)} stroke={c} stroke-width="0.5"
-              stroke-dasharray="2 3" opacity="0.3" vector-effect="non-scaling-stroke" />
+        {refs.map(([ms, lbl]) => <line key={lbl} x1="0" y1={py(ms).toFixed(1)} x2={W} y2={py(ms).toFixed(1)}
+              stroke="#6c84a0" stroke-width="0.5" stroke-dasharray="1.5 3" opacity="0.4" vector-effect="non-scaling-stroke" />)}
         {beams.map((s) => <line key={s.k} x1={s.x.toFixed(1)} y1={H} x2={s.x.toFixed(1)} y2={s.y.toFixed(1)}
-              stroke="#ff5d5d" stroke-width={(0.7 + s.inten).toFixed(1)} opacity={(0.22 + s.inten * 0.45).toFixed(2)}
-              vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1.5 + s.inten * 3).toFixed(0)}px #ff5d5d)`} />)}
-        <line x1="0" y1={peakY.toFixed(1)} x2={W} y2={peakY.toFixed(1)} stroke="#ff5d5d" stroke-width="0.8"
-              opacity="0.7" vector-effect="non-scaling-stroke" style="filter:drop-shadow(0 0 3px #ff5d5d)" />
-        <polyline points={line} fill="none" stroke={c} stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"
-                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2.5px ${c})`} />
+              stroke="#ff5d5d" stroke-width={(0.6 + s.inten).toFixed(1)} opacity={(0.18 + s.inten * 0.4).toFixed(2)}
+              vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1 + s.inten * 2.5).toFixed(0)}px #ff5d5d)`} />)}
+        <polyline points={line} fill="none" stroke={c} stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"
+                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2px ${c})`} />
       </svg>
       <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
+      {refs.map(([ms, lbl]) => <span key={lbl} class="t-graph-ref" style={`top:${(py(ms) / H * 100).toFixed(1)}%`}>{lbl}</span>)}
       {pct && pct.fps_1pct_low ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span> : null}
       {pct && pct.fps_avg ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span> : null}
     </div>

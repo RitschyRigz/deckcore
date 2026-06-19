@@ -42,6 +42,7 @@ PM_STAT_AVG = 1
 PM_STAT_MAX = 8
 PM_STAT_PERCENTILE_99 = 2   # 99.-Perzentil (langsame Frames); Standard-PM_STAT-Enum, konsistent zu AVG=1/MAX=8
 PM_STAT_PERCENTILE_01 = 5   # 1.-Perzentil (= 1% low FPS direkt)
+PM_STAT_NONE = 0            # Frame-Event-Query: pro Frame ein Roh-Wert (keine Statistik)
 
 _DLL_CANDIDATES = [
     r"C:\Program Files\Intel\PresentMonSharedService\PresentMonAPI2.dll",
@@ -49,8 +50,9 @@ _DLL_CANDIDATES = [
 ]
 _WINDOW_MS = 140.0       # Statistik-Fenster der dynamischen Query (Spike-erfassend)
 _PCT_WINDOW_MS = 60000.0 # rollendes 60-s-Fenster für 1%-low / avg (Perzentile brauchen viele Frames)
-_POLL_HZ = 60.0          # Sampler-Rate (fängt Spikes; CPU-billig) — 60 Hz für flüssigere/feinere Kurven
-_RING = 1200             # Ringpuffer-Tiefe (~20 s @ 60 Hz)
+_POLL_HZ = 60.0          # Sampler-/Consume-Rate (Frame-Event-Modus: drainiert pro Tick ALLE neuen Frames)
+_RING = 1200             # Ringpuffer-Tiefe (Per-Frame-Modus: ~5–13 s je nach FPS)
+_FRAME_CAP = 512         # max. Frames pro pmConsumeFrames-Aufruf (RTSS-Stil Per-Frame-Abholung)
 _RECONNECT_COOLDOWN = 8.0
 _DEAD_TIMEOUT = 6.0      # so lange JEDER Poll fehlschlägt (trotz Versuchen) → Service tot → Reconnect
 _BLOB = 16384            # großzügiger Poll-Blob (mehrere Swapchains)
@@ -140,6 +142,11 @@ class FrametimeSource:
         self._p_low_off = self._p_ftp_off = self._p_avg_off = 0
         self._pct: dict = {}         # zuletzt gelesene Perzentile {fps_1pct_low, frametime_1pct, fps_avg}
         self._pct_t = 0.0            # monotonic des letzten Perzentil-Polls (gedrosselt ~1 Hz)
+        self._fquery = None          # optionale Frame-Event-Query → ECHTE Frametime pro Frame (RTSS-Stil)
+        self._f_ft_off = 0
+        self._fblobsize = 0
+        self._fblob = None
+        self._ft_pid = 0             # Spiel-PID, für das der Frametime-Ring aktuell Daten hält (Reset bei Wechsel)
         self._nsc = ctypes.c_uint32(0)
         self._last_ok = 0.0          # monotonic: letzter erfolgreicher Poll-CALL (Service-Lebensbeweis)
         self._fail_streak = 0        # Poll-Versuche seit dem letzten erfolgreichen Call
@@ -170,6 +177,7 @@ class FrametimeSource:
         return {"available": self._available, "source": "presentmon",
                 "presenting": self._presenting, "tracked_pid": self._tracked_pid,
                 "fps": self._fps_last, "frametime": self._ft_last, "reason": self._reason,
+                "per_frame": bool(self._fquery),
                 "percentiles": dict(self._pct) if self._pct else None}
 
     def series(self, kind: str) -> dict:
@@ -251,6 +259,32 @@ class FrametimeSource:
                 self._pblob = (ctypes.c_ubyte * _BLOB)()
         except Exception:  # noqa: BLE001
             self._pquery = None
+        # ── Optionale Frame-Event-Query: ECHTE Frametime PRO FRAME (wie RTSS/Afterburner) statt 60-Hz-MAX-
+        #    Aggregat. pmConsumeFrames liefert jeden einzelnen Present-Event → scharfe Spikes, kein Glätten.
+        #    Fehlt die Funktion (ältere PresentMon) → fquery=None, Ring fällt graceful auf die Dynamic-Query-
+        #    Frametime (Spike-erfassend via MAX, nur gröber) zurück. Harte Regel „läuft auf jeder Hardware".
+        self._fquery = None
+        try:
+            dll.pmRegisterFrameQuery.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+                                                 ctypes.POINTER(PM_QUERY_ELEMENT), ctypes.c_uint64,
+                                                 ctypes.POINTER(ctypes.c_uint32)]
+            dll.pmRegisterFrameQuery.restype = ctypes.c_int
+            dll.pmConsumeFrames.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                            ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_uint32)]
+            dll.pmConsumeFrames.restype = ctypes.c_int
+            fe = (PM_QUERY_ELEMENT * 1)()
+            fe[0].metric, fe[0].stat = PM_METRIC_CPU_FRAME_TIME, PM_STAT_NONE
+            fq = ctypes.c_void_p()
+            bsize = ctypes.c_uint32(0)
+            fst = dll.pmRegisterFrameQuery(sess, ctypes.byref(fq), fe, 1, ctypes.byref(bsize))
+            if fst == PM_STATUS_SUCCESS and fq.value and bsize.value:
+                self._fquery = fq
+                self._f_ft_off = int(fe[0].dataOffset)
+                self._fblobsize = int(bsize.value)
+                self._fblob = (ctypes.c_ubyte * (self._fblobsize * _FRAME_CAP))()
+                log.info("PresentMon Frame-Event-Query aktiv — echte Per-Frame-Frametime (%d B/Frame)", self._fblobsize)
+        except Exception:  # noqa: BLE001
+            self._fquery = None
 
     # ── Tracking-Verwaltung: nur das Spiel bleibt getrackt (kein Leak) ───
     def _track(self, pid: int) -> None:
@@ -310,6 +344,25 @@ class FrametimeSource:
         except Exception:  # noqa: BLE001
             pass
 
+    def _consume_frames(self, pid: int) -> list:
+        """Alle seit dem letzten Aufruf angefallenen EINZELNEN Frames des Spiels abholen (RTSS-Stil) →
+        Liste echter Per-Frame-Frametimes in ms. Leer, wenn keine Frame-Query (Fallback) oder nichts Neues.
+        pmConsumeFrames ist IN/OUT: nf = Kapazität rein, geschriebene Frame-Anzahl raus."""
+        if not self._fquery:
+            return []
+        try:
+            nf = ctypes.c_uint32(_FRAME_CAP)
+            if self._dll.pmConsumeFrames(self._fquery, pid, self._fblob, ctypes.byref(nf)) != PM_STATUS_SUCCESS:
+                return []
+            out = []
+            for i in range(min(nf.value, _FRAME_CAP)):
+                ft = ctypes.c_double.from_buffer(self._fblob, i * self._fblobsize + self._f_ft_off).value
+                if ft and 0.0 < ft < 10000.0:    # Plausibilitäts-Gate gegen falsches Blob-Layout
+                    out.append(round(ft, 2))
+            return out
+        except Exception:  # noqa: BLE001
+            return []
+
     def _scan_for_game(self):
         """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS ist
         das Spiel (UNABHÄNGIG vom Vordergrund). ⚠ PresentMon liefert erst NACH einem Statistik-Fenster Werte —
@@ -355,9 +408,21 @@ class FrametimeSource:
                     for pid in list(self._tracked):
                         if pid != self._game_pid:
                             self._untrack(pid)
+                frames = self._consume_frames(self._game_pid)   # ECHTE Per-Frame-Frametimes (RTSS-Stil)
                 with self._lock:
-                    self._fps.append(round(fps, 1)); self._ft.append(round(ft, 2) if ft else 0.0)
-                self._fps_last, self._ft_last = round(fps, 1), (round(ft, 2) if ft else None)
+                    if self._game_pid != self._ft_pid:          # neues Spiel → Ringe frisch
+                        self._ft.clear(); self._fps.clear(); self._ft_pid = self._game_pid
+                    self._fps.append(round(fps, 1))
+                    if frames:
+                        self._ft.extend(frames)                 # jeden einzelnen Frame in den Ring (kein Aggregat)
+                    elif ft:
+                        self._ft.append(round(ft, 2))           # Fallback (alte PresentMon ohne Frame-Query)
+                    tail = list(self._ft)[-240:]                # für stabilen „typischen" Anzeigewert (großer Titel, ~1 s)
+                self._fps_last = round(fps, 1)
+                if tail:
+                    srt = sorted(tail); self._ft_last = srt[len(srt) // 2]   # Median = ruhig statt zappelndem Einzelframe
+                elif ft:
+                    self._ft_last = round(ft, 2)
                 self._presenting = True
                 self._reason = "live"
                 if self._pquery and (time.monotonic() - self._pct_t) > 1.0:
@@ -382,12 +447,18 @@ class FrametimeSource:
             self._reason = "kein Spiel erkannt (nichts präsentiert Frames)"
 
     def _teardown(self) -> None:
-        d, s, q = self._dll, self._sess, self._query
-        self._dll = self._sess = self._query = None
+        d, s, q, pq, fq = self._dll, self._sess, self._query, self._pquery, self._fquery
+        self._dll = self._sess = self._query = self._pquery = self._fquery = None
         self._tracked.clear()    # neue Session = frisch tracken (alte PIDs galten nur für die alte Session)
-        self._game_pid = 0
+        self._game_pid = self._ft_pid = 0
         try:
             if d and q: d.pmFreeDynamicQuery(q)
+        except Exception: pass  # noqa: BLE001
+        try:
+            if d and pq: d.pmFreeDynamicQuery(pq)
+        except Exception: pass  # noqa: BLE001
+        try:
+            if d and fq: d.pmFreeFrameQuery(fq)
         except Exception: pass  # noqa: BLE001
         try:
             if d and s: d.pmCloseSession(s)
