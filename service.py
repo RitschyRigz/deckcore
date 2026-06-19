@@ -97,6 +97,7 @@ from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Imp
 from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
 from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
 from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
+from .obsbot import ObsBotOSC   # OBSBOT-Kamerasteuerung via lokales OSC/UDP (Tiny/Meet/Tail; send-only)
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
 
@@ -527,7 +528,8 @@ class DeckCoreService:
                  flags_dir: Path | None = None, files_base: Path | None = None,
                  self_base_url: str = "http://127.0.0.1:7883",
                  default_buttons: list | None = None,
-                 obs_host: str = "127.0.0.1", obs_port: int = 4455, obs_password: str = ""):
+                 obs_host: str = "127.0.0.1", obs_port: int = 4455, obs_password: str = "",
+                 obsbot_host: str = "127.0.0.1", obsbot_port: int = 16284):
         self.bus = bus
         # Basis für HTTP-Selfcalls (z.B. obs/alert in einer Hülle). Generische Handler brauchen sie nicht.
         self._self_base = str(self_base_url or "").rstrip("/")
@@ -558,6 +560,7 @@ class DeckCoreService:
         self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
         self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
         self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
+        self._obsbot = ObsBotOSC(obsbot_host, obsbot_port)   # OBSBOT-Kamerasteuerung (OSC/UDP, send-only, lazy Socket)
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
@@ -606,6 +609,7 @@ class DeckCoreService:
         A("open_deck", self._act_open_deck)
         A("wavelink", self._act_wavelink)
         A("winaudio", self._act_winaudio)
+        A("obsbot", self._act_obsbot)
         M("none", self._mon_none)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -2017,6 +2021,42 @@ class DeckCoreService:
             return self._obs.record(action.get("mode", "toggle"))
         return {"success": False, "message": f"Unbekannte obs_action: {sub}"}
 
+    def _act_obsbot(self, action: dict, btn: dict) -> dict:
+        # OBSBOT-Kamera direkt (OSC/UDP an die OBSBOT-App) — Gimbal/Zoom/Tracking/Preset/Wake-Sleep.
+        # ⚠ Die OBSBOT-App muss laufen UND „OSC" aktiviert haben (Default-Port 16284), sonst verpufft es.
+        sub = str(action.get("obsbot_action") or "recenter")
+        dev = action.get("device") or action.get("cam") or None
+        def _on() -> bool:
+            v = action.get("mode", action.get("value", 1))
+            return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "on", "true", "an", "ja", "yes")
+        ob = self._obsbot
+        if sub == "recenter":     return ob.recenter(dev)
+        if sub == "wake":         return ob.wake(dev)
+        if sub == "sleep":        return ob.sleep(dev)
+        if sub == "zoom":         return ob.set_zoom(action.get("value", action.get("zoom", 0)), dev)
+        if sub == "view":         return ob.set_view(action.get("value", action.get("mode", 0)), dev)
+        if sub == "mirror":       return ob.set_mirror(_on(), dev)
+        if sub == "gimbal":       return ob.gimbal_move(action.get("pan", 0), action.get("pitch", 0), action.get("speed", 1), dev)
+        if sub == "gimbal_dir":   return ob.gimbal_dir(action.get("direction", "up"), action.get("speed", 50), dev)
+        if sub in ("tracking", "ai_lock"):  return ob.tracking(_on(), dev)
+        if sub == "ai_mode":      return ob.ai_mode(action.get("value", action.get("mode", 0)), dev)
+        if sub == "framing":      return ob.framing(action.get("value", action.get("mode", 0)), dev)
+        if sub == "track_speed":  return ob.tracking_speed(action.get("value", action.get("mode", 1)), dev)
+        if sub == "preset":       return ob.preset(action.get("index", action.get("value", 0)), dev)
+        if sub == "record":       return ob.record(_on(), dev)
+        if sub == "snapshot":     return ob.snapshot(dev)
+        if sub == "select":       return ob.select_device(action.get("index", action.get("value", 0)))
+        if sub == "raw":          return ob.send(str(action.get("address") or ""), *(action.get("args") or []))
+        return {"success": False, "message": f"Unbekannte obsbot_action: {sub}"}
+
+    def obsbot_status(self, probe: bool = False) -> dict:
+        """Best-effort-Status der OBSBOT-OSC-Anbindung (für die UI: läuft die App? letzter Send?)."""
+        return self._obsbot.status()
+
+    def set_obsbot_config(self, host: str | None = None, port: int | None = None) -> dict:
+        """OSC-Ziel umstellen (z.B. Host = IP des Kamera-PCs, wenn die Hülle woanders läuft)."""
+        return self._obsbot.set_config(host, port)
+
     def _act_open_deck(self, action: dict, btn: dict) -> dict:
         # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
         # passiert im Touch-Panel (es liest action.deck/mode direkt aus der Registry) — serverseitig
@@ -2103,7 +2143,7 @@ class DeckCoreService:
             pass
         _ACTION_ORDER = ["process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
                          "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
-                         "wavelink", "winaudio", "events_action", "none"]
+                         "obsbot", "wavelink", "winaudio", "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
