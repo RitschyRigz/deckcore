@@ -254,7 +254,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
         <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
       </div>
       <div class="t-fader-foot">{isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
-      {v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
+      {v.image
+        ? <div class="t-fader-icon t-fader-img" title={name}><img src={v.image} alt="" /></div>
+        : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
     </div>
   )
 }

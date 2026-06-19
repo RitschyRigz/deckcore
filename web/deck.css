@@ -326,6 +326,9 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   box-shadow: 0 0 8px rgba(255,47,47,.95), 0 0 2px #fff; pointer-events: none; opacity: 0; }
 .t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--fg); opacity: .9; font-weight: 700; min-height: 1em; }
 .t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
+/* Bild-Emote im Fader-Symbolslot (statt Emoji) — fügt sich wie v.image bei normalen Buttons ein. */
+.t-fader-img { font-size: 0; }
+.t-fader-img img { width: 26cqw; height: 26cqw; object-fit: contain; display: block; margin: 1px auto 0; }
 /* Mute = ausgegraut wie inaktive Buttons (Graustufe + abgedunkelt, Glow weg). */
 .t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
 .t-fader.muted .t-fader-knob { background: #9aa1ad; box-shadow: none; }
