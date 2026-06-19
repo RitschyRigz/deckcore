@@ -89,16 +89,16 @@ function FastGraph({ kind, color }) {
       n++
     }
     tick()
-    const iv = setInterval(tick, 70)   // ~14 Hz — entlastet schwache Tablets (Per-Frame-Graph + WLAN); Render ist via dsMaxBucket leicht
+    const iv = setInterval(tick, 55)   // ~18 Hz — flüssig + RTSS-näher; Last niedrig (kleiner Ring, ~100 Punkte)
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
   // Frametime: FESTES ~2,6-s-Zeitfenster (fps-abhängige Frame-Zahl, da echte Per-Frame-Daten) → ruhiger, RTSS-
   //   ähnlicher Verlauf statt sub-sekündlichem Geflacker. FPS: ~20 s, ausgedünnt + geglättet.
   if (kind === 'frametime') {
-    // Backend liefert jetzt fixe 60 Hz (schlimmster Frame je Loop, Spikes erhalten) → festes 3-s-Fenster
-    // (180 Samples), fps-unabhängig → gleichmäßiges, sauberes Scrollen statt Re-Bucketing-Gezappel.
-    return <FrametimeSpark data={data.slice(-180)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+    // Backend liefert fixe ~32–60 Hz (Median je Loop, grobe Spikes durchgereicht) → kürzeres Fenster
+    // (100 Samples ≈ 3 s) läuft RTSS-artig zügig durch, fps-unabhängig, gleichmäßiges Scrollen.
+    return <FrametimeSpark data={data.slice(-100)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
   }
   return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
 }
@@ -164,15 +164,14 @@ function FrametimeSpark({ data, pct, color }) {
       </svg>
       <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
       {refs.map(([ms, lbl]) => <span key={lbl} class="t-graph-ref" style={`top:${(py(ms) / H * 100).toFixed(1)}%`}>{lbl}</span>)}
-      {pct && pct.fps_1pct_low ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span> : null}
-      {pct && pct.fps_avg ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span> : null}
+      {pct && pct.frametime_1pct ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↑ {pct.frametime_1pct}ms</span> : null}
     </div>
   )
 }
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
 // Politur: Fläche unter der Kurve gefüllt, Live-Punkt am aktuellen Wert, Min/Max-Werte in den Ecken.
-function Sparkline({ data, color, minSpan }) {
+function Sparkline({ data, color, minSpan, pct }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   let min = Infinity, max = -Infinity
@@ -198,8 +197,12 @@ function Sparkline({ data, color, minSpan }) {
               style={`filter:drop-shadow(0 0 2.5px ${c})`} />
       </svg>
       <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
-      <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>
-      <span class="t-graph-lbl t-graph-min">{fmt(min)}</span>
+      {pct && pct.fps_1pct_low
+        ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span>
+        : <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>}
+      {pct && pct.fps_avg
+        ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span>
+        : <span class="t-graph-lbl t-graph-min">{fmt(min)}</span>}
     </div>
   )
 }

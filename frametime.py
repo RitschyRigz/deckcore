@@ -414,9 +414,11 @@ class FrametimeSource:
                         self._ft.clear(); self._fps.clear(); self._ft_pid = self._game_pid
                     self._fps.append(round(fps, 1))
                     if frames:
-                        self._ft.append(round(max(frames), 2))  # 60-Hz-FIXRATE: schlimmster Frame je Loop. Spikes bleiben
-                        #   erhalten (Max), aber gleichmäßige Sample-Rate → Anzeige scrollt sauber statt zu zappeln
-                        #   (Per-Frame bei 800+ fps = zu viele Punkte, die pro Poll re-bucketed werden = Gewackel).
+                        sf = sorted(frames); lm = sf[len(sf) // 2]; mx = sf[-1]
+                        # 60-Hz-Fixrate + RUHIGE Baseline: pro Loop normal den Median (flüssiges Spiel = flache Linie,
+                        # kein ms-Gezappel), aber einen GROBEN Einzel-Ausreißer (Frame > 2× Loop-Median = echter
+                        # Stutter) voll durchreichen → man sieht die groben Spikes, nicht das feine Frame-Rauschen.
+                        self._ft.append(round(mx if mx > lm * 2.0 else lm, 2))
                     elif ft:
                         self._ft.append(round(ft, 2))           # Fallback (alte PresentMon ohne Frame-Query)
                 self._fps_last = round(fps, 1)
