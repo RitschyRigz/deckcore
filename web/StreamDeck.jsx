@@ -223,8 +223,10 @@ function LiveKey({ v, eff, base, render, opts }) {
       </div>
     )
   }
+  const isFlat = !v.image && render !== 'graph' && render !== 'fader'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
-    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '')} style={'background:' + (v.color || '#222')}>
+    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat' : '')}
+         style={isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (v.color || '#222'))}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
         : <span class="sd-prev-icon">{v.icon || '•'}</span>}
       {v.title ? <span class="sd-prev-title">{v.title}</span> : null}

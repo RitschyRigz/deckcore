@@ -213,6 +213,16 @@
 .t-key.t-flat .t-key-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
 .t-key.t-flat .t-key-label { text-transform: uppercase; letter-spacing: .05em; font-weight: 800; opacity: .95;
   color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Editor-Vorschau (sd-prev-key) bekommt dasselbe Flat-Design wie das Panel — echtes WYSIWYG. */
+.sd-prev-key.t-flat { background: linear-gradient(165deg, #171c26, #0c0f14); }
+.sd-prev-key.t-flat::before, .sd-prev-key.t-flat::after { content: ""; position: absolute; width: 16%; height: 16%;
+  min-width: 11px; min-height: 11px; max-width: 20px; max-height: 20px; pointer-events: none; opacity: .8; }
+.sd-prev-key.t-flat::before { top: 6px; left: 6px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
+.sd-prev-key.t-flat::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
+.sd-prev-key.t-flat .sd-prev-icon { filter: drop-shadow(0 0 7px var(--acc)); }
+.sd-prev-key.t-flat .sd-prev-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
+.sd-prev-key.t-flat .sd-prev-label { text-transform: uppercase; letter-spacing: .05em; font-weight: 800; opacity: .95;
+  color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Stil-Optionen PRO BUTTON (button.style; Layout = Default) */
 .t-key.lbl-top .t-key-label { order: -2; }
 .t-key.lbl-top .t-key-title { order: -1; }
