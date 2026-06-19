@@ -88,36 +88,38 @@ function FastGraph({ kind, color }) {
       n++
     }
     tick()
-    const iv = setInterval(tick, 55)   // ~18 Hz Render (Backend sampelt 60 Hz) → flüssiger, weniger „abgehakt"
+    const iv = setInterval(tick, 45)   // ~22 Hz Render (Backend sampelt 60 Hz, MAX-Stat → kein Spike geht verloren)
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
-  // Frametime: nur das letzte Fenster (~7 s @ 60 Hz) → läuft ~3× schneller durch. FPS: volle ~20 s, ausgedünnt.
-  if (kind === 'frametime') return <FrametimeSpark data={data.slice(-420)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
-  return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} pct={pct} />
+  // Frametime: nur letztes Fenster (~3 s @ 60 Hz) → läuft schnell durch + Spikes breit genug zum Sehen. FPS: ~20 s.
+  if (kind === 'frametime') return <FrametimeSpark data={data.slice(-200)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+  return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
 }
 
-// Frametime-Spike-Graph wie in der Vorschau: LOG-Skala relativ zur Baseline (Median) — normale Frames sitzen
-// ruhig im unteren Drittel, Spikes knallen GESTAUCHT (nicht „immer voll"), kleine Schwankungen bleiben klein.
-// Flächen-Glow drunter, kräftige Linie, rote Glow-Beams bei echten Spikes (>2× Baseline) + Peak-Hold-Schlepp-
-// Linie am Fenster-Max (~20 s) + 1%-low/avg-Readout aus echten PresentMon-Perzentilen.
+// Frametime-Spike-Graph: SPIKES NIE STAUCHEN/GLÄTTEN — LINEAR + fit-to-peak. Normale Frames sitzen ruhig im
+// unteren Drittel (Boden = Median×3.5), der Top skaliert zum Fenster-Max → größter Spike steht immer fast
+// ganz oben, scharf. Flächen-Glow drunter, rote Glow-Beams bei echten Spikes (>2× Baseline) + Peak-Hold-
+// Schlepp-Linie am Fenster-Max + 1%-low/avg-Readout aus echten PresentMon-Perzentilen.
 function FrametimeSpark({ data, pct, color }) {
   const arr = (data || []).filter((v) => v > 0)
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const sorted = arr.slice().sort((a, b) => a - b)
-  const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median = stabile Baseline (großes Fenster)
+  const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median = robuste Baseline (Spikes ziehen ihn nicht hoch)
   const wMax = sorted[sorted.length - 1]                           // Fenster-Max = natürlicher Peak-Hold
-  const W = 100, H = 36, n = arr.length, denom = Math.log(9)
-  const frac = (v) => Math.max(0, Math.min(1, Math.log(1 + v / base) / denom))   // base→.32 · 2×→.50 · 4×→.73 · 8×→1
+  const W = 100, H = 36, n = arr.length
+  // LINEAR + fit-to-peak: Spikes bleiben SCHARF und in voller Höhe (KEIN Log-Stauchen!). Boden bei base×3.5,
+  // sonst skaliert der Top zum Fenster-Max → größter Spike immer fast ganz oben, Baseline ruhig im unteren Drittel.
+  const scale = Math.max(base * 3.5, wMax * 1.06, 0.1)
   const px = (i) => (i / (n - 1)) * W
-  const py = (v) => H - frac(v) * (H - 3) - 1
+  const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * (H - 2) - 1
   const c = color || '#39d8ff'
   const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
   const baseY = py(base), peakY = py(wMax)
   const beams = []
   for (let i = 0; i < n; i++) {
     if (arr[i] > base * 2) {                                       // echter Spike (>2× Baseline)
-      const inten = Math.max(0.3, Math.min(1, (arr[i] - base * 2) / (base * 4)))
+      const inten = Math.max(0.35, Math.min(1, (arr[i] - base * 2) / (base * 3)))
       beams.push({ x: px(i), y: py(arr[i]), inten, k: i })
     }
   }
@@ -149,15 +151,16 @@ function FrametimeSpark({ data, pct, color }) {
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
 // Politur: Fläche unter der Kurve gefüllt, Live-Punkt am aktuellen Wert, Min/Max-Werte in den Ecken.
-function Sparkline({ data, color }) {
+function Sparkline({ data, color, minSpan }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   let min = Infinity, max = -Infinity
   for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
   let lo = min, hi = max
   if (lo === hi) { lo -= 1; hi += 1 }            // flache Linie nicht durch 0 teilen
-  const span = (hi - lo) || 1
-  lo -= span * 0.5; hi += span * 0.5             // Standard-Bereich VERDOPPELN → ruhigere Kurve mit Headroom
+  const mid = (lo + hi) / 2
+  const span = Math.max((hi - lo) * 1.3, minSpan || 0)   // ≥ minSpan (FPS: 40 fps fest „genagelt") → kleine Wackler bleiben klein
+  lo = mid - span / 2; hi = mid + span / 2
   const W = 100, H = 36, n = arr.length
   const px = (i) => (i / (n - 1)) * W
   const py = (v) => H - ((v - lo) / (hi - lo)) * H
