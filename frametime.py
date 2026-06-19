@@ -40,12 +40,15 @@ PM_METRIC_CPU_FRAME_TIME = 8     # ms — Gesamt-Frametime (CPU); Spikes = lange
 PM_METRIC_PRESENTED_FPS = 12     # fps
 PM_STAT_AVG = 1
 PM_STAT_MAX = 8
+PM_STAT_PERCENTILE_99 = 2   # 99.-Perzentil (langsame Frames); Standard-PM_STAT-Enum, konsistent zu AVG=1/MAX=8
+PM_STAT_PERCENTILE_01 = 5   # 1.-Perzentil (= 1% low FPS direkt)
 
 _DLL_CANDIDATES = [
     r"C:\Program Files\Intel\PresentMonSharedService\PresentMonAPI2.dll",
     r"C:\Program Files\Intel\Intel Graphics Software\PresentMonAPI2.dll",
 ]
-_WINDOW_MS = 140.0       # Statistik-Fenster der dynamischen Query
+_WINDOW_MS = 140.0       # Statistik-Fenster der dynamischen Query (Spike-erfassend)
+_PCT_WINDOW_MS = 60000.0 # rollendes 60-s-Fenster für 1%-low / avg (Perzentile brauchen viele Frames)
 _POLL_HZ = 30.0          # Sampler-Rate (fängt Spikes; CPU-billig)
 _RING = 600              # Ringpuffer-Tiefe (~20 s @ 30 Hz)
 _RECONNECT_COOLDOWN = 8.0
@@ -132,6 +135,11 @@ class FrametimeSource:
         self._fps_off = 0
         self._ft_off = 0
         self._blob = None
+        self._pquery = None          # optionale 2. Query (langes Fenster) für Perzentile — Graceful: None = keine
+        self._pblob = None
+        self._p_low_off = self._p_ftp_off = self._p_avg_off = 0
+        self._pct: dict = {}         # zuletzt gelesene Perzentile {fps_1pct_low, frametime_1pct, fps_avg}
+        self._pct_t = 0.0            # monotonic des letzten Perzentil-Polls (gedrosselt ~1 Hz)
         self._nsc = ctypes.c_uint32(0)
         self._last_ok = 0.0          # monotonic: letzter erfolgreicher Poll-CALL (Service-Lebensbeweis)
         self._fail_streak = 0        # Poll-Versuche seit dem letzten erfolgreichen Call
@@ -161,7 +169,8 @@ class FrametimeSource:
         self._ensure()
         return {"available": self._available, "source": "presentmon",
                 "presenting": self._presenting, "tracked_pid": self._tracked_pid,
-                "fps": self._fps_last, "frametime": self._ft_last, "reason": self._reason}
+                "fps": self._fps_last, "frametime": self._ft_last, "reason": self._reason,
+                "percentiles": dict(self._pct) if self._pct else None}
 
     def series(self, kind: str) -> dict:
         self._ensure()
@@ -224,6 +233,24 @@ class FrametimeSource:
         self._dll, self._sess, self._query = dll, sess, query
         self._fps_off, self._ft_off = int(elems[0].dataOffset), int(elems[1].dataOffset)
         self._blob = (ctypes.c_ubyte * _BLOB)()
+        # ── Optionale 2. Query: Perzentile (1%-low FPS / 1%-Frametime / avg) über ein langes Fenster.
+        #    Schlägt sie fehl (alte PresentMon-Version / Stat nicht unterstützt → BAD_ARGUMENT), läuft der
+        #    30-Hz-Spike-Teil unberührt weiter — Perzentile sind dann einfach nicht verfügbar (Graceful).
+        self._pquery = None
+        try:
+            pe = (PM_QUERY_ELEMENT * 3)()
+            pe[0].metric, pe[0].stat = PM_METRIC_PRESENTED_FPS, PM_STAT_PERCENTILE_01   # 1% low FPS
+            pe[1].metric, pe[1].stat = PM_METRIC_CPU_FRAME_TIME, PM_STAT_PERCENTILE_99  # langsame Frames (1%-„high")
+            pe[2].metric, pe[2].stat = PM_METRIC_PRESENTED_FPS, PM_STAT_AVG             # avg FPS über 60 s
+            pq = ctypes.c_void_p()
+            pst = dll.pmRegisterDynamicQuery(sess, ctypes.byref(pq), pe, 3, _PCT_WINDOW_MS, 0.0)
+            if pst == PM_STATUS_SUCCESS and pq.value:
+                self._pquery = pq
+                self._p_low_off, self._p_ftp_off, self._p_avg_off = (
+                    int(pe[0].dataOffset), int(pe[1].dataOffset), int(pe[2].dataOffset))
+                self._pblob = (ctypes.c_ubyte * _BLOB)()
+        except Exception:  # noqa: BLE001
+            self._pquery = None
 
     # ── Tracking-Verwaltung: nur das Spiel bleibt getrackt (kein Leak) ───
     def _track(self, pid: int) -> None:
@@ -261,6 +288,27 @@ class FrametimeSource:
         fps = ctypes.c_double.from_buffer(self._blob, self._fps_off).value
         ft = ctypes.c_double.from_buffer(self._blob, self._ft_off).value
         return (fps if fps and fps > 0 else None), (ft if ft and ft > 0 else None)
+
+    def _poll_pct(self, pid: int) -> None:
+        """Perzentil-Query (langes Fenster) fürs gelockte Spiel pollen — gedrosselt ~1 Hz aus dem Loop.
+        Ohne registrierte Query (alte PresentMon) passiert nichts. Füllt ``self._pct``."""
+        if not self._pquery:
+            return
+        try:
+            ctypes.memset(self._pblob, 0, _BLOB)
+            self._nsc.value = _SC_CAP   # IN/OUT-Kapazität (wie beim Haupt-Poll)
+            if self._dll.pmPollDynamicQuery(self._pquery, pid, self._pblob, ctypes.byref(self._nsc)) != PM_STATUS_SUCCESS:
+                return
+            low = ctypes.c_double.from_buffer(self._pblob, self._p_low_off).value
+            ftp = ctypes.c_double.from_buffer(self._pblob, self._p_ftp_off).value
+            avg = ctypes.c_double.from_buffer(self._pblob, self._p_avg_off).value
+            self._pct = {
+                "fps_1pct_low": round(low, 1) if low and low > 0 else None,
+                "frametime_1pct": round(ftp, 2) if ftp and ftp > 0 else None,
+                "fps_avg": round(avg, 1) if avg and avg > 0 else None,
+            }
+        except Exception:  # noqa: BLE001
+            pass
 
     def _scan_for_game(self):
         """Alle sichtbaren (nicht-Browser/Deck/Shell) Fenster-Prozesse pollen → das mit den meisten FPS ist
@@ -312,6 +360,9 @@ class FrametimeSource:
                 self._fps_last, self._ft_last = round(fps, 1), (round(ft, 2) if ft else None)
                 self._presenting = True
                 self._reason = "live"
+                if self._pquery and (time.monotonic() - self._pct_t) > 1.0:
+                    self._pct_t = time.monotonic()
+                    self._poll_pct(self._game_pid)
             else:
                 self._idle()
             # 3) Service-Tod erkennen: seit _DEAD_TIMEOUT KEIN erfolgreicher Poll trotz Versuchen → der
@@ -323,6 +374,7 @@ class FrametimeSource:
 
     def _idle(self) -> None:
         self._presenting = False
+        self._pct = {}
         self._fps_last = self._ft_last = None
         if self._fail_streak and (time.monotonic() - self._last_ok) > 2.0:
             self._reason = "PresentMon-Service nicht erreichbar (Neustart?)"   # Calls scheitern ≠ kein Spiel
