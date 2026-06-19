@@ -207,6 +207,8 @@ def _sanitize_opts(o) -> dict:
             pass
     if isinstance(o.get("unit"), str) and o["unit"].strip():
         out["unit"] = o["unit"].strip()[:8]            # Gauge-Einheit (°C, %, …)
+    if "crit" in o:
+        out["crit"] = bool(o.get("crit"))              # Kritisch-Rot (oberste 20%) ein/aus (False = z.B. Lüfter/Pumpe, hoch=gut)
     return out
 
 
@@ -499,6 +501,7 @@ class DeckCoreService:
         self._removed: set[str] = set()   # bewusst gelöschte Default-Button-IDs → NIE re-seeden
         self._decks: list[dict] = []   # Deck-TEMPLATES [{id,label,icon,layout,categories,items}] (Default-Deck garantiert in _load)
         self._tick = float(_TICK_SEC)              # globale Aktualisierungs-Rate (einstellbar)
+        self._snap_t = -1e9                        # monotonic des letzten Auto-Snapshots (Backup-Drossel)
         self._resolved: dict[str, dict] = {}      # id → {label,title,icon,image,color}
         self._last_eval: dict[str, float] = {}    # button-id → monotonic der letzten Auswertung
         self._sse_cache: dict[str, Any] = {}      # topic → letztes Payload
@@ -731,15 +734,107 @@ class DeckCoreService:
     def _save(self) -> None:
         try:
             self._runtime.mkdir(parents=True, exist_ok=True)
-            self._file.write_text(
-                json.dumps({"buttons": self._buttons, "tick_seconds": round(self._tick, 2),
-                            "decks": self._decks, "pool_categories": self._pool_categories,
-                            "removed": sorted(self._removed)},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            payload = json.dumps({"buttons": self._buttons, "tick_seconds": round(self._tick, 2),
+                                  "decks": self._decks, "pool_categories": self._pool_categories,
+                                  "removed": sorted(self._removed)},
+                                 ensure_ascii=False, indent=2)
+            self._file.write_text(payload, encoding="utf-8")
+            self._snapshot(payload)
         except Exception as e:  # noqa: BLE001
             log.error("streamdeck_buttons.json schreiben fehlgeschlagen: %s", e)
+
+    # ── Backup / Umzug: portable Export-/Import-Datei (Config + Icons) + rollierende Auto-Snapshots ──
+    def _snapshot(self, payload: str, force: bool = False) -> None:
+        """Rollierender Auto-Snapshot (gedrosselt ~5 min, letzte 12) — Sicherheitsnetz gegen Fehl-Edits/Verlust."""
+        try:
+            now = time.monotonic()
+            if not force and now - self._snap_t < 300.0:
+                return
+            self._snap_t = now
+            bdir = self._runtime / "streamdeck_backups"
+            bdir.mkdir(parents=True, exist_ok=True)
+            (bdir / ("snap_" + time.strftime("%Y%m%d_%H%M%S") + ".json")).write_text(payload, encoding="utf-8")
+            for old in sorted(bdir.glob("snap_*.json"))[:-12]:
+                try: old.unlink()
+                except Exception: pass  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            pass
+
+    def export_state(self) -> dict:
+        """Vollständige, portable Config (= was _save schreibt). Für Backup/Umzug auf einen anderen Rechner."""
+        return json.loads(json.dumps({
+            "buttons": self._buttons, "tick_seconds": round(self._tick, 2),
+            "decks": self._decks, "pool_categories": self._pool_categories,
+            "removed": sorted(self._removed)}))
+
+    def import_state(self, data: dict) -> dict:
+        """Config aus einem Backup ZURÜCKSPIELEN (überschreibt Buttons/Decks/Pool-Kategorien/Tick). Sichert vorher den alten Stand."""
+        if not isinstance(data, dict) or not isinstance(data.get("buttons"), list):
+            raise ValueError("kein gültiges Backup (Buttons fehlen)")
+        try: self._snapshot(json.dumps(self.export_state(), ensure_ascii=False, indent=2), force=True)   # Undo-Punkt
+        except Exception: pass  # noqa: BLE001
+        self._buttons = json.loads(json.dumps(data["buttons"]))
+        self._decks = json.loads(json.dumps(data.get("decks") or []))
+        self._pool_categories = [s for s in (str(x).strip() for x in (data.get("pool_categories") or [])) if s]
+        self._removed = {str(x) for x in (data.get("removed") or [])}
+        self._tick = _clamp_tick(data.get("tick_seconds", self._tick), self._tick)
+        self._save()
+        self._load()          # normalisieren: Default-Deck garantieren, Decks sanitizen, Defaults additiv seeden
+        return {"ok": True, "buttons": len(self._buttons), "decks": len(self._decks)}
+
+    def export_zip(self, icons_dir=None) -> bytes:
+        """Portable Backup-Datei (ZIP): Config + Custom-Icons. ``icons_dir`` = Host-Icon-Ordner (optional)."""
+        import io, zipfile
+        cfg = self.export_state()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("streamdeck_buttons.json", json.dumps(cfg, ensure_ascii=False, indent=1))
+            z.writestr("manifest.json", json.dumps({"kind": "rigzdeck-backup", "version": 1,
+                       "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "buttons": len(cfg.get("buttons") or []), "decks": len(cfg.get("decks") or [])}))
+            if icons_dir and Path(icons_dir).is_dir():
+                for f in Path(icons_dir).iterdir():
+                    if f.is_file():
+                        z.write(f, "icons/" + f.name)
+        return buf.getvalue()
+
+    def import_zip(self, raw: bytes, icons_dir=None) -> dict:
+        """Backup-ZIP zurückspielen: Config + Icons. Gibt {buttons, decks, icons} zurück."""
+        import io, zipfile
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        cfg = json.loads(z.read("streamdeck_buttons.json").decode("utf-8-sig"))
+        n_ic = 0
+        if icons_dir:
+            d = Path(icons_dir); d.mkdir(parents=True, exist_ok=True)
+            for nm in z.namelist():
+                if nm.startswith("icons/") and not nm.endswith("/"):
+                    safe = Path(nm).name
+                    if safe:
+                        (d / safe).write_bytes(z.read(nm)); n_ic += 1
+        res = self.import_state(cfg)
+        res["icons"] = n_ic
+        return res
+
+    def list_backups(self) -> list:
+        """Vorhandene Auto-Snapshots (neueste zuerst)."""
+        bdir = self._runtime / "streamdeck_backups"
+        if not bdir.is_dir():
+            return []
+        out = []
+        for f in sorted(bdir.glob("snap_*.json"), reverse=True):
+            try:
+                st = f.stat()
+                out.append({"name": f.name, "bytes": st.st_size, "mtime": round(st.st_mtime)})
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
+    def restore_backup(self, name: str) -> dict:
+        """Einen Auto-Snapshot zurückspielen (kein Pfad-Ausbruch — nur snap_*.json im Backup-Ordner)."""
+        f = self._runtime / "streamdeck_backups" / Path(str(name)).name
+        if not f.is_file() or not f.name.startswith("snap_"):
+            raise ValueError("Snapshot nicht gefunden")
+        return self.import_state(json.loads(f.read_text(encoding="utf-8-sig")))
 
     # ── Deck-Templates (eigenständige Ansichten, Shared-Pool-Modell) ─────
     def _sanitize_layout(self, patch: dict, base: dict) -> dict:
@@ -1717,8 +1812,8 @@ class DeckCoreService:
                 self._pool_categories.append(pc)
         else:
             button.pop("pool_cat", None)
-        # Darstellung (render: graph|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "gauge", "text", "clock", "fader"):
+        # Darstellung (render: graph|gauge|stat|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
+        if button.get("render") not in ("graph", "gauge", "stat", "text", "clock", "fader"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))

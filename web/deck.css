@@ -327,6 +327,14 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 .t-gauge-v { position: absolute; left: 0; right: 0; top: 54%; transform: translateY(-50%); text-align: center;
   font-weight: 700; color: #eef4ff; line-height: 1; text-shadow: 0 0 8px var(--acc); }
 .t-gauge-u { font-size: .5em; font-weight: 600; color: #9fb0c6; margin-left: 1px; }
+/* Stat-Render: große Glow-Zahl statt Icon, Sensorname als Label drunter — warmer Gold-Glow, skaliert via cqw. */
+.t-key.is-stat, .sd-prev-key.is-stat { container-type: inline-size; padding: 3px; }
+.t-stat-v { position: absolute; left: 0; right: 0; top: 44%; transform: translateY(-50%); text-align: center;
+  font-size: 30cqw; font-weight: 800; line-height: 1; letter-spacing: -.02em; padding: 0 4px; box-sizing: border-box;
+  color: #f4d68c; text-shadow: 0 0 9px rgba(244,214,140,.5), 0 0 2px rgba(244,214,140,.85);
+  white-space: nowrap; overflow: hidden; }
+/* Sensorname (Label) fest nach UNTEN → der Wert hat die Mitte für sich (kein Überlappen mehr). */
+.t-key.is-stat .t-key-label { position: absolute; left: 0; right: 0; bottom: 2px; }
 
 /* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */

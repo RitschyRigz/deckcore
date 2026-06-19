@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 
 def build_streamdeck_router(
@@ -410,6 +410,39 @@ if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
         if not path:
             return JSONResponse({"ok": False, "cancelled": True})
         return JSONResponse({"ok": True, "path": path, "name": Path(path).name})
+
+    # ── Backup / Umzug: portable Export-Datei (Config + Icons) + Import + Auto-Snapshots ──
+    def _icd():
+        return (Path(static_dir) / "sd_icons" / "user") if static_dir is not None else None
+
+    @r.get("/api/streamdeck/export")
+    def streamdeck_export(request: Request) -> Response:
+        """Portable Backup-Datei (ZIP: Config + Custom-Icons) als Download — für Umzug/Sicherung."""
+        import time as _t
+        data = get_service(request).export_zip(_icd())
+        fname = "rigzdeck-backup-" + _t.strftime("%Y%m%d-%H%M%S") + ".zip"
+        return Response(content=data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    @r.post("/api/streamdeck/import")
+    async def streamdeck_import(request: Request, file: UploadFile = File(...)) -> JSONResponse:
+        """Backup-Datei (ZIP) zurückspielen: Decks + Buttons + Icons (vorher Auto-Snapshot)."""
+        raw = await file.read()
+        try:
+            return JSONResponse(get_service(request).import_zip(raw, _icd()))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Import fehlgeschlagen: {e}")
+
+    @r.get("/api/streamdeck/backups")
+    def streamdeck_backups(request: Request) -> JSONResponse:
+        return JSONResponse({"backups": get_service(request).list_backups()})
+
+    @r.post("/api/streamdeck/backups/restore")
+    def streamdeck_backups_restore(request: Request, body: dict = Body(...)) -> JSONResponse:
+        try:
+            return JSONResponse(get_service(request).restore_backup((body or {}).get("name", "")))
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     # ── Icon-Helfer (nur wenn static_dir gesetzt) ─────────────────────────
     if static_dir is not None:

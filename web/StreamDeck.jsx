@@ -226,7 +226,10 @@ function LiveKey({ v, eff, base, render, opts }) {
   if (render === 'gauge') {
     return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
   }
-  const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
+  if (render === 'stat') {
+    return <div class={keyClass(eff, base) + ' is-stat cqsize'} style="background:var(--bg)"><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
+  }
+  const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat' : '')}
          style={isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (v.color || '#222'))}>
@@ -239,6 +242,66 @@ function LiveKey({ v, eff, base, render, opts }) {
 }
 
 // Globale Aktualisierungs-Rate (ein Eval-Loop für alle Buttons) ───────────────
+// Backup / Umzug: portable Export-Datei (Decks+Buttons+Icons) + Import + rollierende Auto-Snapshots.
+function BackupCard({ onReload }) {
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const [snaps, setSnaps] = useState([])
+  const loadSnaps = () => getJSON('/api/streamdeck/backups').then((d) => setSnaps(d.backups || [])).catch(() => {})
+  useEffect(() => { loadSnaps() }, [])
+  const onImport = async (e) => {
+    const f = e.currentTarget.files && e.currentTarget.files[0]
+    e.currentTarget.value = ''
+    if (!f) return
+    if (!confirm('Backup einspielen? Die aktuelle Config wird überschrieben (vorher automatisch gesichert).')) return
+    setBusy(true); setMsg(null)
+    try {
+      const fd = new FormData(); fd.append('file', f)
+      const r = await fetch('/api/streamdeck/import', { method: 'POST', body: fd })
+      if (!r.ok) throw new Error((await r.text()) || r.status)
+      const d = await r.json()
+      setMsg(`✅ ${d.buttons} Buttons · ${d.decks} Decks · ${d.icons || 0} Icons zurückgespielt`)
+      onReload && onReload(); loadSnaps()
+    } catch (er) { setMsg('Fehler: ' + er) }
+    setBusy(false)
+  }
+  const restore = async (name) => {
+    if (!confirm('Diesen Snapshot zurückspielen? Aktueller Stand wird überschrieben (vorher gesichert).')) return
+    setBusy(true); setMsg(null)
+    try {
+      const r = await postJSON('/api/streamdeck/backups/restore', { name })
+      setMsg(`✅ wiederhergestellt (${r.buttons} Buttons)`); onReload && onReload(); loadSnaps()
+    } catch (e) { setMsg('Fehler: ' + e) }
+    setBusy(false)
+  }
+  return (
+    <div class="card" style="max-width:820px; margin-bottom:12px">
+      <div class="reward-row" style="flex-wrap:wrap; gap:8px">
+        <span class="kv-k" style="min-width:200px">💾 Backup &amp; Umzug</span>
+        <a class="btn small" href="/api/streamdeck/export">⬇ Export (Datei)</a>
+        <label class="btn small ghost" style={'cursor:pointer' + (busy ? ';opacity:.5' : '')}>⬆ Import (Datei)
+          <input type="file" accept=".zip" style="display:none" disabled={busy} onChange={onImport} /></label>
+        {msg && <span class="msg">{msg}</span>}
+      </div>
+      <p class="muted" style="font-size:12px; margin:4px 0 0">
+        <b>Export</b> = eine portable Datei (Decks + Buttons + Custom-Icons) — zum Umzug auf den Gaming-PC oder als Sicherung.
+        <b> Import</b> spielt sie 1:1 zurück. <b>Auto-Snapshots</b> laufen leise bei jeder Änderung mit.
+      </p>
+      {snaps.length > 0 && (
+        <div style="margin-top:8px">
+          <span class="muted" style="font-size:12px">Auto-Snapshots (Klick = zurückspielen):</span>
+          <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px">
+            {snaps.map((s) => (
+              <button key={s.name} class="btn small ghost" disabled={busy} title={s.name}
+                      onClick={() => restore(s.name)}>{s.name.replace('snap_', '').replace('.json', '')}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RefreshRate({ reg, onSaved }) {
   const [val, setVal] = useState(reg.tick_seconds != null ? reg.tick_seconds : 1.5)
   const [busy, setBusy] = useState(false)
@@ -1178,6 +1241,8 @@ export function StreamDeck() {
 
       <RefreshRate reg={data} onSaved={load} />
 
+      <BackupCard onReload={load} />
+
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>
         <button class={'sd-tab' + (view === 'pool' ? ' active' : '')} onClick={() => setView('pool')}>🧩 Button-Pool ({(data.buttons || []).length})</button>
@@ -1801,6 +1866,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="clock">🕐 Uhr</option>
           <option value="fader">🎚 Fader (Wave Link / Windows-Lautstärke)</option>
           <option value="gauge">🎯 Gauge (Glow-Bogen)</option>
+          <option value="stat">🔢 Stat (große Glow-Zahl)</option>
         </select>
         <span class="muted conn-label" style="margin-left:8px">Größe</span>
         <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
@@ -1836,6 +1902,8 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
               ? 'Vertikaler Fader: ziehen = Level, tippen = Mute, mit Live-VU-Säule. Die Quelle wählst/änderst du oben unter „🎚 Eingabequelle" (Wave-Link Mix/Channel oder Windows-Lautstärke) — auch zum Umhängen, falls Windows ein Gerät neu zuordnet.'
               : render === 'graph'
               ? 'Der Graph zeichnet den Verlauf des Überwachungs-Werts; die „Farbe" unten ist die Linienfarbe. Titel „{value}" zeigt zusätzlich die Zahl.'
+              : render === 'stat'
+              ? 'Stat: der Überwachungs-Wert als große Gold-Glow-Zahl (kein Symbol), Sensorname als Label drunter. Titel „{value} °C" formatiert Zahl + Einheit.'
               : stateless
                 ? 'Diese Taste hat keinen Status (Überwachung = „Keine") → es zählt nur das „Standard"-Aussehen unten.'
                 : 'Pro Status eine Regel: „Wenn Wert … dann zeige …". Erster Treffer gewinnt; sonst „Standard".'}

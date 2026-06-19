@@ -171,38 +171,65 @@ function FrametimeSpark({ data, pct, color }) {
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
 // Politur: Fläche unter der Kurve gefüllt, Live-Punkt am aktuellen Wert, Min/Max-Werte in den Ecken.
-function Sparkline({ data, color, minSpan, pct }) {
+// Stat-Kachelfarbe: Kategoriefarbe (v.color), bei festem Bereich + oberste 20% (crit) → ROT. Sonst CSS-Gold.
+function statStyle(v, o) {
+  let sc = (v.color && !isDim(v.color)) ? v.color : null
+  if (o && Number.isFinite(+o.min) && Number.isFinite(+o.max) && o.crit !== false && v.value != null && v.value !== '') {
+    const t = (+v.value - +o.min) / ((+o.max - +o.min) || 1)
+    if (t >= 0.8) sc = '#ff5252'
+  }
+  return sc ? `color:${sc};text-shadow:0 0 9px ${sc}88,0 0 2px ${sc}` : ''
+}
+
+function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
-  let min = Infinity, max = -Infinity
-  for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
-  let lo = min, hi = max
-  if (lo === hi) { lo -= 1; hi += 1 }            // flache Linie nicht durch 0 teilen
-  const mid = (lo + hi) / 2
-  const span = Math.max((hi - lo) * 1.3, minSpan || 0)   // ≥ minSpan (FPS: 40 fps fest „genagelt") → kleine Wackler bleiben klein
-  lo = mid - span / 2; hi = mid + span / 2
+  const o = opts || {}
+  const fixed = Number.isFinite(+o.min) && Number.isFinite(+o.max) && +o.max > +o.min   // feste Skala aus min/max (genagelt)
+  let dmin = Infinity, dmax = -Infinity
+  for (const v of arr) { if (v < dmin) dmin = v; if (v > dmax) dmax = v }
+  let lo, hi
+  if (fixed) { lo = +o.min; hi = +o.max }
+  else {
+    lo = dmin; hi = dmax
+    if (lo === hi) { lo -= 1; hi += 1 }            // flache Linie nicht durch 0 teilen
+    const mid = (lo + hi) / 2
+    const span = Math.max((hi - lo) * 1.3, minSpan || 0)   // ≥ minSpan (FPS: 40 fps fest) → kleine Wackler bleiben klein
+    lo = mid - span / 2; hi = mid + span / 2
+  }
   const W = 100, H = 36, n = arr.length
   const px = (i) => (i / (n - 1)) * W
-  const py = (v) => H - ((v - lo) / (hi - lo)) * H
+  const py = (v) => Math.max(1, Math.min(H - 1, H - ((v - lo) / (hi - lo)) * H))   // bei fester Skala in der Kachel halten
   const path = smoothPath(arr.map((v, i) => [px(i), py(v)]))   // weiche Bezier-Kurve statt kantiger Geraden
   const lx = px(n - 1), ly = py(arr[n - 1])
   const c = isDim(color) ? '#39d8ff' : color
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  // Kritischer Bereich = oberste 20% (nur bei fester Skala + crit !== false): rote Zone + Linie wird darin rot.
+  const crit = fixed && o.crit !== false
+  const critY = crit ? py(lo + (hi - lo) * 0.8) : 0
+  const curCrit = crit && arr[n - 1] >= lo + (hi - lo) * 0.8
+  const cid = 'crit_' + String(uid || 'x').replace(/[^a-z0-9_]/gi, '')
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={c} opacity="0.18" stroke="none" />
+        {crit && <defs><clipPath id={cid}><rect x="0" y="0" width={W} height={critY.toFixed(1)} /></clipPath></defs>}
+        {crit && <rect x="0" y="0" width={W} height={critY.toFixed(1)} fill="#ff4d4d" opacity="0.1" />}
+        <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={c} opacity="0.16" stroke="none" />
         <path d={path} fill="none" stroke={c} stroke-width="2"
               stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
               style={`filter:drop-shadow(0 0 2.5px ${c})`} />
+        {crit && <path d={path} fill="none" stroke="#ff5252" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+              vector-effect="non-scaling-stroke" clip-path={`url(#${cid})`} style="filter:drop-shadow(0 0 2.5px #ff5252)" />}
+        {crit && <line x1="0" y1={critY.toFixed(1)} x2={W} y2={critY.toFixed(1)} stroke="#ff5252" stroke-width="0.5"
+              stroke-dasharray="2 2" opacity="0.5" vector-effect="non-scaling-stroke" />}
       </svg>
-      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
+      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${curCrit ? '#ff5252' : c};box-shadow:0 0 6px ${curCrit ? '#ff5252' : c}`} />
       {pct && pct.fps_1pct_low
         ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span>
-        : <span class="t-graph-lbl t-graph-max">{fmt(max)}</span>}
+        : <span class="t-graph-lbl t-graph-max">{fmt(dmax)}</span>}
       {pct && pct.fps_avg
         ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span>
-        : <span class="t-graph-lbl t-graph-min">{fmt(min)}</span>}
+        : <span class="t-graph-lbl t-graph-min">{fmt(dmin)}</span>}
     </div>
   )
 }
@@ -608,10 +635,12 @@ export function TouchDeck() {
     const render = renderById[id]
     const isGraph = render === 'graph'
     const isGauge = render === 'gauge'
+    const isStat = render === 'stat'
     const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
     const isFader = render === 'fader'
-    const isFlat = !v.image && !isWidget && !isGraph && !isGauge   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Fader)
+    const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Fader)
     const o = optsById[id] || {}
+    const statSty = isStat ? statStyle(v, o) : ''
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
       return (
@@ -624,8 +653,8 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge) ? 'var(--bg)' : (v.color || '#222'))))) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (v.color || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
@@ -634,10 +663,12 @@ export function TouchDeck() {
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
               {['fps', 'frametime'].includes((monById[id] || {}).type)
                 ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
-                : <Sparkline data={histRef.current[id]} color={v.color} />}
+                : <Sparkline data={histRef.current[id]} color={v.color} opts={o} uid={id} />}
             </>
           ) : isGauge ? (
             <Gauge value={v.value} opts={o} />
+          ) : isStat ? (
+            <span class="t-stat-v" style={statSty}>{v.title || (v.value != null ? String(v.value) : '—')}</span>
           ) : (
             <>
               {v.image ? <img class="t-key-img" src={v.image} alt="" />

@@ -69,8 +69,10 @@ export function Clock({ opts, fs }) {
   )
 }
 
-// Schwellwert-Farbe grün→amber→rot (0..1). Feste Akzentfarbe (opts.color) gewinnt, wenn gesetzt.
-export const gaugeColor = (t, fixed) => fixed || (t < 0.6 ? '#37e0a3' : t < 0.85 ? '#ffb454' : '#ff5d5d')
+// Farbe (0..1): KRITISCH = oberste 20% (t≥0.8) immer ROT (außer crit===false, z.B. Lüfter/Pumpe wo hoch=gut).
+// Darunter die feste Kategoriefarbe (opts.color), sonst Schwellwert grün→amber→rot.
+export const gaugeColor = (t, fixed, crit) => (crit !== false && t >= 0.8) ? '#ff4d4d'
+  : (fixed || (t < 0.6 ? '#37e0a3' : t < 0.85 ? '#ffb454' : '#ff5d5d'))
 
 // Radial-Gauge im Deck-Stil: Glow-Bogen (270°, Gap unten) + Schleppzeiger-Punkt + großer Wert mit Glow.
 // Wertbereich aus opts.min/max (Default 0..100), Einheit opts.unit. Skaliert via cqw (wie Text/Uhr).
@@ -82,7 +84,7 @@ export function Gauge({ value, opts }) {
   const span = (max - min) || 1
   const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
   const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
-  const col = gaugeColor(t, o.color)
+  const col = gaugeColor(t, o.color, o.crit)
   const cx = 50, cy = 50, r = 38, A0 = 135, SW = 270
   const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)] }
   const arc = (a0, a1) => { const [x0, y0] = pol(a0), [x1, y1] = pol(a1); const lg = Math.abs(a1 - a0) > 180 ? 1 : 0
