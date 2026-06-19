@@ -32,6 +32,7 @@ const ACTION_LABELS = {
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
   obs: '🎬 OBS (Szene wechseln / Quelle ein-aus / Stream / Aufnahme)',
+  obsbot: '📷 OBSBOT-Kamera (Tiny/Meet — Gimbal/Zoom/Tracking/Preset/Wake)',
   wavelink: '🎚 Wave Link (Mix/Channel: Mute / Level / Main-Output)',
   winaudio: '🔊 Windows-Standardgerät setzen (Ausgabe umschalten)',
   flag_toggle: '🚩 Flag umschalten (Fortgeschritten)',
@@ -1615,6 +1616,114 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
               </select>
             </div>
           )}
+        </>
+      )}
+      {t === 'obsbot' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Kamera</span>
+            <select class="so-delay" value={action.device == null ? '' : String(action.device)}
+                    onChange={(e) => onChange({ device: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })}>
+              <option value="">aktive Kamera</option>
+              <option value="0">Kamera 1</option>
+              <option value="1">Kamera 2</option>
+              <option value="2">Kamera 3</option>
+              <option value="3">Kamera 4</option>
+            </select>
+            <span class="muted conn-label">Aktion</span>
+            <select class="reward-input" value={action.obsbot_action || 'recenter'}
+                    onChange={(e) => replace({ type: 'obsbot', obsbot_action: e.currentTarget.value, device: action.device })}>
+              <option value="recenter">🎯 Zentrieren</option>
+              <option value="wake">☀ Aufwecken</option>
+              <option value="sleep">🌙 Schlafen (Privacy)</option>
+              <option value="tracking">👁 Tracking an/aus</option>
+              <option value="ai_mode">🤖 AI-Modus</option>
+              <option value="framing">🖼 Bildausschnitt</option>
+              <option value="track_speed">🏃 Tracking-Tempo</option>
+              <option value="zoom">🔍 Zoom (%)</option>
+              <option value="gimbal_dir">🕹 Schwenken</option>
+              <option value="view">📐 Sichtfeld (FOV)</option>
+              <option value="mirror">🪞 Spiegeln an/aus</option>
+              <option value="preset">⭐ Preset abrufen</option>
+              <option value="record">⏺ Aufnahme an/aus</option>
+              <option value="snapshot">📸 Foto</option>
+              <option value="select">🎚 Aktive Kamera wählen</option>
+            </select>
+          </div>
+          {action.obsbot_action === 'zoom' && (
+            <div class="reward-row">
+              <span class="muted conn-label">Zoom %</span>
+              <input class="so-delay" type="number" min="0" max="100" style="width:90px"
+                     value={action.value ?? 50} onInput={(e) => onChange({ value: Number(e.currentTarget.value) })} />
+            </div>
+          )}
+          {action.obsbot_action === 'gimbal_dir' && (
+            <div class="reward-row">
+              <span class="muted conn-label">Richtung</span>
+              <select class="so-delay" value={action.direction || 'up'} onChange={(e) => onChange({ direction: e.currentTarget.value })}>
+                <option value="up">hoch</option><option value="down">runter</option>
+                <option value="left">links</option><option value="right">rechts</option>
+              </select>
+              <span class="muted conn-label">Tempo</span>
+              <input class="so-delay" type="number" min="0" max="100" style="width:80px"
+                     value={action.speed ?? 50} onInput={(e) => onChange({ speed: Number(e.currentTarget.value) })} />
+            </div>
+          )}
+          {['tracking', 'mirror', 'record'].includes(action.obsbot_action) && (
+            <div class="reward-row">
+              <span class="muted conn-label">Modus</span>
+              <select class="so-delay" value={action.mode || 'on'} onChange={(e) => onChange({ mode: e.currentTarget.value })}>
+                <option value="on">an</option><option value="off">aus</option>
+              </select>
+            </div>
+          )}
+          {action.obsbot_action === 'ai_mode' && (
+            <div class="reward-row">
+              <span class="muted conn-label">AI-Modus</span>
+              <select class="reward-input" value={action.value ?? 0} onChange={(e) => onChange({ value: Number(e.currentTarget.value) })}>
+                <option value="0">Mensch – Einzel</option><option value="1">Mensch – Gruppe</option>
+                <option value="2">Stimme</option><option value="3">Desk</option>
+                <option value="4">Hand</option><option value="5">Whiteboard</option>
+              </select>
+            </div>
+          )}
+          {action.obsbot_action === 'framing' && (
+            <div class="reward-row">
+              <span class="muted conn-label">Ausschnitt</span>
+              <select class="so-delay" value={action.value ?? 1} onChange={(e) => onChange({ value: Number(e.currentTarget.value) })}>
+                <option value="0">Headroom</option><option value="1">Standard</option><option value="2">Motion</option>
+              </select>
+            </div>
+          )}
+          {action.obsbot_action === 'track_speed' && (
+            <div class="reward-row">
+              <span class="muted conn-label">Tempo</span>
+              <select class="so-delay" value={action.value ?? 1} onChange={(e) => onChange({ value: Number(e.currentTarget.value) })}>
+                <option value="0">langsam</option><option value="1">standard</option><option value="2">schnell</option>
+              </select>
+            </div>
+          )}
+          {action.obsbot_action === 'view' && (
+            <div class="reward-row">
+              <span class="muted conn-label">FOV</span>
+              <select class="so-delay" value={action.value ?? 0} onChange={(e) => onChange({ value: Number(e.currentTarget.value) })}>
+                <option value="0">86° (weit)</option><option value="1">78°</option><option value="2">65° (eng)</option>
+              </select>
+            </div>
+          )}
+          {(action.obsbot_action === 'preset' || action.obsbot_action === 'select') && (
+            <div class="reward-row">
+              <span class="muted conn-label">{action.obsbot_action === 'preset' ? 'Preset' : 'Aktiv setzen'}</span>
+              <select class="so-delay" value={action.index ?? 0} onChange={(e) => onChange({ index: Number(e.currentTarget.value) })}>
+                {action.obsbot_action === 'preset'
+                  ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>]
+                  : [<option value="0">Kamera 1</option>, <option value="1">Kamera 2</option>, <option value="2">Kamera 3</option>, <option value="3">Kamera 4</option>]}
+              </select>
+              {action.obsbot_action === 'preset' && <span class="muted" style="font-size:11px">Presets in OBSBOT Center anlegen</span>}
+            </div>
+          )}
+          <p class="muted sd-help">OBSBOT-App muss laufen + <b>OSC aktiv</b> (UDP, Port 16284). Bei zwei
+            baugleichen Kameras in OBSBOT die <b>Positions-Sperre</b> setzen, damit „Kamera 1" stabil bleibt.</p>
         </>
       )}
       {t === 'winaudio' && (
