@@ -92,42 +92,52 @@ function FastGraph({ kind, color }) {
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
-  if (kind === 'frametime') return <FrametimeSpark data={data} pct={pct} color={color} />
-  return <Sparkline data={data} color={color} pct={pct} />
+  if (kind === 'frametime') return <FrametimeSpark data={data} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+  return <Sparkline data={data} color={isDim(color) ? '#37e0a3' : color} pct={pct} />
 }
 
-// Frametime-Spike-Graph: ADAPTIV (kein fixes 16,7 ms) — Spike = Frame > Median×1.6, skaliert relativ zum
-// Median (Median bei 1/3 Höhe) → Spikes knallen bei JEDER fps. Über-Schwelle-Frames = rote Glow-Beams
-// (Intensität ∝ Überschuss), Live-Punkt + 1%-low/avg-Readout aus den echten PresentMon-Perzentilen.
+// Frametime-Spike-Graph wie in der Vorschau: LOG-Skala relativ zur Baseline (Median) — normale Frames sitzen
+// ruhig im unteren Drittel, Spikes knallen GESTAUCHT (nicht „immer voll"), kleine Schwankungen bleiben klein.
+// Flächen-Glow drunter, kräftige Linie, rote Glow-Beams bei echten Spikes (>2× Baseline) + Peak-Hold-Schlepp-
+// Linie am Fenster-Max (~20 s) + 1%-low/avg-Readout aus echten PresentMon-Perzentilen.
 function FrametimeSpark({ data, pct, color }) {
   const arr = (data || []).filter((v) => v > 0)
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const sorted = arr.slice().sort((a, b) => a - b)
-  const median = sorted[Math.floor(sorted.length / 2)] || 1
-  const W = 100, H = 36, n = arr.length, scale = Math.max(median * 3, 0.1)
+  const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median = stabile Baseline (großes Fenster)
+  const wMax = sorted[sorted.length - 1]                           // Fenster-Max = natürlicher Peak-Hold
+  const W = 100, H = 36, n = arr.length, denom = Math.log(9)
+  const frac = (v) => Math.max(0, Math.min(1, Math.log(1 + v / base) / denom))   // base→.32 · 2×→.50 · 4×→.73 · 8×→1
   const px = (i) => (i / (n - 1)) * W
-  const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * H
+  const py = (v) => H - frac(v) * (H - 3) - 1
   const c = color || '#39d8ff'
   const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
-  const baseY = py(median)
+  const baseY = py(base), peakY = py(wMax)
   const beams = []
   for (let i = 0; i < n; i++) {
-    if (arr[i] > median * 1.6) {
-      const x = px(i), y = py(arr[i]), inten = Math.max(0.3, Math.min(1, (arr[i] - median) / (median * 2.5)))
-      beams.push({ x, y, inten, k: i })
+    if (arr[i] > base * 2) {                                       // echter Spike (>2× Baseline)
+      const inten = Math.max(0.3, Math.min(1, (arr[i] - base * 2) / (base * 4)))
+      beams.push({ x: px(i), y: py(arr[i]), inten, k: i })
     }
   }
   const lx = px(n - 1), ly = py(arr[n - 1])
+  const gid = 'ftg_' + (c.replace('#', '') || 'x')
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <line x1="0" y1={baseY.toFixed(1)} x2={W} y2={baseY.toFixed(1)} stroke={c} stroke-width="0.6"
-              stroke-dasharray="2 3" opacity="0.4" vector-effect="non-scaling-stroke" />
+        <defs><linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stop-color={c} stop-opacity="0.30" /><stop offset="1" stop-color={c} stop-opacity="0" />
+        </linearGradient></defs>
+        <polygon points={`0,${H} ${line} ${W},${H}`} fill={`url(#${gid})`} />
+        <line x1="0" y1={baseY.toFixed(1)} x2={W} y2={baseY.toFixed(1)} stroke={c} stroke-width="0.5"
+              stroke-dasharray="2 3" opacity="0.3" vector-effect="non-scaling-stroke" />
         {beams.map((s) => <line key={s.k} x1={s.x.toFixed(1)} y1={H} x2={s.x.toFixed(1)} y2={s.y.toFixed(1)}
-              stroke="#ff5d5d" stroke-width={(0.8 + s.inten * 1.4).toFixed(1)} opacity={(0.3 + s.inten * 0.55).toFixed(2)}
-              vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1.5 + s.inten * 4).toFixed(0)}px #ff5d5d)`} />)}
-        <polyline points={line} fill="none" stroke={c} stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
-                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2px ${c})`} />
+              stroke="#ff5d5d" stroke-width={(0.7 + s.inten).toFixed(1)} opacity={(0.22 + s.inten * 0.45).toFixed(2)}
+              vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1.5 + s.inten * 3).toFixed(0)}px #ff5d5d)`} />)}
+        <line x1="0" y1={peakY.toFixed(1)} x2={W} y2={peakY.toFixed(1)} stroke="#ff5d5d" stroke-width="0.8"
+              opacity="0.7" vector-effect="non-scaling-stroke" style="filter:drop-shadow(0 0 3px #ff5d5d)" />
+        <polyline points={line} fill="none" stroke={c} stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"
+                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2.5px ${c})`} />
       </svg>
       <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
       {pct && pct.fps_1pct_low ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span> : null}
@@ -150,7 +160,7 @@ function Sparkline({ data, color }) {
   const py = (v) => H - ((v - lo) / (hi - lo)) * H
   const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
   const lx = px(n - 1), ly = py(arr[n - 1])
-  const c = color || 'var(--accent2)'
+  const c = isDim(color) ? '#39d8ff' : color
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
   return (
     <div class="t-graph">
@@ -190,6 +200,15 @@ function waMeter(p) {
   if (!(p > 0)) return 0
   const db = 20 * Math.log10(p)
   return Math.max(0, Math.min(1, (db + 48) / 48))
+}
+
+// Dunkle/leere Linienfarbe (z.B. die #222-Kachelfarbe) → durch eine kräftige Glow-Farbe ersetzen, damit
+// Graphen NIE „grau auf grau" sind. Luminanz < 70 = zu dunkel.
+function isDim(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '')
+  if (!m) return true
+  const n = parseInt(m[1], 16)
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 70
 }
 
 function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
