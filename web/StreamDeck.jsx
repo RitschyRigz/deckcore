@@ -1720,7 +1720,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
               <span class="muted conn-label">{action.obsbot_action === 'preset' ? 'Preset' : 'Aktiv setzen'}</span>
               <select class="so-delay" value={action.index ?? 0} onChange={(e) => onChange({ index: Number(e.currentTarget.value) })}>
                 {action.obsbot_action === 'preset'
-                  ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>, <option value="3">Preset 4</option>]
+                  ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>]
                   : [<option value="0">Kamera 1</option>, <option value="1">Kamera 2</option>, <option value="2">Kamera 3</option>, <option value="3">Kamera 4</option>]}
               </select>
               {action.obsbot_action === 'preset' && <span class="muted" style="font-size:11px">Presets in OBSBOT Center anlegen</span>}

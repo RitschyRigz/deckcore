@@ -627,7 +627,8 @@ class DeckCoreService:
         M("wavelink_main_output", self._mon_wavelink_main_output)
         M("winaudio_default", self._mon_winaudio_default)
         M("winaudio_volume", self._mon_winaudio_volume)
-        M("obsbot_tracking", self._mon_obsbot_tracking)
+        M("obsbot_cam", self._mon_obsbot_cam)
+        M("obsbot_track", self._mon_obsbot_track)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1640,12 +1641,14 @@ class DeckCoreService:
         return {"ok": True, "created": created, "updated": updated, "total": created + updated, "render": render}
 
     def generate_obsbot_buttons(self, cameras: int = 2) -> dict:
-        """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 4 Positions-Presets + Zentrieren +
-        Tracking-Toggle (mit AN/AUS-Rückmeldung über den obsbot_tracking-Monitor) + Wake/Sleep.
-        Farben: Cam 1 blau · Cam 2 violett · Cam 3 türkis · Cam 4 orange (Flat-Design glüht in der
-        Cam-Farbe). Idempotent (id ``obsbot_c<d>_<key>``) — User-Kosmetik bleibt via _regen_preserve."""
+        """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
+        Tracking-Toggle + Wake/Sleep. Jeder Button SPIEGELT den Live-Status (Monitor ``obsbot_cam``):
+        App/OSC nicht erreichbar → 🔌 dunkel · Kamera schläft → 💤 gedimmt · bereit → Cam-Farbe.
+        Der Tracking-Button zeigt zusätzlich den ECHTEN AN/AUS-Zustand (``obsbot_track``, Readback).
+        Farben: Cam 1 blau · Cam 2 violett · Cam 3 türkis · Cam 4 orange. Idempotent (id ``obsbot_c<d>_<key>``)."""
         n = max(1, min(int(cameras or 2), 4))
         COLORS = ["#3a9bf0", "#a855f7", "#22c6c6", "#f59e0b"]   # blau / violett / türkis / orange
+        DIM, OFF = "#3a3f4a", "#252a33"                        # schläft (gedimmt) / App weg (dunkel)
         pool_by_id = {b.get("id"): b for b in self._buttons}
         created = updated = 0
         cats_used: list[str] = []
@@ -1655,24 +1658,30 @@ class DeckCoreService:
             camlbl = f"Cam {d + 1}"
             if cat not in cats_used:
                 cats_used.append(cat)
-            specs = [(f"preset{p}", "📌", f"Pos {p + 1}", {"type": "obsbot", "obsbot_action": "preset", "device": d, "index": p}, None)
-                     for p in range(4)]   # 4 speicherbare Positionen
-            specs += [
-                ("recenter", "🎯", "Zentrieren", {"type": "obsbot", "obsbot_action": "recenter", "device": d}, None),
-                ("track", "👁", "Tracking", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
-                 {"type": "obsbot_tracking", "device": d}),
-                ("wake", "☀", "Aufwecken", {"type": "obsbot", "obsbot_action": "wake", "device": d}, None),
-                ("sleep", "🌙", "Schlafen", {"type": "obsbot", "obsbot_action": "sleep", "device": d}, None),
+            # Normale Buttons (Status über obsbot_cam): 3 Presets (Tiny 3 meldet 3 Speicherplätze) + Zentrieren + Wake/Sleep
+            normal = [(f"preset{p}", "📌", f"Pos {p + 1}", {"type": "obsbot", "obsbot_action": "preset", "device": d, "index": p}) for p in range(3)]
+            normal += [
+                ("recenter", "🎯", "Zentrieren", {"type": "obsbot", "obsbot_action": "recenter", "device": d}),
+                ("wake", "☀", "Aufwecken", {"type": "obsbot", "obsbot_action": "wake", "device": d}),
+                ("sleep", "🌙", "Schlafen", {"type": "obsbot", "obsbot_action": "sleep", "device": d}),
             ]
-            for key, icon, title, action, monitor in specs:
+            buttons = []
+            for key, icon, title, action in normal:
+                buttons.append((key, action, {"type": "obsbot_cam", "device": d},
+                                [{"when": {"op": "eq", "value": "on"}, "icon": icon, "title": title, "color": col},
+                                 {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": title, "color": DIM}],
+                                {"icon": "🔌", "title": title, "color": OFF}))
+            # Tracking-Toggle: echter AN/AUS-Zustand + Erreichbarkeit (obsbot_track)
+            buttons.append(("track", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
+                            {"type": "obsbot_track", "device": d},
+                            [{"when": {"op": "eq", "value": "trackon"}, "icon": "🎯", "title": "Tracking AN", "color": "#22c55e"},
+                             {"when": {"op": "eq", "value": "trackoff"}, "icon": "👁", "title": "Tracking aus", "color": col},
+                             {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": "schläft", "color": DIM}],
+                            {"icon": "🔌", "title": "App aus", "color": OFF}))
+            for key, action, monitor, states, default in buttons:
                 bid = f"obsbot_c{d}_{key}"
                 fn = {"id": bid, "label": camlbl, "pool_cat": cat, "action": action,
-                      "monitor": monitor or {"type": "none"}, "states": [],
-                      "default": {"icon": icon, "title": title, "color": col}}
-                if key == "track":   # AN = grün, AUS/unbekannt = Cam-Farbe (Identität + klarer Status)
-                    fn["states"] = [{"when": {"op": "truthy"}, "icon": "🎯", "title": "Tracking AN", "color": "#22c55e"}]
-                    fn["default"] = {"icon": "👁", "title": "Tracking aus", "color": col}
-                    fn["refresh_seconds"] = 2   # snappe Rückmeldung (reiner In-Memory-Read, billig)
+                      "monitor": monitor, "states": states, "default": default, "refresh_seconds": 2}
                 ex = pool_by_id.get(bid)
                 if ex is not None:
                     fn = _regen_preserve(ex, fn); self._buttons[self._buttons.index(ex)] = fn; updated += 1
@@ -2104,9 +2113,16 @@ class DeckCoreService:
         """OSC-Ziel umstellen (z.B. Host = IP des Kamera-PCs, wenn die Hülle woanders läuft)."""
         return self._obsbot.set_config(host, port)
 
-    def _mon_obsbot_tracking(self, mon: dict, btn: dict):
-        """Tracking-Zustand einer OBSBOT-Kamera (True/False/None) — Toggle-Feedback (AN/AUS)."""
-        return self._obsbot.tracking_state(mon.get("device"))
+    def _mon_obsbot_cam(self, mon: dict, btn: dict):
+        """OBSBOT-Kamera-Status: 'off' (App/OSC nicht erreichbar oder Cam weg) · 'sleep' · 'on' (bereit)."""
+        return self._obsbot.cam_status(mon.get("device"))
+
+    def _mon_obsbot_track(self, mon: dict, btn: dict):
+        """Tracking-Status INKL. Erreichbarkeit (für den Toggle-Button): 'off' · 'sleep' · 'trackon' · 'trackoff'."""
+        st = self._obsbot.cam_status(mon.get("device"))
+        if st != "on":
+            return st
+        return "trackon" if self._obsbot.tracking_state(mon.get("device")) else "trackoff"
 
     def _act_open_deck(self, action: dict, btn: dict) -> dict:
         # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
@@ -2199,7 +2215,7 @@ class DeckCoreService:
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "obs_source_visible", "obs_scene",
-                          "obsbot_tracking", "displayfusion_profile", "none"]
+                          "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         out = {

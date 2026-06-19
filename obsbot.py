@@ -42,7 +42,11 @@ log = logging.getLogger("deckcore.obsbot")
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 16284          # OBSBOT „Receive Port" (Default)
 _PROC_TTL = 3.0                # s — Cache, wie oft wir den App-Prozess prüfen (Status)
-_OBSBOT_PROCS = ("OBSBOT_WebCam.exe", "OBSBOT_Center.exe", "OBSBOT Center.exe")
+_OBSBOT_PROCS = ("OBSBOT_WebCam.exe", "OBSBOT_Center.exe", "OBSBOT Center.exe", "OBSBOT_Main.exe")
+_REACHABLE_TTL = 3.5           # s — länger keine OSC-Antwort ⇒ App/OSC gilt als nicht erreichbar
+_POLL_INTERVAL = 1.2           # s — Status-Abfrage-Takt des Pollers
+_POLL_IDLE = 12.0              # s — kein Status-Leser mehr ⇒ Poller stoppt (kein Dauer-Polling)
+_SLEEP_PITCH = -70             # Gimbal-Pitch darunter ⇒ Kamera schläft (Linse nach unten gekippt)
 
 
 # ── OSC-Encoder (hand-gerollt — kein python-osc nötig; deckcore bleibt dep-frei) ──
@@ -71,6 +75,29 @@ def _osc_message(address: str, args: tuple) -> bytes:
     return _osc_string(address) + _osc_string(tag) + payload
 
 
+def _osc_parse(pkt: bytes):
+    """OSC-Reply zerlegen → (address, [args]) (Typen i/f/s). (None, []) bei Murks."""
+    try:
+        i = pkt.index(b"\x00"); addr = pkt[:i].decode("utf-8", "replace")
+        p = ((len(addr) // 4) + 1) * 4
+        j = pkt.index(b"\x00", p); tag = pkt[p:j].decode("ascii", "replace")
+        p += ((len(tag) // 4) + 1) * 4
+        args: list = []
+        for c in tag[1:]:
+            if c == "i":
+                args.append(struct.unpack(">i", pkt[p:p + 4])[0]); p += 4
+            elif c == "f":
+                args.append(struct.unpack(">f", pkt[p:p + 4])[0]); p += 4
+            elif c == "s":
+                e = pkt.index(b"\x00", p); args.append(pkt[p:e].decode("utf-8", "replace"))
+                p += ((e - p) // 4 + 1) * 4
+            else:
+                break
+        return addr, args
+    except Exception:  # noqa: BLE001
+        return None, []
+
+
 def _clampi(v: Any, lo: int, hi: int, default: int = 0) -> int:
     try:
         n = int(round(float(v)))
@@ -89,7 +116,15 @@ class ObsBotOSC:
         self._lock = threading.Lock()
         self._proc_cache: tuple = (None, -1e9)   # (running?, monotonic)
         self._last_send: float = 0.0
-        self._track: dict = {}                    # device(int|None) -> bool: zuletzt gesetzter Tracking-Zustand (Feedback)
+        self._track: dict = {}                    # device(int|None) -> bool: optimistischer Tracking-Zustand (Fallback)
+        # ── Status-Readback (bidirektionales OSC): Poller-Thread fragt zyklisch ab, füllt den Cache ──
+        self._cache_lock = threading.Lock()
+        self._reachable_ts: float = -1e9          # monotonic der letzten OSC-Antwort (App lebt + OSC an)
+        self._dev: dict = {}                       # d(int) -> {connected,name,awake,pitch,tracking}
+        self._selected: Optional[int] = None
+        self._want_ts: float = -1e9                # monotonic des letzten Status-Lesers (Idle-Stop)
+        self._pstop = threading.Event()
+        self._poller: Optional[threading.Thread] = None
 
     # ── Verbindung/Config ────────────────────────────────────────────────
     def set_config(self, host: str | None = None, port: int | None = None) -> dict:
@@ -214,12 +249,16 @@ class ObsBotOSC:
         return self._dev_send("/OBSBOT/WebCam/Tiny/ToggleAILock", device, 1 if st else 0)
 
     def tracking_toggle(self, device: Any = None) -> dict:
-        """Tracking umschalten (anhand des zuletzt gesetzten Zustands) — für Toggle-Buttons mit Rückmeldung."""
-        return self.tracking(not self._track.get(self._dkey(device), False), device)
+        """Tracking umschalten — anhand des ECHTEN Zustands (Readback, sonst optimistisch)."""
+        return self.tracking(not bool(self.tracking_state(device)), device)
 
     def tracking_state(self, device: Any = None):
-        """Zuletzt gesetzter Tracking-Zustand der Cam (True/False) oder None (noch nie gesetzt) — für Monitor/Feedback."""
-        return self._track.get(self._dkey(device))
+        """ECHTER Tracking-Zustand der Cam aus dem Readback (True/False); Fallback optimistisch; None unbekannt."""
+        self._ensure_poller()
+        with self._cache_lock:
+            info = self._dev.get(self._dkey(device))
+            real = info.get("tracking") if info else None
+        return real if real is not None else self._track.get(self._dkey(device))
 
     def ai_mode(self, mode: Any, device: Any = None) -> dict:
         """AI-Modus (Tiny 3): 0 Mensch-Einzel · 1 Mensch-Gruppe · 2 Stimme · 3 Desk · 4 Hand · 5 Whiteboard."""
@@ -237,6 +276,111 @@ class ObsBotOSC:
         """Gespeicherte Preset-Position aufrufen (0 = Preset 1, 1 = Preset 2, … je nach Modell).
         Speichern geht NICHT über OSC — die Positionen in der OBSBOT-App anlegen."""
         return self._dev_send("/OBSBOT/WebCam/Tiny/TriggerPreset", device, _clampi(index, 0, 9))
+
+    # ── Status-Readback (bidirektionales OSC) ────────────────────────────
+    # OBSBOT antwortet auf Get*-Querys an den ABSENDER zurück (live verifiziert). Ein eigener Poller-
+    # Socket fragt zyklisch ab und füllt den Cache: erreichbar (App+OSC), pro Cam verbunden/wach/tracking.
+    def _ensure_poller(self) -> None:
+        """Poller-Thread lazy starten + Interesse markieren (hält ihn am Leben)."""
+        self._want_ts = time.monotonic()
+        if self._poller is not None and self._poller.is_alive():
+            return
+        self._pstop.clear()
+        t = threading.Thread(target=self._poll_loop, name="obsbot-poller", daemon=True)
+        self._poller = t
+        t.start()
+
+    def _connected_or_default(self) -> list:
+        with self._cache_lock:
+            conn = [d for d, info in self._dev.items() if info.get("connected")]
+        return conn or [0, 1]
+
+    def _poll_loop(self) -> None:
+        """Zyklisch Connected/DeviceInfo + pro Cam Gimbal/Tracking abfragen; Antworten gehen an diesen
+        Socket zurück. Idle-Stop ohne Status-Leser (kein Dauer-Polling)."""
+        try:
+            rs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            rs.bind(("0.0.0.0", 0)); rs.settimeout(0.12)
+        except OSError as e:
+            log.warning("obsbot: Poller-Socket-Fehler: %s", e); self._poller = None; return
+        try:
+            while not self._pstop.is_set():
+                if (time.monotonic() - self._want_ts) > _POLL_IDLE:
+                    break
+                host, port = self._host, self._port
+                self._q(rs, host, port, "/OBSBOT/WebCam/General/Connected", 0)
+                self._q(rs, host, port, "/OBSBOT/WebCam/General/GetDeviceInfo", 0)
+                self._drain(rs, None, 0.18)
+                devs = self._connected_or_default()
+                for d in devs:
+                    self._q(rs, host, port, "/OBSBOT/WebCam/General/GetGimbalPosInfo", d)
+                    self._q(rs, host, port, "/OBSBOT/WebCam/Tiny/GetAiTrackingInfo", d)
+                    self._drain(rs, d, 0.18)
+                self._pstop.wait(max(0.05, _POLL_INTERVAL - 0.18 * (1 + len(devs))))
+        finally:
+            try:
+                rs.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._poller = None
+
+    def _q(self, rs, host, port, address, *args) -> None:
+        try:
+            rs.sendto(_osc_message(address, args), (host, port))
+        except OSError:
+            pass
+
+    def _drain(self, rs, dev, dur: float) -> None:
+        end = time.monotonic() + dur
+        while time.monotonic() < end:
+            try:
+                data, _src = rs.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self._apply_reply(data, dev)
+
+    def _apply_reply(self, pkt: bytes, dev) -> None:
+        addr, args = _osc_parse(pkt)
+        if not addr:
+            return
+        tail = addr.rsplit("/", 1)[-1]
+        with self._cache_lock:
+            self._reachable_ts = time.monotonic()          # JEDE Antwort = erreichbar
+            if tail == "DeviceInfo" and len(args) >= 8:
+                for d in range(4):
+                    info = self._dev.setdefault(d, {})
+                    info["connected"] = bool(args[d * 2])
+                    info["name"] = args[d * 2 + 1] if isinstance(args[d * 2 + 1], str) else ""
+                if len(args) >= 9 and isinstance(args[8], int):
+                    self._selected = args[8]
+            elif tail == "GetGimbalPosInfoResp" and dev is not None and args:
+                info = self._dev.setdefault(self._dkey(dev), {})
+                info["pitch"] = args[0]
+                info["awake"] = args[0] > _SLEEP_PITCH
+            elif tail == "AiTrackingInfo" and dev is not None and args:
+                self._dev.setdefault(self._dkey(dev), {})["tracking"] = bool(args[0])
+            # ConnectedResp / ZoomInfo / PresetPositionInfo: nur „erreichbar" zählt (oben gesetzt)
+
+    def reachable(self) -> bool:
+        """Kürzlich eine OSC-Antwort erhalten? (App läuft + OSC aktiv + erreichbar.)"""
+        self._ensure_poller()
+        return (time.monotonic() - self._reachable_ts) < _REACHABLE_TTL
+
+    def cam_status(self, device: Any = None) -> str:
+        """„off" (App/OSC weg ODER Cam nicht verbunden) · „sleep" (Linse unten) · „on" (bereit)."""
+        self._ensure_poller()
+        now = time.monotonic()
+        with self._cache_lock:
+            if (now - self._reachable_ts) >= _REACHABLE_TTL:
+                return "off"
+            info = self._dev.get(self._dkey(device))
+            if info is not None and info.get("connected") is False:
+                return "off"
+            if info is not None and info.get("awake") is False:
+                return "sleep"
+            return "on"
 
     # ── Status (best effort) ─────────────────────────────────────────────
     def _app_running(self) -> Optional[bool]:
@@ -259,7 +403,13 @@ class ObsBotOSC:
         return found
 
     def status(self) -> dict:
-        """Best-effort-Status für die UI. UDP bestätigt nichts → ``app_running`` ist das beste Signal."""
+        """Status für die UI: ``reachable`` (OSC-Antwort kürzlich) ist das beste Signal — App läuft UND
+        OSC aktiv. ``devices`` = pro Cam verbunden/wach/tracking. ``app_running`` = nur Prozess-Check."""
+        self._ensure_poller()
+        now = time.monotonic()
+        with self._cache_lock:
+            reachable = (now - self._reachable_ts) < _REACHABLE_TTL
+            devices = {d: dict(info) for d, info in self._dev.items()}
         return {"host": self._host, "port": self._port,
-                "app_running": self._app_running(),
-                "last_send_age": (round(time.monotonic() - self._last_send, 1) if self._last_send else None)}
+                "reachable": reachable, "app_running": self._app_running(), "devices": devices,
+                "last_send_age": (round(now - self._last_send, 1) if self._last_send else None)}
