@@ -249,6 +249,22 @@ function BackupCard({ onReload }) {
   const [snaps, setSnaps] = useState([])
   const loadSnaps = () => getJSON('/api/streamdeck/backups').then((d) => setSnaps(d.backups || [])).catch(() => {})
   useEffect(() => { loadSnaps() }, [])
+  const onExport = async () => {
+    setBusy(true); setMsg('… erstelle Backup')
+    try {
+      const r = await fetch('/api/streamdeck/export')
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'rigzdeck-backup-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.zip'
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 3000)
+      setMsg('✅ Backup heruntergeladen (' + Math.round(blob.size / 1024) + ' KB)')
+    } catch (er) { setMsg('Export-Fehler: ' + er) }
+    setBusy(false)
+  }
   const onImport = async (e) => {
     const f = e.currentTarget.files && e.currentTarget.files[0]
     e.currentTarget.value = ''
@@ -278,7 +294,7 @@ function BackupCard({ onReload }) {
     <div class="card" style="max-width:820px; margin-bottom:12px">
       <div class="reward-row" style="flex-wrap:wrap; gap:8px">
         <span class="kv-k" style="min-width:200px">💾 Backup &amp; Umzug</span>
-        <a class="btn small" href="/api/streamdeck/export">⬇ Export (Datei)</a>
+        <button class="btn small" disabled={busy} onClick={onExport}>⬇ Export (Datei)</button>
         <label class="btn small ghost" style={'cursor:pointer' + (busy ? ';opacity:.5' : '')}>⬆ Import (Datei)
           <input type="file" accept=".zip" style="display:none" disabled={busy} onChange={onImport} /></label>
         {msg && <span class="msg">{msg}</span>}
