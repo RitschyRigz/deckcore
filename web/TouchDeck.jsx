@@ -89,7 +89,7 @@ function FastGraph({ kind, color }) {
       n++
     }
     tick()
-    const iv = setInterval(tick, 45)   // ~22 Hz Render (Backend sampelt 60 Hz, MAX-Stat → kein Spike geht verloren)
+    const iv = setInterval(tick, 70)   // ~14 Hz — entlastet schwache Tablets (Per-Frame-Graph + WLAN); Render ist via dsMaxBucket leicht
     return () => { alive = false; clearInterval(iv) }
   }, [kind])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
@@ -102,6 +102,21 @@ function FastGraph({ kind, color }) {
   return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
 }
 
+// Spike-erhaltende Render-Verdichtung (Max je Bucket): eine SVG-Linie braucht nie mehr Punkte als die Kachel
+// breit ist — 1000+ Per-Frame-Punkte bei hoher Rate würgen schwache Tablets ab (Ruckeln + Verbindungsabbruch,
+// weil der Hauptthread den SSE-Stream nicht mehr bedient). Max je Bucket erhält Spikes (anders als „jeden N-ten").
+function dsMaxBucket(arr, target) {
+  if (arr.length <= target) return arr
+  const out = new Array(target), step = arr.length / target
+  for (let i = 0; i < target; i++) {
+    let m = 0
+    const a = Math.floor(i * step), b = Math.min(arr.length, Math.floor((i + 1) * step))
+    for (let j = a; j < b; j++) if (arr[j] > m) m = arr[j]
+    out[i] = m
+  }
+  return out
+}
+
 // Frametime-Spike-Graph im RTSS/Afterburner-Stil: FESTE, ruhige Y-Skala (base×4, Median über mehrere Sekunden →
 // atmet NICHT bei jedem Spike), Spikes clippen oben statt die ganze Kurve zu reskalieren. Fixe ms-Referenzlinien
 // (60/120/144 fps), Flächen-Glow, scharfe Per-Frame-Linie, rote Glow-Beams bei echten Spikes (>2.2× Baseline) +
@@ -111,23 +126,24 @@ function FrametimeSpark({ data, pct, color }) {
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const sorted = arr.slice().sort((a, b) => a - b)
   const base = sorted[Math.floor(sorted.length * 0.5)] || 1        // Median über das ganze (mehrsekündige) Fenster = sehr stabil
-  const W = 100, H = 36, n = arr.length
+  const disp = dsMaxBucket(arr, 220)                               // nur ~220 SVG-Punkte rendern (Spikes erhalten) → kein Tablet-Ruckeln/Disconnect
+  const W = 100, H = 36, n = disp.length
   // FESTE Skala = base×4: der Median ist über Sekunden stabil → die Skala ATMET NICHT mehr bei jedem Spike.
   // Spikes clippen oben („an die Decke", prominent) statt die ganze Kurve groß/klein zu reskalieren (= das Geflacker).
   const scale = Math.max(base * 4, 0.1)
   const px = (i) => (i / (n - 1)) * W
   const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * (H - 2) - 1
   const c = color || '#39d8ff'
-  const line = arr.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
+  const line = disp.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
   const refs = [[16.67, '60'], [8.33, '120'], [6.94, '144']].filter(([ms]) => ms < scale * 0.96)   // fixe ms-Linien, nur wenn im Bild
   const beams = []
   for (let i = 0; i < n; i++) {
-    if (arr[i] > base * 2.2) {                                     // echter Spike (deutlich über Baseline)
-      const inten = Math.max(0.3, Math.min(1, (arr[i] - base * 2.2) / (base * 4)))
-      beams.push({ x: px(i), y: py(arr[i]), inten, k: i })
+    if (disp[i] > base * 2.2) {                                    // echter Spike (deutlich über Baseline)
+      const inten = Math.max(0.3, Math.min(1, (disp[i] - base * 2.2) / (base * 4)))
+      beams.push({ x: px(i), y: py(disp[i]), inten, k: i })
     }
   }
-  const lx = px(n - 1), ly = py(arr[n - 1])
+  const lx = px(n - 1), ly = py(disp[n - 1])
   const gid = 'ftg_' + (c.replace('#', '') || 'x')
   return (
     <div class="t-graph">
