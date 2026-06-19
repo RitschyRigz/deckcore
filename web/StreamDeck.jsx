@@ -854,7 +854,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
   const [genBusy, setGenBusy] = useState('')
   const [genMsg, setGenMsg] = useState(null)
-  const [hwRender, setHwRender] = useState('value')
+  const [hwRender, setHwRender] = useState('auto')
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem('sd.poolcat.collapsed') || '{}') } catch (_) { return {} }
   })
@@ -919,6 +919,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
         <span class="sd-inline" style="gap:4px" title="Liest die in HWiNFO freigegebenen Sensoren (Gadget / Registry-VSB) und legt pro Sensor einen Anzeige-Button im Pool an (Kategorie HWiNFO).">
           <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('hw')}>{genBusy === 'hw' ? '… HWiNFO' : '📊 HWiNFO-Sensoren'}</button>
           <select class="sd-pool-cat" value={hwRender} onChange={(e) => setHwRender(e.currentTarget.value)} title="Darstellung der Sensor-Buttons">
+            <option value="auto">✨ Auto (Smart)</option>
             <option value="value">als Wert</option>
             <option value="graph">als Graph</option>
           </select>

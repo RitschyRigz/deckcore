@@ -354,6 +354,44 @@ def _slug(s: str) -> str:
     return "".join(out).strip("_") or "x"
 
 
+# ── Smart-Import: Sensor nach Einheit + Namens-Schlüsselwort klassifizieren (mehrsprachig DE/EN) →
+#    Render/Farbe/Kategorie/Bereich. So zieht JEDER HWiNFO-Import ein fertig gestyltes, sortiertes Deck aus
+#    der EIGENEN Hardware (kein fester Sensorname). Bereiche = Typ-Defaults (hardware-spezifisch → User feintunt).
+_SMART = {"gpu": "#35d07f", "cpu": "#e0a92e", "water": "#3a9bf0", "power": "#f5d423", "ram": "#1fc9b0"}
+
+
+def _smart_classify(name: str, unit: str) -> dict:
+    n = (name or "").lower()
+    u = (unit or "").lower().strip()
+    has = lambda *ws: any(w in n for w in ws)   # noqa: E731
+    is_gpu = has("gpu", "grafik", "graphics", "vram", "geforce", "radeon")
+    is_cpu = has("cpu", "kern", "core", "prozessor", "package", "paket", "thread", "ryzen", "ccd")
+    is_water = has("wasser", "water", "coolant", "kühl", "kuhl", "loop", "mora", "radiator", "aio")
+    is_ram = has("ram", "arbeitsspeicher", "memory", "dimm", "spd", "speicher")
+    is_board = has("mainboard", "motherboard", "chipsatz", "chipset", "board", "vrm", "pch")
+    if is_gpu: color, cat = _SMART["gpu"], "🟢 GPU"
+    elif is_cpu: color, cat = _SMART["cpu"], "🟡 CPU"
+    elif is_water: color, cat = _SMART["water"], "🔵 Wasserkühlung"
+    elif is_ram or is_board: color, cat = _SMART["ram"], "🧠 RAM & Board"
+    else: color, cat = _SMART["ram"], "📊 Sensoren"
+    if u in ("°c", "c", "grad") or u.startswith("°"):     # Temperatur → Graph (Verlauf zählt)
+        rng = (25, 90) if is_gpu else (20, 95) if is_cpu else (20, 55) if is_water else (20, 90)
+        return {"render": "graph", "color": color, "cat": cat, "opts": {"min": rng[0], "max": rng[1], "crit": True}}
+    if u == "%":                                          # Last → Gauge (Momentanwert/sprunghaft)
+        return {"render": "gauge", "color": color, "cat": cat, "opts": {"min": 0, "max": 100, "unit": "%", "crit": True, "color": color}}
+    if u in ("rpm", "u/min"):                             # Lüfter/Pumpe → Graph, blau, NICHT kritisch (hoch=gut)
+        mx = 6000 if has("pumpe", "pump") else 3000
+        return {"render": "graph", "color": _SMART["water"], "cat": "🔵 Wasserkühlung", "opts": {"min": 0, "max": mx, "crit": False}}
+    if u in ("w", "watt"):                                # Leistung → Gauge, GELB (Strom)
+        mx = 600 if is_gpu else 300 if is_cpu else 500
+        return {"render": "gauge", "color": _SMART["power"], "cat": cat, "opts": {"min": 0, "max": mx, "unit": "W", "crit": True, "color": _SMART["power"]}}
+    if u in ("v", "volt"):                                # Spannung → Stat, GELB (Strom)
+        return {"render": "stat", "color": _SMART["power"], "cat": cat, "opts": None}
+    if u in ("l/h", "lph", "l/min", "gpm"):               # Durchfluss → Graph, blau, nicht kritisch
+        return {"render": "graph", "color": _SMART["water"], "cat": "🔵 Wasserkühlung", "opts": {"min": 0, "max": 300, "crit": False}}
+    return {"render": "stat", "color": color, "cat": cat, "opts": None}   # Rest (MB/GB/MHz/A…) → Stat-Zahl
+
+
 # Default-Buttons sind HÜLLEN-Sache: die Hülle übergibt ihre eigenen über
 # ``default_buttons=`` an den Konstruktor. Der generische Kern bringt KEINE mit.
 
@@ -1524,7 +1562,7 @@ class DeckCoreService:
 
     def generate_hwinfo_buttons(self, render: str = "value") -> dict:
         """Pro in HWiNFO freigegebenem Sensor (Gadget/VSB) einen reinen ANZEIGE-Button NUR im Pool
-        (Pool-Kategorie „HWiNFO"). ``render`` = ``value`` (Zahl im Titel) ODER ``graph`` (Live-Verlauf).
+        ``render`` = ``value`` (Zahl) · ``graph`` (Verlauf) · ``auto`` (Smart: Einheit+Keyword → Render/Farbe/Kategorie/Bereich).
         KEINE Deck-Platzierung. Idempotent (id ``hw_<slug>``) — User-Kosmetik/Render/Kategorie bleiben via
         _regen_preserve. Sensor-Verfügbarkeit wird gemeldet, nie vorausgesetzt (muss auf jedem PC gehen)."""
         data = self._hwinfo.sensors()
@@ -1534,7 +1572,9 @@ class DeckCoreService:
         if not sensors:
             return {"ok": False, "reason": "no_sensors"}
         as_graph = (str(render).strip().lower() == "graph")
-        if "HWiNFO" not in self._pool_categories:
+        smart = (str(render).strip().lower() == "auto")   # Smart-Import: pro Sensor automatisch klassifizieren
+        cats_used: list[str] = []
+        if not smart and "HWiNFO" not in self._pool_categories:
             self._pool_categories.append("HWiNFO")
         pool_by_id = {b.get("id"): b for b in self._buttons}
         created = updated = 0
@@ -1552,7 +1592,15 @@ class DeckCoreService:
                 "states": [],
                 "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"},
             }
-            if as_graph:
+            if smart:
+                c = _smart_classify(name, unit)
+                fn["render"], fn["pool_cat"] = c["render"], c["cat"]
+                fn["default"]["color"] = c["color"]
+                if c.get("opts"):
+                    fn["opts"] = c["opts"]
+                if c["cat"] not in cats_used:
+                    cats_used.append(c["cat"])
+            elif as_graph:
                 fn["render"] = "graph"
             ex = pool_by_id.get(bid)
             if ex is not None:
@@ -1566,7 +1614,7 @@ class DeckCoreService:
         # „kein Spiel / PresentMon fehlt". Frametime-Graph = adaptiver Spike-Look mit 1%-low-Readout.
         for pm in ({"id": "pm_fps", "label": "FPS", "mon": {"type": "fps"}, "icon": "🎯", "title": "{value}"},
                    {"id": "pm_frametime", "label": "Frametime", "mon": {"type": "frametime"}, "icon": "📉", "title": "{value} ms"}):
-            fn = {"id": pm["id"], "label": pm["label"], "pool_cat": "HWiNFO", "render": "graph",
+            fn = {"id": pm["id"], "label": pm["label"], "pool_cat": ("⚡ Performance" if smart else "HWiNFO"), "render": "graph",
                   "action": {"type": "none"}, "monitor": pm["mon"], "states": [],
                   "default": {"icon": pm["icon"], "title": pm["title"], "color": "#222"}}
             ex = pool_by_id.get(pm["id"])
@@ -1575,9 +1623,12 @@ class DeckCoreService:
             else:
                 self._buttons.append(fn); created += 1
             pool_by_id[pm["id"]] = fn; self._removed.discard(pm["id"])
+        if smart:   # genutzte Familien-Kategorien in sinnvoller Reihenfolge in den Pool aufnehmen
+            for cat in ["⚡ Performance", "🟢 GPU", "🟡 CPU", "🔵 Wasserkühlung", "🧠 RAM & Board", "📊 Sensoren"]:
+                if (cat == "⚡ Performance" or cat in cats_used) and cat not in self._pool_categories:
+                    self._pool_categories.append(cat)
         self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "created": created, "updated": updated,
-                "total": created + updated, "render": "graph" if as_graph else "value"}
+        return {"ok": True, "created": created, "updated": updated, "total": created + updated, "render": render}
 
     def displayfusion_profiles(self) -> dict:
         """DisplayFusion-Monitor-Profile (+ aktiv-Markierung) + ob DisplayFusion verfügbar ist."""
