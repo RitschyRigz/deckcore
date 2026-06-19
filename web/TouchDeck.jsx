@@ -96,8 +96,9 @@ function FastGraph({ kind, color }) {
   // Frametime: FESTES ~2,6-s-Zeitfenster (fps-abhängige Frame-Zahl, da echte Per-Frame-Daten) → ruhiger, RTSS-
   //   ähnlicher Verlauf statt sub-sekündlichem Geflacker. FPS: ~20 s, ausgedünnt + geglättet.
   if (kind === 'frametime') {
-    const winN = Math.max(240, Math.min(1100, Math.round((fps || 120) * 2.6)))
-    return <FrametimeSpark data={data.slice(-winN)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+    // Backend liefert jetzt fixe 60 Hz (schlimmster Frame je Loop, Spikes erhalten) → festes 3-s-Fenster
+    // (180 Samples), fps-unabhängig → gleichmäßiges, sauberes Scrollen statt Re-Bucketing-Gezappel.
+    return <FrametimeSpark data={data.slice(-180)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
   }
   return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
 }
@@ -120,7 +121,8 @@ function dsMaxBucket(arr, target) {
 // Frametime-Spike-Graph im RTSS/Afterburner-Stil: FESTE, ruhige Y-Skala (base×4, Median über mehrere Sekunden →
 // atmet NICHT bei jedem Spike), Spikes clippen oben statt die ganze Kurve zu reskalieren. Fixe ms-Referenzlinien
 // (60/120/144 fps), Flächen-Glow, scharfe Per-Frame-Linie, rote Glow-Beams bei echten Spikes (>2.2× Baseline) +
-// 1%-low/avg-Readout aus echten PresentMon-Perzentilen. Daten = ECHT pro Frame (pmConsumeFrames, kein Aggregat).
+// 1%-low/avg-Readout aus echten PresentMon-Perzentilen. Quelle = pmConsumeFrames (jeder Frame erfasst),
+// Anzeige-Ring = 60-Hz-Fixrate (schlimmster Frame je Loop) → Spikes erhalten + gleichmäßiges Scrollen.
 function FrametimeSpark({ data, pct, color }) {
   const arr = (data || []).filter((v) => v > 0)
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />

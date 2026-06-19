@@ -122,7 +122,7 @@ class FrametimeSource:
     def __init__(self):
         self._lock = threading.Lock()
         self._fps = deque(maxlen=_RING)
-        self._ft = deque(maxlen=_RING)
+        self._ft = deque(maxlen=360)   # Frametime jetzt 60-Hz-Fixrate → 6 s reichen (Anzeige zeigt 3 s); kleinerer Payload
         self._fps_last: Optional[float] = None
         self._ft_last: Optional[float] = None
         self._tracked_pid = 0
@@ -414,15 +414,14 @@ class FrametimeSource:
                         self._ft.clear(); self._fps.clear(); self._ft_pid = self._game_pid
                     self._fps.append(round(fps, 1))
                     if frames:
-                        self._ft.extend(frames)                 # jeden einzelnen Frame in den Ring (kein Aggregat)
+                        self._ft.append(round(max(frames), 2))  # 60-Hz-FIXRATE: schlimmster Frame je Loop. Spikes bleiben
+                        #   erhalten (Max), aber gleichmäßige Sample-Rate → Anzeige scrollt sauber statt zu zappeln
+                        #   (Per-Frame bei 800+ fps = zu viele Punkte, die pro Poll re-bucketed werden = Gewackel).
                     elif ft:
                         self._ft.append(round(ft, 2))           # Fallback (alte PresentMon ohne Frame-Query)
-                    tail = list(self._ft)[-240:]                # für stabilen „typischen" Anzeigewert (großer Titel, ~1 s)
                 self._fps_last = round(fps, 1)
-                if tail:
-                    srt = sorted(tail); self._ft_last = srt[len(srt) // 2]   # Median = ruhig statt zappelndem Einzelframe
-                elif ft:
-                    self._ft_last = round(ft, 2)
+                # Großer Titel = Ø-Frametime = 1000/avg-fps → genau + ruhig (Median des Max-Rings zeigte ~20 % zu hoch).
+                self._ft_last = round(1000.0 / fps, 2) if fps else (round(ft, 2) if ft else None)
                 self._presenting = True
                 self._reason = "live"
                 if self._pquery and (time.monotonic() - self._pct_t) > 1.0:
