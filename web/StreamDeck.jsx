@@ -894,6 +894,9 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
       } else if (kind === 'hw') {
         const r = await postJSON('/api/streamdeck/generate/hwinfo', { render: hwRender })
         setGenMsg({ ok: true, t: `HWiNFO → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.render === 'graph' ? 'Graph' : 'Wert'}) — Kategorie „HWiNFO"` })
+      } else if (kind === 'obsbot') {
+        const r = await postJSON('/api/streamdeck/generate/obsbot', { cameras: 2 })
+        setGenMsg({ ok: true, t: `OBSBOT → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.cameras || 2} Kameras) — Kategorien „📷 Kamera 1/2". Braucht aktives OSC in der OBSBOT-App.` })
       } else {
         const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
         setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
@@ -916,6 +919,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
         <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
         {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
+        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obsbot')} title="Pro OBSBOT-Kamera ein Button-Set im Pool: 4 Positions-Presets, Zentrieren, Tracking-Toggle (mit AN/AUS-Rückmeldung), Wake/Sleep. Cam 1 blau · Cam 2 violett. Braucht die OBSBOT-App mit aktivem OSC.">{genBusy === 'obsbot' ? '… OBSBOT' : '📷 OBSBOT-Kameras'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler im POOL an (Kategorie Wave Link). Idempotent — dann auf Decks ziehen.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
         <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wa')} title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU an (Tab Audio). Folgt automatisch dem Standard-Ausgabegerät.">{genBusy === 'wa' ? '… Windows' : '🔊 Windows-Lautstärke-Fader'}</button>
         <span class="sd-inline" style="gap:4px" title="Liest die in HWiNFO freigegebenen Sensoren (Gadget / Registry-VSB) und legt pro Sensor einen Anzeige-Button im Pool an (Kategorie HWiNFO).">
@@ -1716,7 +1720,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
               <span class="muted conn-label">{action.obsbot_action === 'preset' ? 'Preset' : 'Aktiv setzen'}</span>
               <select class="so-delay" value={action.index ?? 0} onChange={(e) => onChange({ index: Number(e.currentTarget.value) })}>
                 {action.obsbot_action === 'preset'
-                  ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>]
+                  ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>, <option value="3">Preset 4</option>]
                   : [<option value="0">Kamera 1</option>, <option value="1">Kamera 2</option>, <option value="2">Kamera 3</option>, <option value="3">Kamera 4</option>]}
               </select>
               {action.obsbot_action === 'preset' && <span class="muted" style="font-size:11px">Presets in OBSBOT Center anlegen</span>}

@@ -89,6 +89,7 @@ class ObsBotOSC:
         self._lock = threading.Lock()
         self._proc_cache: tuple = (None, -1e9)   # (running?, monotonic)
         self._last_send: float = 0.0
+        self._track: dict = {}                    # device(int|None) -> bool: zuletzt gesetzter Tracking-Zustand (Feedback)
 
     # ── Verbindung/Config ────────────────────────────────────────────────
     def set_config(self, host: str | None = None, port: int | None = None) -> dict:
@@ -199,9 +200,26 @@ class ObsBotOSC:
         return self._dev_send("/OBSBOT/WebCam/General/PCSnapshot", device, 1)
 
     # ── Befehle: Tiny-Familie (Tiny 2/3/SE; Adressen aus der offiziellen Spec, Tiny-3-kompatibel) ──
+    @staticmethod
+    def _dkey(device: Any):
+        try:
+            return int(device) if device not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
     def tracking(self, on: Any, device: Any = None) -> dict:
-        """AI-Tracking (Zielverfolgung) an/aus — ToggleAILock 1/0."""
-        return self._dev_send("/OBSBOT/WebCam/Tiny/ToggleAILock", device, 1 if on else 0)
+        """AI-Tracking (Zielverfolgung) an/aus — ToggleAILock 1/0. Merkt den Zustand je Cam (optimistisch)."""
+        st = bool(on)
+        self._track[self._dkey(device)] = st
+        return self._dev_send("/OBSBOT/WebCam/Tiny/ToggleAILock", device, 1 if st else 0)
+
+    def tracking_toggle(self, device: Any = None) -> dict:
+        """Tracking umschalten (anhand des zuletzt gesetzten Zustands) — für Toggle-Buttons mit Rückmeldung."""
+        return self.tracking(not self._track.get(self._dkey(device), False), device)
+
+    def tracking_state(self, device: Any = None):
+        """Zuletzt gesetzter Tracking-Zustand der Cam (True/False) oder None (noch nie gesetzt) — für Monitor/Feedback."""
+        return self._track.get(self._dkey(device))
 
     def ai_mode(self, mode: Any, device: Any = None) -> dict:
         """AI-Modus (Tiny 3): 0 Mensch-Einzel · 1 Mensch-Gruppe · 2 Stimme · 3 Desk · 4 Hand · 5 Whiteboard."""
@@ -216,9 +234,9 @@ class ObsBotOSC:
         return self._dev_send("/OBSBOT/WebCam/Tiny/SetTrackingSpeed", device, _clampi(mode, 0, 2))
 
     def preset(self, index: Any, device: Any = None) -> dict:
-        """Gespeicherte Preset-Position aufrufen (0 = Preset 1, 1 = Preset 2, 2 = Preset 3).
-        Speichern geht NICHT über OSC — Presets in OBSBOT Center anlegen."""
-        return self._dev_send("/OBSBOT/WebCam/Tiny/TriggerPreset", device, _clampi(index, 0, 2))
+        """Gespeicherte Preset-Position aufrufen (0 = Preset 1, 1 = Preset 2, … je nach Modell).
+        Speichern geht NICHT über OSC — die Positionen in der OBSBOT-App anlegen."""
+        return self._dev_send("/OBSBOT/WebCam/Tiny/TriggerPreset", device, _clampi(index, 0, 9))
 
     # ── Status (best effort) ─────────────────────────────────────────────
     def _app_running(self) -> Optional[bool]:

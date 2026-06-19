@@ -627,6 +627,7 @@ class DeckCoreService:
         M("wavelink_main_output", self._mon_wavelink_main_output)
         M("winaudio_default", self._mon_winaudio_default)
         M("winaudio_volume", self._mon_winaudio_volume)
+        M("obsbot_tracking", self._mon_obsbot_tracking)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1638,6 +1639,52 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated, "render": render}
 
+    def generate_obsbot_buttons(self, cameras: int = 2) -> dict:
+        """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 4 Positions-Presets + Zentrieren +
+        Tracking-Toggle (mit AN/AUS-Rückmeldung über den obsbot_tracking-Monitor) + Wake/Sleep.
+        Farben: Cam 1 blau · Cam 2 violett · Cam 3 türkis · Cam 4 orange (Flat-Design glüht in der
+        Cam-Farbe). Idempotent (id ``obsbot_c<d>_<key>``) — User-Kosmetik bleibt via _regen_preserve."""
+        n = max(1, min(int(cameras or 2), 4))
+        COLORS = ["#3a9bf0", "#a855f7", "#22c6c6", "#f59e0b"]   # blau / violett / türkis / orange
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        created = updated = 0
+        cats_used: list[str] = []
+        for d in range(n):
+            col = COLORS[d % len(COLORS)]
+            cat = f"📷 Kamera {d + 1}"
+            camlbl = f"Cam {d + 1}"
+            if cat not in cats_used:
+                cats_used.append(cat)
+            specs = [(f"preset{p}", "📌", f"Pos {p + 1}", {"type": "obsbot", "obsbot_action": "preset", "device": d, "index": p}, None)
+                     for p in range(4)]   # 4 speicherbare Positionen
+            specs += [
+                ("recenter", "🎯", "Zentrieren", {"type": "obsbot", "obsbot_action": "recenter", "device": d}, None),
+                ("track", "👁", "Tracking", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
+                 {"type": "obsbot_tracking", "device": d}),
+                ("wake", "☀", "Aufwecken", {"type": "obsbot", "obsbot_action": "wake", "device": d}, None),
+                ("sleep", "🌙", "Schlafen", {"type": "obsbot", "obsbot_action": "sleep", "device": d}, None),
+            ]
+            for key, icon, title, action, monitor in specs:
+                bid = f"obsbot_c{d}_{key}"
+                fn = {"id": bid, "label": camlbl, "pool_cat": cat, "action": action,
+                      "monitor": monitor or {"type": "none"}, "states": [],
+                      "default": {"icon": icon, "title": title, "color": col}}
+                if key == "track":   # AN = grün, AUS/unbekannt = Cam-Farbe (Identität + klarer Status)
+                    fn["states"] = [{"when": {"op": "truthy"}, "icon": "🎯", "title": "Tracking AN", "color": "#22c55e"}]
+                    fn["default"] = {"icon": "👁", "title": "Tracking aus", "color": col}
+                    fn["refresh_seconds"] = 2   # snappe Rückmeldung (reiner In-Memory-Read, billig)
+                ex = pool_by_id.get(bid)
+                if ex is not None:
+                    fn = _regen_preserve(ex, fn); self._buttons[self._buttons.index(ex)] = fn; updated += 1
+                else:
+                    self._buttons.append(fn); created += 1
+                pool_by_id[bid] = fn; self._removed.discard(bid)
+        for cat in cats_used:
+            if cat not in self._pool_categories:
+                self._pool_categories.append(cat)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "created": created, "updated": updated, "total": created + updated, "cameras": n}
+
     def displayfusion_profiles(self) -> dict:
         """DisplayFusion-Monitor-Profile (+ aktiv-Markierung) + ob DisplayFusion verfügbar ist."""
         return {"available": bool(_df_command_path()), "profiles": _df_list_profiles()}
@@ -2038,7 +2085,7 @@ class DeckCoreService:
         if sub == "mirror":       return ob.set_mirror(_on(), dev)
         if sub == "gimbal":       return ob.gimbal_move(action.get("pan", 0), action.get("pitch", 0), action.get("speed", 1), dev)
         if sub == "gimbal_dir":   return ob.gimbal_dir(action.get("direction", "up"), action.get("speed", 50), dev)
-        if sub in ("tracking", "ai_lock"):  return ob.tracking(_on(), dev)
+        if sub in ("tracking", "ai_lock"):  return ob.tracking_toggle(dev) if str(action.get("mode", "")).lower() == "toggle" else ob.tracking(_on(), dev)
         if sub == "ai_mode":      return ob.ai_mode(action.get("value", action.get("mode", 0)), dev)
         if sub == "framing":      return ob.framing(action.get("value", action.get("mode", 0)), dev)
         if sub == "track_speed":  return ob.tracking_speed(action.get("value", action.get("mode", 1)), dev)
@@ -2056,6 +2103,10 @@ class DeckCoreService:
     def set_obsbot_config(self, host: str | None = None, port: int | None = None) -> dict:
         """OSC-Ziel umstellen (z.B. Host = IP des Kamera-PCs, wenn die Hülle woanders läuft)."""
         return self._obsbot.set_config(host, port)
+
+    def _mon_obsbot_tracking(self, mon: dict, btn: dict):
+        """Tracking-Zustand einer OBSBOT-Kamera (True/False/None) — Toggle-Feedback (AN/AUS)."""
+        return self._obsbot.tracking_state(mon.get("device"))
 
     def _act_open_deck(self, action: dict, btn: dict) -> dict:
         # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
@@ -2148,7 +2199,7 @@ class DeckCoreService:
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "obs_source_visible", "obs_scene",
-                          "displayfusion_profile", "none"]
+                          "obsbot_tracking", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         out = {
