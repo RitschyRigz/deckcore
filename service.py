@@ -202,6 +202,26 @@ def _sanitize_opts(o) -> dict:
     return out
 
 
+# Kosmetik-Felder, die der NUTZER besitzt — beim Neu-Generieren eines bestehenden Buttons
+# behalten (action/monitor + interne Marker bleiben die Funktions-Wahrheit des Generators).
+_REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v")
+
+
+def _regen_preserve(existing: dict, fresh: dict) -> dict:
+    """Einen per Generator/Sync neu gebauten Button (``fresh``) mit der USER-Kosmetik eines
+    bereits bestehenden Buttons (``existing``) zusammenführen: ein „Sync" frischt die FUNKTION
+    auf (action/monitor + interne ``_scene``/``_df_profile``-Marker), überschreibt aber NICHT
+    mehr Symbol/Label/Icon/Farbe/PNG. Ohne das setzt jeder Wave-Link-/OBS-/DisplayFusion-Sync
+    Custom-Symbole (🎚/🎙-Reset) und zugewiesene PNG-Icons auf die Generator-Defaults zurück."""
+    if not isinstance(existing, dict):
+        return fresh
+    out = dict(fresh)  # Funktions-Wahrheit + Generator-Defaults als Basis …
+    for k in _REGEN_PRESERVE_KEYS:  # … dann die vom User anpassbaren Felder beibehalten.
+        if k in existing:
+            out[k] = existing[k]
+    return out
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -1103,6 +1123,7 @@ class DeckCoreService:
             }
             existing_fn = pool_by_id.get(bid)
             if existing_fn is not None:
+                fn = _regen_preserve(existing_fn, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
                 self._buttons[self._buttons.index(existing_fn)] = fn
             else:
                 self._buttons.append(fn); used.add(bid)
@@ -1147,6 +1168,7 @@ class DeckCoreService:
         def _upsert(fn: dict) -> None:
             ex = pool_by_id.get(fn["id"])
             if ex is not None:
+                fn = _regen_preserve(ex, fn)   # User-Kosmetik (Symbol/Label/Farbe) behalten
                 self._buttons[self._buttons.index(ex)] = fn
             else:
                 self._buttons.append(fn)
@@ -1283,8 +1305,10 @@ class DeckCoreService:
                   "monitor": {"type": "obs_scene"},
                   "states": [{"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": "#1f9d55"}],
                   "default": {"icon": "🎬", "title": name, "color": "#2a2a2a"}}
-            if pool_by_id.get(bid) is not None:
-                self._buttons[self._buttons.index(pool_by_id[bid])] = fn; updated += 1
+            ex = pool_by_id.get(bid)
+            if ex is not None:
+                fn = _regen_preserve(ex, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
+                self._buttons[self._buttons.index(ex)] = fn; updated += 1
             else:
                 self._buttons.append(fn); used.add(bid); created += 1
             pool_by_id[bid] = fn; self._removed.discard(bid)
@@ -1311,8 +1335,10 @@ class DeckCoreService:
                   "monitor": {"type": "displayfusion_profile"},
                   "states": [{"when": {"op": "eq", "value": name}, "icon": "🖥", "title": name, "color": "#1f9d55"}],
                   "default": {"icon": "🖥", "title": name, "color": "#2a2a2a"}}
-            if pool_by_id.get(bid) is not None:
-                self._buttons[self._buttons.index(pool_by_id[bid])] = fn; updated += 1
+            ex = pool_by_id.get(bid)
+            if ex is not None:
+                fn = _regen_preserve(ex, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
+                self._buttons[self._buttons.index(ex)] = fn; updated += 1
             else:
                 self._buttons.append(fn); used.add(bid); created += 1
             pool_by_id[bid] = fn; self._removed.discard(bid)
@@ -1468,6 +1494,7 @@ class DeckCoreService:
             }
             existing_fn = pool_by_id.get(bid)
             if existing_fn is not None:
+                fn = _regen_preserve(existing_fn, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
                 self._buttons[self._buttons.index(existing_fn)] = fn
             else:
                 self._buttons.append(fn); used.add(bid)
