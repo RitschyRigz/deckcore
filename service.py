@@ -772,6 +772,194 @@ class DeckCoreService:
         """Live-Status ALLER Integrationen ``{id: {state, detail}}`` — speist den Tab."""
         return {it["id"]: self.integration_status(it["id"], probe=probe) for it in self.integrations()}
 
+    def integration_elements(self, iid: str) -> dict:
+        """LIVE ausgelesene, generierbare Elemente einer Integration — fürs Checkbox-Panel des Tabs.
+        ``{available, reason?, groups:[{key,label,items:[{id,label}]}], toggles:[{key,label}],
+        options:[{key,label,choices,default}]}``. Nutzt die vorhandenen Auslese-Methoden; defensiv
+        (eine fehlende App → ``available:false`` + Grund, crasht nie)."""
+        try:
+            if iid == "wavelink":
+                snap = self._wl.snapshot()
+                if not snap.get("app"):
+                    return {"available": False, "reason": "Wave Link läuft nicht"}
+                def _mk(lst):
+                    return [{"id": str(x.get("id")), "label": str(x.get("name") or x.get("id"))}
+                            for x in (lst or []) if x.get("id")]
+                return {"available": True, "groups": [
+                    {"key": "mixes", "label": "Mixe — Fader + VU", "items": _mk(snap.get("mixes"))},
+                    {"key": "channels", "label": "Channels — Fader + VU", "items": _mk(snap.get("channels"))},
+                    {"key": "outputs", "label": "Ausgänge — Main-Output-Wähler", "items": _mk(snap.get("outputDevices"))},
+                ], "toggles": [{"key": "couple", "label": "Windows-Standardgerät ↔ Wave-Link-Main koppeln"}]}
+            if iid == "hwinfo":
+                s = self.hwinfo_sensors() or {}
+                if not s.get("available"):
+                    return {"available": False, "reason": "HWiNFO nicht erreichbar / keine Sensoren freigegeben"}
+                items = [{"id": str(x.get("key")), "label": "%s (%s%s)" % (x.get("label"), x.get("value"), x.get("unit") or "")}
+                         for x in (s.get("sensors") or []) if x.get("key")]
+                return {"available": True, "groups": [{"key": "sensors", "label": "Sensoren", "items": items}],
+                        "options": [{"key": "render", "label": "Darstellung", "default": "auto",
+                                     "choices": [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"]]}]}
+            if iid == "obs":
+                sc = (self.obs_scenes() or {}).get("scenes") or []
+                if not sc:
+                    return {"available": False, "reason": "OBS nicht verbunden / keine Szenen"}
+                return {"available": True, "groups": [{"key": "scenes", "label": "Szenen — Wechsel-Buttons",
+                        "items": [{"id": str(n), "label": str(n)} for n in sc]}]}
+            if iid == "presentmon":
+                return {"available": True, "groups": [{"key": "metrics", "label": "Metriken",
+                        "items": [{"id": "fps", "label": "FPS"}, {"id": "frametime", "label": "Frametime (ms)"}]}]}
+            if iid == "displayfusion":
+                profs = (self.displayfusion_profiles() or {}).get("profiles") or []
+                if not profs:
+                    return {"available": False, "reason": "DisplayFusion nicht installiert / keine Profile"}
+                return {"available": True, "groups": [{"key": "profiles", "label": "Monitor-Profile",
+                        "items": [{"id": str(p), "label": str(p)} for p in profs]}]}
+            if iid == "obsbot":
+                return {"available": True,
+                        "options": [{"key": "cameras", "label": "Kameras", "type": "number", "default": 2}],
+                        "groups": [{"key": "functions", "label": "Funktionen je Kamera", "items": [
+                            {"id": "presets", "label": "Positions-Presets"}, {"id": "center", "label": "Zentrieren"},
+                            {"id": "wake", "label": "Wake/Sleep"}, {"id": "track", "label": "Tracking-Toggle"}]}]}
+            if iid == "base":
+                return {"available": True, "groups": [{"key": "audio", "label": "Windows-Audio",
+                        "items": [{"id": "volume", "label": "Windows-Lautstärke-Fader"}]}]}
+        except Exception as e:  # noqa: BLE001
+            return {"available": False, "reason": f"Auslese-Fehler: {e}"}
+        return {"available": True, "groups": []}   # host-eigene (z.B. cockpit_*) — nichts generierbares
+
+    def integrations_elements(self) -> dict:
+        """Elemente ALLER Integrationen ``{id: {...}}`` — fürs Tab (ein Aufruf, lazy pro Panel-Öffnung sinnvoller)."""
+        return {it["id"]: self.integration_elements(it["id"]) for it in self.integrations()}
+
+    def _pool_upsert(self, fn: dict, pool_cat: str = "") -> bool:
+        """Einen Button additiv/idempotent in den Pool legen (stabile id; User-Kosmetik bleibt via
+        _regen_preserve). Rückgabe True = neu erstellt, False = aktualisiert. Speichert NICHT (Aufrufer bündelt)."""
+        if pool_cat:
+            fn["pool_cat"] = pool_cat
+        idx = next((i for i, b in enumerate(self._buttons) if b.get("id") == fn["id"]), None)
+        if idx is not None:
+            self._buttons[idx] = _regen_preserve(self._buttons[idx], fn)
+            created = False
+        else:
+            self._buttons.append(fn)
+            created = True
+        self._removed.discard(fn["id"])
+        if pool_cat and pool_cat not in self._pool_categories:
+            self._pool_categories.append(pool_cat)
+        return created
+
+    def integration_generate_selected(self, iid: str, sel: dict) -> dict:
+        """Baut NUR die ausgewählten Elemente einer Integration in den Pool (additiv + idempotent).
+        ``sel = {groups:{key:[ids]}, toggles:{key:bool}, options:{key:val}}``. Rückgabe
+        ``{ok, created, updated}`` (oder ``{ok:False, reason}``). Die einfachen/komplexen Generatoren
+        (obs/displayfusion/obsbot/base) werden über die bewährten Methoden gebaut; Wave Link/HWiNFO/
+        PresentMon selektiv inline."""
+        sel = sel or {}
+        groups = sel.get("groups") or {}
+        options = sel.get("options") or {}
+        toggles = sel.get("toggles") or {}
+        created = updated = 0
+
+        def _u(fn, cat):
+            nonlocal created, updated
+            if self._pool_upsert(fn, cat):
+                created += 1
+            else:
+                updated += 1
+        try:
+            if iid == "wavelink":
+                snap = self._wl.snapshot()
+                if not snap.get("app"):
+                    return {"ok": False, "reason": "wavelink_offline"}
+                by = lambda lst: {str(x.get("id")): x for x in (lst or []) if x.get("id")}
+                mixes, chans, outs = by(snap.get("mixes")), by(snap.get("channels")), by(snap.get("outputDevices"))
+                for mid in groups.get("mixes", []):
+                    m = mixes.get(str(mid))
+                    if not m:
+                        continue
+                    nm = str(m.get("name") or mid)
+                    _u({"id": "wl_mix_" + _slug(mid), "label": nm, "render": "fader",
+                        "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
+                        "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
+                        "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"}}, "Wave Link")
+                for cid in groups.get("channels", []):
+                    c = chans.get(str(cid))
+                    if not c:
+                        continue
+                    nm = str(c.get("name") or cid)
+                    _u({"id": "wl_chan_" + _slug(cid), "label": nm, "render": "fader",
+                        "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
+                        "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
+                        "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"}}, "Wave Link")
+                for did in groups.get("outputs", []):
+                    d = outs.get(str(did))
+                    if not d:
+                        continue
+                    nm = str(d.get("name") or did)
+                    _u({"id": "wl_out_" + _slug(did), "label": nm,
+                        "action": {"type": "wavelink", "wl_action": "main_output", "output_device_id": did, "output_id": did},
+                        "monitor": {"type": "wavelink_main_output", "output_device_id": did},
+                        "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": nm, "color": "#1f9d55"}],
+                        "default": {"icon": "🔈", "title": nm, "color": "#2a2a2a"}}, "Wave Link")
+                if toggles.get("couple"):
+                    _u({"id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
+                        "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
+                        "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
+                        "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
+                        "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"}}, "Wave Link")
+            elif iid == "hwinfo":
+                data = self._hwinfo.sensors() or {}
+                if not data.get("available"):
+                    return {"ok": False, "reason": "hwinfo_unavailable"}
+                want = set(str(x) for x in groups.get("sensors", []))
+                render = str(options.get("render", "auto")).lower()
+                by = {str(s.get("key")): s for s in (data.get("sensors") or []) if s.get("key")}
+                for key in want:
+                    s = by.get(key)
+                    if not s:
+                        continue
+                    nm = str(s.get("label") or key)
+                    unit = str(s.get("unit") or "").strip()
+                    fn = {"id": "hw_" + _slug(key), "label": nm, "pool_cat": "HWiNFO",
+                          "action": {"type": "none"}, "monitor": {"type": "hwinfo", "sensor": key}, "states": [],
+                          "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"}}
+                    if render == "auto":
+                        c = _smart_classify(nm, unit)
+                        fn["render"], fn["pool_cat"], fn["default"]["color"] = c["render"], c["cat"], c["color"]
+                        if c.get("opts"):
+                            fn["opts"] = c["opts"]
+                    elif render == "graph":
+                        fn["render"] = "graph"
+                    _u(fn, fn["pool_cat"])
+            elif iid == "presentmon":
+                for mid in groups.get("metrics", []):
+                    pm = {"fps": ("FPS", "🎯", "{value}"), "frametime": ("Frametime", "📉", "{value} ms")}.get(str(mid))
+                    if not pm:
+                        continue
+                    _u({"id": "pm_" + str(mid), "label": pm[0], "render": "graph",
+                        "action": {"type": "none"}, "monitor": {"type": str(mid)}, "states": [],
+                        "default": {"icon": pm[1], "title": pm[2], "color": "#222"}}, "⚡ Performance")
+            elif iid == "obs":
+                r = self.generate_obs_scene_buttons(groups.get("scenes", []))
+                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+            elif iid == "displayfusion":
+                r = self.generate_displayfusion_buttons(only=groups.get("profiles", []))
+                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+            elif iid == "obsbot":
+                cams = int(options.get("cameras", 2) or 2)
+                r = self.generate_obsbot_buttons(cams, only_funcs=groups.get("functions", []))
+                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+            elif iid == "base":
+                if "volume" in groups.get("audio", []):
+                    self.populate_winaudio_volume()
+                    created += 1
+            else:
+                return {"ok": False, "reason": "Keine generierbaren Elemente"}
+            self._save(); self._schedule_recompute(); self._publish_cfg()
+            return {"ok": True, "created": created, "updated": updated}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "reason": str(e)}
+
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
         (z.B. umbenannte Monitor-Typen). Im reinen Kern ein No-op. Rückgabe True, wenn
@@ -1675,11 +1863,13 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated}
 
-    def generate_displayfusion_buttons(self) -> dict:
-        """Pro DisplayFusion-Profil einen Lade-Button NUR im Pool (KEINE Deck-Platzierung). Idempotent."""
+    def generate_displayfusion_buttons(self, only=None) -> dict:
+        """Pro DisplayFusion-Profil einen Lade-Button NUR im Pool (KEINE Deck-Platzierung). Idempotent.
+        ``only`` (Liste von Profil-Namen) = nur diese bauen; None = alle (Rückwärtskompat)."""
         profs = _df_list_profiles()
         if not profs:
             return {"ok": False, "reason": "no_profiles"}
+        only = None if only is None else set(str(x) for x in only)
         if "DisplayFusion" not in self._pool_categories:
             self._pool_categories.append("DisplayFusion")
         pool_by_id = {b.get("id"): b for b in self._buttons}
@@ -1687,6 +1877,8 @@ class DeckCoreService:
         created = updated = 0
         for prof in profs:
             name = prof["name"]
+            if only is not None and name not in only:
+                continue
             bid = "df_" + _slug(name)
             if bid in pool_by_id and pool_by_id[bid].get("_df_profile") != name:
                 base = bid; n = 2
@@ -1777,7 +1969,7 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated, "render": render}
 
-    def generate_obsbot_buttons(self, cameras: int = 2) -> dict:
+    def generate_obsbot_buttons(self, cameras: int = 2, only_funcs=None) -> dict:
         """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
         Tracking-Toggle + Wake/Sleep. Jeder Button SPIEGELT den Live-Status (Monitor ``obsbot_cam``):
         App/OSC nicht erreichbar → 🔌 dunkel · Kamera schläft → 💤 gedimmt · bereit → Cam-Farbe.
@@ -1816,6 +2008,11 @@ class DeckCoreService:
                              {"when": {"op": "eq", "value": "trackoff"}, "icon": "👁", "title": "Tracking aus", "color": col},
                              {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": "schläft", "color": DIM}],
                             {"icon": "🔌", "title": "App aus", "color": OFF}))
+            if only_funcs is not None:   # Funktions-Auswahl (presets/center/wake/track) → Buttons filtern
+                _fmap = {"preset0": "presets", "preset1": "presets", "preset2": "presets",
+                         "recenter": "center", "wake": "wake", "sleep": "wake", "track": "track"}
+                _want = set(str(x) for x in only_funcs)
+                buttons = [b for b in buttons if _fmap.get(b[0]) in _want]
             for key, action, monitor, states, default in buttons:
                 bid = f"obsbot_c{d}_{key}"
                 fn = {"id": bid, "label": camlbl, "pool_cat": cat, "action": action,

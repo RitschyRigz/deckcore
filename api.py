@@ -72,6 +72,17 @@ def build_streamdeck_router(
         probe = request.query_params.get("probe") in ("1", "true", "yes")
         return JSONResponse({"statuses": get_service(request).integrations_status(probe=probe)})
 
+    @r.get("/api/integrations/{iid}/elements")
+    def integration_elements(iid: str, request: Request) -> JSONResponse:
+        """Live ausgelesene, generierbare Elemente einer Integration (Gruppen/Items/Toggles/Optionen)
+        fürs Checkbox-Panel im Tab."""
+        return JSONResponse(get_service(request).integration_elements(iid))
+
+    @r.post("/api/integrations/{iid}/generate")
+    def integration_generate(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Baut NUR die ausgewählten Elemente in den Pool. body = {groups:{key:[ids]}, toggles, options}."""
+        return JSONResponse(get_service(request).integration_generate_selected(iid, body or {}))
+
     @r.post("/api/integrations/{iid}")
     def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         """Integration an-/abschalten (Basis nicht abschaltbar). Reines Editor-Gating —
