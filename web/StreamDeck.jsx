@@ -1225,11 +1225,58 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 🔌 Integrationen — an-/abschaltbare Capability-Bündel. ABSCHALTEN = reines Editor-Gating
+// (die Button-Typen verschwinden aus den Auswahllisten); bestehende Buttons laufen weiter.
+// onReload lädt die Registry/Optionen neu → das Gating wirkt sofort im Editor.
+function Integrations({ onReload }) {
+  const [items, setItems] = useState(null)
+  const [err, setErr] = useState(null)
+  const [busy, setBusy] = useState('')
+  const load = () => getJSON('/api/integrations').then((d) => setItems(d.integrations || [])).catch((e) => setErr(String(e)))
+  useEffect(() => { load() }, [])
+  const toggle = (it) => {
+    if (it.base || busy) return
+    setBusy(it.id)
+    postJSON('/api/integrations/' + encodeURIComponent(it.id), { enabled: !it.enabled })
+      .then((d) => { setItems(d.integrations || []); onReload && onReload() })
+      .catch((e) => setErr(String(e)))
+      .then(() => setBusy(''))
+  }
+  if (err) return <p class="fatal">Integrationen nicht erreichbar: {err}</p>
+  if (!items) return <p class="muted">Lade Integrationen…</p>
+  const base = items.find((i) => i.base)
+  const rest = items.filter((i) => !i.base)
+  return (
+    <div class="card" style="max-width:1100px">
+      <h3 class="section-h" style="margin-top:0">🔌 Integrationen <span class="muted" style="font-weight:400;font-size:13px">— steuert, welche Button-Typen im Editor wählbar sind</span></h3>
+      <p class="hint">Eine Integration abschalten blendet ihre Button-Typen nur aus den Auswahllisten —
+        <b> bestehende Buttons laufen unverändert weiter</b>. Die Basis ist immer aktiv.</p>
+      <div class="sd-int-grid">
+        {rest.map((it) => (
+          <div key={it.id} class={'sd-int-card' + (it.enabled ? ' on' : '')}>
+            <div class="sd-int-top">
+              <span class="sd-int-title">{it.emoji} {it.label}</span>
+              <button class={'sd-int-toggle' + (it.enabled ? ' on' : '')} disabled={busy === it.id}
+                      onClick={() => toggle(it)}
+                      title={it.enabled ? 'Aktiv — klicken zum Ausblenden' : 'Aus — klicken zum Aktivieren'}>
+                {busy === it.id ? '…' : it.enabled ? '● An' : '○ Aus'}
+              </button>
+            </div>
+            <div class="sd-int-desc">{it.description}</div>
+            {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
+          </div>
+        ))}
+      </div>
+      {base && <p class="muted" style="margin-top:14px">🧱 <b>Basis</b> — {base.description} (immer aktiv, nicht abschaltbar)</p>}
+    </div>
+  )
+}
+
 export function StreamDeck() {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
   const [resolved, setResolved] = useState({})
-  const [view, setView] = useState('decks')   // 'decks' | 'pool'
+  const [view, setView] = useState('decks')   // 'decks' | 'pool' | 'integrations'
   const [activeDeck, setActiveDeck] = useState('')
   const esRef = useRef(null)
 
@@ -1271,6 +1318,7 @@ export function StreamDeck() {
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>
         <button class={'sd-tab' + (view === 'pool' ? ' active' : '')} onClick={() => setView('pool')}>🧩 Button-Pool ({(data.buttons || []).length})</button>
+        <button class={'sd-tab' + (view === 'integrations' ? ' active' : '')} onClick={() => setView('integrations')}>🔌 Integrationen</button>
       </div>
 
       {view === 'decks' ? (
@@ -1286,8 +1334,10 @@ export function StreamDeck() {
             </div>
           )}
         </>
-      ) : (
+      ) : view === 'pool' ? (
         <PoolList buttons={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} options={options} onReload={load} />
+      ) : (
+        <Integrations onReload={load} />
       )}
     </div>
   )

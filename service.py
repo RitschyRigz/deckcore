@@ -2309,10 +2309,18 @@ class DeckCoreService:
                           "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
+        # Integrations-Gating (P2): ein Cap-Typ erscheint im Editor nur, wenn er KEINER Integration
+        # gehört (Basis/ungelistet → immer sichtbar) ODER seine Integration aktiv ist. ⚠ Betrifft NUR
+        # die Auswahllisten — die Handler bleiben registriert, bestehende Buttons mit „versteckten"
+        # Typen laufen unverändert weiter.
+        _owners = _integrations.cap_owners(self.integrations())
+        _enabled = self._integrations_enabled
+        def _gated(types):
+            return [t for t in types if _owners.get(t) is None or _owners.get(t) in _enabled]
         out = {
             "refresh_min": _REFRESH_MIN, "refresh_max": _REFRESH_MAX,
-            "action_types": _ordered(self._action_handlers, _ACTION_ORDER),
-            "monitor_types": _ordered(self._monitor_handlers, _MONITOR_ORDER),
+            "action_types": _gated(_ordered(self._action_handlers, _ACTION_ORDER)),
+            "monitor_types": _gated(_ordered(self._monitor_handlers, _MONITOR_ORDER)),
             "displayfusion_available": bool(_df_command_path()),
             "match_ops": ["any", "truthy", "falsy", "eq", "ne", "gt", "lt", "gte", "lte", "contains"],
             "known_flags": flags,
