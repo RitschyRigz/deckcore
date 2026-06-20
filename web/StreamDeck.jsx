@@ -1177,6 +1177,63 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// OBS-Verbindungs-Settings — eingebettet im OBS-Integrations-Karten-Detail (ausklappbar).
+// HOST-AGNOSTISCH: nutzt /api/obs/config + /api/obs/status (der direkte obs-websocket-Host, z.B.
+// RigzDeck). Fehlen die Endpoints (eine größere Host-App verwaltet OBS selbst über eine geteilte
+// Verbindung), zeigt es einen dezenten Hinweis statt zu brechen — kein 404-Bruch im anderen Host.
+function ObsConn() {
+  const [cfg, setCfg] = useState(undefined)   // undefined=lädt · null=kein config-Endpoint · obj=da
+  const [host, setHost] = useState('127.0.0.1')
+  const [port, setPort] = useState(4455)
+  const [password, setPassword] = useState('')
+  const [hasPw, setHasPw] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  useEffect(() => {
+    let alive = true
+    fetch('/api/obs/config').then((r) => r.ok ? r.json() : Promise.reject(r.status)).then((d) => {
+      if (!alive) return
+      setCfg(d); setHost(d.host || '127.0.0.1'); setPort(d.port || 4455)
+      setHasPw(!!d.has_password); setConnected(!!d.connected)
+    }).catch(() => { if (alive) setCfg(null) })
+    return () => { alive = false }
+  }, [])
+  const save = async () => {
+    setBusy(true); setMsg('')
+    const body = { host: (host || '').trim() || '127.0.0.1', port: Number(port) || 4455 }
+    if ((password || '').trim() !== '') body.password = password   // leer = unverändert (kein versehentliches Löschen)
+    try {
+      const d = await (await fetch('/api/obs/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()
+      setPassword(''); setHasPw(!!d.has_password); setConnected(!!d.connected)
+      setMsg(d.connected ? 'Verbunden ✓' : (d.error || 'Nicht verbunden'))
+    } catch (e) { setMsg('Fehler beim Speichern') }
+    setBusy(false)
+  }
+  const test = async () => {
+    setBusy(true); setMsg('')
+    try { const d = await (await fetch('/api/obs/status?probe=true')).json(); setConnected(!!d.connected); setMsg(d.connected ? 'Verbunden ✓' : (d.error || 'Nicht verbunden')) }
+    catch (e) { setMsg('Fehler beim Testen') }
+    setBusy(false)
+  }
+  if (cfg === undefined) return <div class="sd-int-obs"><span class="muted">Verbindung lädt…</span></div>
+  if (cfg === null) return <div class="sd-int-obs"><span class="muted">OBS-Verbindung wird von der Host-App verwaltet.</span></div>
+  return (
+    <div class="sd-int-obs">
+      <p class="hint" style="margin:0 0 8px">In OBS: <b>Werkzeuge → WebSocket-Server</b> aktivieren (Port 4455) + das angezeigte Passwort hier eintragen.</p>
+      <div class="sd-int-frow"><span class="muted">Host</span><input class="sd-int-in" value={host} spellcheck={false} onInput={(e) => setHost(e.currentTarget.value)} /></div>
+      <div class="sd-int-frow"><span class="muted">Port</span><input class="sd-int-in" type="number" value={port} onInput={(e) => setPort(e.currentTarget.value)} /></div>
+      <div class="sd-int-frow"><span class="muted">Passwort</span><input class="sd-int-in" type="password" value={password} spellcheck={false}
+        placeholder={hasPw ? '•••••• gespeichert (leer = unverändert)' : 'OBS-WebSocket-Passwort'} onInput={(e) => setPassword(e.currentTarget.value)} /></div>
+      <div class="sd-int-gen">
+        <button class="btn small" disabled={busy} onClick={save}>{busy ? '…' : 'Speichern & Verbinden'}</button>
+        <button class="btn ghost small" disabled={busy} onClick={test}>Testen</button>
+        {msg && <span class={'msg small ' + (connected ? 'ok' : 'err')}>{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
 // 🔌 Integrationen — an-/abschaltbare Capability-Bündel. ABSCHALTEN = reines Editor-Gating
 // (die Button-Typen verschwinden aus den Auswahllisten); bestehende Buttons laufen weiter.
 // Pro Integration optional ein „Generieren/Rescan"-Knopf (additiv+idempotent gegen den Live-Stand).
@@ -1189,6 +1246,7 @@ function Integrations({ onReload }) {
   const [genMsg, setGenMsg] = useState({})
   const [hwRender, setHwRender] = useState('auto')
   const [obsbotCams, setObsbotCams] = useState(2)
+  const [obsOpen, setObsOpen] = useState(false)
   const load = () => getJSON('/api/integrations').then((d) => setItems(d.integrations || [])).catch((e) => setErr(String(e)))
   useEffect(() => { load() }, [])
   const toggle = (it) => {
@@ -1262,6 +1320,12 @@ function Integrations({ onReload }) {
             <div class="sd-int-desc">{it.description}</div>
             {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
             {genRow(it)}
+            {it.id === 'obs' && it.enabled && (
+              <div class="sd-int-gen">
+                <button class="btn ghost small" onClick={() => setObsOpen((o) => !o)}>{obsOpen ? '⚙ Verbindung ▴' : '⚙ Verbindung ▾'}</button>
+              </div>
+            )}
+            {it.id === 'obs' && it.enabled && obsOpen && <ObsConn />}
           </div>
         ))}
       </div>
