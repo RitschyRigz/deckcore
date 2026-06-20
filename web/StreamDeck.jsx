@@ -1242,13 +1242,10 @@ function Integrations({ onReload }) {
   const [items, setItems] = useState(null)
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState('')
-  const [genBusy, setGenBusy] = useState('')
-  const [genMsg, setGenMsg] = useState({})
-  const [hwRender, setHwRender] = useState('auto')
-  const [obsbotCams, setObsbotCams] = useState(2)
-  const [obsOpen, setObsOpen] = useState(false)
   const [statuses, setStatuses] = useState({})
   const [probing, setProbing] = useState(false)
+  const [sel, setSel] = useState('')
+  const [search, setSearch] = useState('')
   const load = () => getJSON('/api/integrations').then((d) => setItems(d.integrations || [])).catch((e) => setErr(String(e)))
   const loadStatus = (probe) => {
     if (probe) setProbing(true)
@@ -1259,103 +1256,135 @@ function Integrations({ onReload }) {
   const toggle = (it) => {
     if (it.base || busy) return
     setBusy(it.id)
-    postJSON('/api/integrations/' + encodeURIComponent(it.id), { enabled: !it.enabled })
+    return postJSON('/api/integrations/' + encodeURIComponent(it.id), { enabled: !it.enabled })
       .then((d) => { setItems(d.integrations || []); onReload && onReload() })
-      .catch((e) => setErr(String(e)))
-      .then(() => setBusy(''))
-  }
-  const runGen = async (it) => {
-    const g = it.generator
-    if (!g || genBusy) return
-    setGenBusy(it.id); setGenMsg((m) => ({ ...m, [it.id]: null }))
-    const body = {}
-    if (g.opt === 'hwinfo_render') body.render = hwRender
-    if (g.opt === 'obsbot_cameras') body.cameras = obsbotCams
-    try {
-      const r = await postJSON(g.endpoint, body)
-      setGenMsg((m) => ({ ...m, [it.id]: { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert` } }))
-      onReload && onReload()
-    } catch (e) {
-      const msg = String(e.message || e)
-      const friendly = msg === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden.'
-        : msg === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).'
-        : msg === 'hwinfo_unavailable' ? 'HWiNFO nicht verfügbar — starten + Sensoren fürs Gadget/Registry-Export freigeben.'
-        : msg === 'no_sensors' ? 'Keine HWiNFO-Sensoren freigegeben.' : msg
-      setGenMsg((m) => ({ ...m, [it.id]: { ok: false, t: friendly } }))
-    }
-    setGenBusy('')
+      .catch((e) => setErr(String(e))).then(() => setBusy(''))
   }
   if (err) return <p class="fatal">Integrationen nicht erreichbar: {err}</p>
   if (!items) return <p class="muted">Lade Integrationen…</p>
   const base = items.find((i) => i.base)
-  const rest = items.filter((i) => !i.base)
-  // Generator-Zeile einer Integration (nur wenn aktiv + Generator vorhanden).
-  const genRow = (it) => it.generator && it.enabled && (
-    <div class="sd-int-gen">
-      {it.generator.opt === 'hwinfo_render' && (
-        <select class="sd-pool-cat" value={hwRender} onChange={(e) => setHwRender(e.currentTarget.value)} title="Darstellung der Sensor-Buttons">
-          <option value="auto">✨ Auto</option><option value="value">Wert</option><option value="graph">Graph</option>
-        </select>
-      )}
-      {it.generator.opt === 'obsbot_cameras' && (
-        <label class="sd-int-num-l" title="Anzahl Kameras">Cams <input class="sd-int-num" type="number" min="1" max="4" value={obsbotCams}
-          onInput={(e) => setObsbotCams(Number(e.currentTarget.value) || 2)} /></label>
-      )}
-      <button class="btn ghost small" disabled={genBusy === it.id} onClick={() => runGen(it)}>
-        {genBusy === it.id ? '… generiere' : it.generator.label}
-      </button>
-      {genMsg[it.id] && <span class={'msg small ' + (genMsg[it.id].ok ? 'ok' : 'err')}>{genMsg[it.id].t}</span>}
-    </div>
-  )
+  const list = items.filter((i) => !i.base).sort((a, b) => a.label.localeCompare(b.label))
+  const q = search.trim().toLowerCase()
+  const filtered = q ? list.filter((i) => i.label.toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q)) : list
+  const current = list.find((i) => i.id === sel)
+  const dot = (id) => {
+    const s = statuses[id]
+    if (!s || s.state === 'unknown') return <span class="sd-int-dot" />
+    return <span class={'sd-int-dot ' + s.state} title={s.detail} />
+  }
   return (
     <div class="card" style="max-width:1100px">
-      <h3 class="section-h" style="margin-top:0">🔌 Integrationen <span class="muted" style="font-weight:400;font-size:13px">— steuert, welche Button-Typen im Editor wählbar sind</span></h3>
-      <p class="hint">Eine Integration abschalten blendet ihre Button-Typen nur aus den Auswahllisten —
-        <b> bestehende Buttons laufen unverändert weiter</b>. „Generieren" liest den Live-Stand und legt
-        passende Buttons additiv im Pool an (idempotent — Rescan jederzeit). Die Basis ist immer aktiv.</p>
-      <div class="conn-toolbar" style="margin-bottom:10px">
-        <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Voraussetzungen live prüfen'}</button>
-        <span class="muted" style="font-size:12px">🟢 erreichbar · 🔴 nicht erreichbar / aus · ⚪ nicht im Build</span>
+      <h3 class="section-h" style="margin-top:0">🔌 Integrationen <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
+      <div class="conn-toolbar" style="margin-bottom:8px">
+        <span class="sd-int-search"><input value={search} placeholder="🔍 Integration suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
+        <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Status prüfen'}</button>
+        <span class="muted" style="font-size:12px">🟢 erreichbar · 🔴 aus · ⚪ nicht im Build</span>
       </div>
-      <div class="sd-int-grid">
-        {rest.map((it) => (
-          <div key={it.id} class={'sd-int-card' + (it.enabled ? ' on' : '')}>
-            <div class="sd-int-top">
-              <span class="sd-int-title">{it.emoji} {it.label}</span>
-              <button class={'sd-int-toggle' + (it.enabled ? ' on' : '')} disabled={busy === it.id}
-                      onClick={() => toggle(it)}
-                      title={it.enabled ? 'Aktiv — klicken zum Ausblenden' : 'Aus — klicken zum Aktivieren'}>
-                {busy === it.id ? '…' : it.enabled ? '● An' : '○ Aus'}
-              </button>
-            </div>
-            <div class="sd-int-desc">{it.description}</div>
-            {statuses[it.id] && statuses[it.id].state !== 'unknown' && (
-              <div class={'sd-int-status ' + statuses[it.id].state}>
-                {statuses[it.id].state === 'ok' ? '🟢' : statuses[it.id].state === 'na' ? '⚪' : '🔴'} {statuses[it.id].detail}
-              </div>
-            )}
-            {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
-            {genRow(it)}
-            {it.id === 'obs' && it.enabled && (
-              <div class="sd-int-gen">
-                <button class="btn ghost small" onClick={() => setObsOpen((o) => !o)}>{obsOpen ? '⚙ Verbindung ▴' : '⚙ Verbindung ▾'}</button>
-              </div>
-            )}
-            {it.id === 'obs' && it.enabled && obsOpen && <ObsConn />}
-          </div>
+      <div class="sd-int-pick">
+        {filtered.map((it) => (
+          <button key={it.id} class={'sd-int-row' + (sel === it.id ? ' sel' : '') + (it.enabled ? '' : ' off')} onClick={() => setSel(it.id)}>
+            <span class="sd-int-row-t">{it.emoji} {it.label}</span>
+            {dot(it.id)}
+            <span class="sd-int-row-on">{it.enabled ? '● an' : '○ aus'}</span>
+          </button>
         ))}
+        {!filtered.length && <span class="muted" style="padding:8px">Keine Integration gefunden.</span>}
       </div>
-      {base && (
-        <div class="sd-int-base">
-          <span>🧱 <b>Basis</b> — {base.description} <span class="muted">(immer aktiv)</span></span>
-          {base.generator && (
-            <div class="sd-int-gen">
-              <button class="btn ghost small" disabled={genBusy === 'base'} onClick={() => runGen(base)}>
-                {genBusy === 'base' ? '… generiere' : base.generator.label}
-              </button>
-              {genMsg.base && <span class={'msg small ' + (genMsg.base.ok ? 'ok' : 'err')}>{genMsg.base.t}</span>}
+      {current
+        ? <IntegrationPanel key={current.id} it={current} status={statuses[current.id]} busy={busy === current.id}
+            onToggle={() => toggle(current)} onReload={onReload} />
+        : <p class="hint" style="margin-top:12px">↑ Wähle oben eine Integration, um Voraussetzungen zu prüfen + Buttons zu generieren.</p>}
+      {base && <div class="sd-int-base"><span>🧱 <b>Basis</b> — {base.description} <span class="muted">(immer aktiv)</span></span></div>}
+    </div>
+  )
+}
+
+// Panel der gewählten Integration: Status + An/Aus + live ausgelesene Elemente zum Ankreuzen + Generieren.
+function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
+  const [el, setEl] = useState(null)
+  const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
+  const [toggles, setToggles] = useState({})
+  const [opts, setOpts] = useState({})
+  const [obsOpen, setObsOpen] = useState(false)
+  const [genBusy, setGenBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  useEffect(() => {
+    setEl(null); setMsg(null); setObsOpen(false)
+    if (!it.enabled) return
+    getJSON('/api/integrations/' + it.id + '/elements').then((d) => {
+      setEl(d)
+      const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = true }) })
+      setChecked(c)
+      const o = {}; (d.options || []).forEach((op) => { o[op.key] = op.default }); setOpts(o)
+      const t = {}; (d.toggles || []).forEach((tg) => { t[tg.key] = true }); setToggles(t)
+    }).catch(() => setEl({ available: false, reason: 'Auslesen fehlgeschlagen' }))
+  }, [it.id, it.enabled])
+  const flip = (gk, id) => setChecked((c) => ({ ...c, [gk]: { ...c[gk], [id]: !(c[gk] || {})[id] } }))
+  const allG = (gk, its, on) => setChecked((c) => ({ ...c, [gk]: Object.fromEntries(its.map((x) => [x.id, on])) }))
+  const cnt = (gk) => Object.values(checked[gk] || {}).filter(Boolean).length
+  const totalSel = () => Object.keys(checked).reduce((n, gk) => n + cnt(gk), 0) + Object.values(toggles).filter(Boolean).length
+  const gen = () => {
+    setGenBusy(true); setMsg(null)
+    const groups = {}; Object.keys(checked).forEach((gk) => { groups[gk] = Object.keys(checked[gk]).filter((id) => checked[gk][id]) })
+    postJSON('/api/integrations/' + it.id + '/generate', { groups, toggles, options: opts })
+      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
+      .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
+  }
+  const st = status && status.state !== 'unknown' ? status : null
+  return (
+    <div class="sd-int-panel">
+      <div class="sd-int-phead">
+        <span class="sd-int-title">{it.emoji} {it.label}</span>
+        {st && <span class={'sd-int-status ' + st.state}>{st.state === 'ok' ? '🟢' : st.state === 'na' ? '⚪' : '🔴'} {st.detail}</span>}
+        <span style="flex:1" />
+        <button class={'sd-int-toggle' + (it.enabled ? ' on' : '')} disabled={busy} onClick={onToggle}
+          title={it.enabled ? 'Aktiv — Button-Typen im Editor sichtbar' : 'Aus — Typen ausgeblendet (bestehende Buttons laufen weiter)'}>
+          {busy ? '…' : it.enabled ? '● An' : '○ Aus'}
+        </button>
+      </div>
+      <div class="sd-int-desc">{it.description}</div>
+      {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
+      {!it.enabled && <p class="hint" style="margin:10px 0 0">Integration ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
+      {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
+      {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
+      {it.enabled && el && el.available && (
+        <>
+          {(el.groups || []).map((g) => (
+            <div key={g.key} class="sd-int-grp">
+              <div class="sd-int-grp-h">
+                <span>{g.label} <span class="muted">({cnt(g.key)}/{g.items.length})</span></span>
+                <span class="sd-int-allnone"><a onClick={() => allG(g.key, g.items, true)}>alle</a> · <a onClick={() => allG(g.key, g.items, false)}>keine</a></span>
+              </div>
+              {g.items.length
+                ? <div class="sd-int-cols">{g.items.map((x) => (
+                    <label key={x.id} class="sd-int-chk"><input type="checkbox" checked={!!(checked[g.key] || {})[x.id]} onChange={() => flip(g.key, x.id)} /> {x.label}</label>
+                  ))}</div>
+                : <span class="muted" style="font-size:12px">— nichts gefunden —</span>}
             </div>
-          )}
+          ))}
+          {(el.toggles || []).map((tg) => (
+            <label key={tg.key} class="sd-int-chk sd-int-chk-x"><input type="checkbox" checked={!!toggles[tg.key]} onChange={() => setToggles((t) => ({ ...t, [tg.key]: !t[tg.key] }))} /> {tg.label}</label>
+          ))}
+          {(el.options || []).map((op) => (
+            <div key={op.key} class="sd-int-gen" style="margin-top:10px">
+              <span class="muted" style="font-size:12px">{op.label}:</span>
+              {op.choices
+                ? <select class="sd-pool-cat" value={opts[op.key]} onChange={(e) => setOpts((o) => ({ ...o, [op.key]: e.currentTarget.value }))}>
+                    {op.choices.map((ch) => <option value={ch[0]}>{ch[1]}</option>)}</select>
+                : <input class="sd-int-num" type="number" min="1" max="4" value={opts[op.key]} onInput={(e) => setOpts((o) => ({ ...o, [op.key]: Number(e.currentTarget.value) || op.default }))} />}
+            </div>
+          ))}
+          <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px">
+            <button class="btn small" disabled={genBusy || !totalSel()} onClick={gen}>{genBusy ? '… generiere' : `✨ Generieren (${totalSel()})`}</button>
+            <span class="muted" style="font-size:12px">→ Buttons im Pool (idempotent)</span>
+            {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
+          </div>
+        </>
+      )}
+      {it.id === 'obs' && it.enabled && (
+        <div style="margin-top:12px">
+          <button class="btn ghost small" onClick={() => setObsOpen((o) => !o)}>{obsOpen ? '⚙ Verbindung ▴' : '⚙ Verbindung ▾'}</button>
+          {obsOpen && <ObsConn />}
         </div>
       )}
     </div>
@@ -1403,12 +1432,11 @@ export function StreamDeck() {
 
       <RefreshRate reg={data} onSaved={load} />
 
-      <BackupCard onReload={load} />
-
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>
         <button class={'sd-tab' + (view === 'pool' ? ' active' : '')} onClick={() => setView('pool')}>🧩 Button-Pool ({(data.buttons || []).length})</button>
         <button class={'sd-tab' + (view === 'integrations' ? ' active' : '')} onClick={() => setView('integrations')}>🔌 Integrationen</button>
+        <button class={'sd-tab' + (view === 'backup' ? ' active' : '')} onClick={() => setView('backup')}>💾 Backup</button>
       </div>
 
       {view === 'decks' ? (
@@ -1426,8 +1454,10 @@ export function StreamDeck() {
         </>
       ) : view === 'pool' ? (
         <PoolList buttons={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} options={options} onReload={load} />
-      ) : (
+      ) : view === 'integrations' ? (
         <Integrations onReload={load} />
+      ) : (
+        <BackupCard onReload={load} />
       )}
     </div>
   )
