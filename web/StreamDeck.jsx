@@ -1313,10 +1313,10 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
     if (!it.enabled) return
     getJSON('/api/integrations/' + it.id + '/elements').then((d) => {
       setEl(d)
-      const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = true }) })
+      const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = ('present' in x) ? !!x.present : true }) })
       setChecked(c)
       const o = {}; (d.options || []).forEach((op) => { o[op.key] = op.default }); setOpts(o)
-      const t = {}; (d.toggles || []).forEach((tg) => { t[tg.key] = true }); setToggles(t)
+      const t = {}; (d.toggles || []).forEach((tg) => { t[tg.key] = ('present' in tg) ? !!tg.present : true }); setToggles(t)
     }).catch(() => setEl({ available: false, reason: 'Auslesen fehlgeschlagen' }))
   }, [it.id, it.enabled])
   const flip = (gk, id) => setChecked((c) => ({ ...c, [gk]: { ...c[gk], [id]: !(c[gk] || {})[id] } }))
@@ -1327,7 +1327,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
     setGenBusy(true); setMsg(null)
     const groups = {}; Object.keys(checked).forEach((gk) => { groups[gk] = Object.keys(checked[gk]).filter((id) => checked[gk][id]) })
     postJSON('/api/integrations/' + it.id + '/generate', { groups, toggles, options: opts })
-      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
+      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert${r.removed ? ` · ${r.removed} entfernt` : ''} → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
   const st = status && status.state !== 'unknown' ? status : null
@@ -1375,8 +1375,8 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
             </div>
           ))}
           <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px">
-            <button class="btn small" disabled={genBusy || !totalSel()} onClick={gen}>{genBusy ? '… generiere' : `✨ Generieren (${totalSel()})`}</button>
-            <span class="muted" style="font-size:12px">→ Buttons im Pool (idempotent)</span>
+            <button class="btn small" disabled={genBusy} onClick={gen}>{genBusy ? '… wende an' : `✨ Anwenden (${totalSel()})`}</button>
+            <span class="muted" style="font-size:12px">angehakt = anlegen · abgehakt = entfernen</span>
             {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
           </div>
         </>

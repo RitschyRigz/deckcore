@@ -774,9 +774,29 @@ class DeckCoreService:
 
     def integration_elements(self, iid: str) -> dict:
         """LIVE ausgelesene, generierbare Elemente einer Integration — fürs Checkbox-Panel des Tabs.
-        ``{available, reason?, groups:[{key,label,items:[{id,label}]}], toggles:[{key,label}],
-        options:[{key,label,choices,default}]}``. Nutzt die vorhandenen Auslese-Methoden; defensiv
-        (eine fehlende App → ``available:false`` + Grund, crasht nie)."""
+        ``{available, reason?, groups:[{key,label,items:[{id,label,bid?,present?}]}], toggles, options}``.
+        Reichert jedes 1:1-synchronisierbare Item um ``bid`` (Pool-Button-id) + ``present`` (existiert
+        schon) an → das Panel hakt Vorhandenes vor, und Generieren kann Abgewähltes gezielt entfernen.
+        (obsbot/base sind additiv → kein bid/present.)"""
+        el = self._elements_raw(iid)
+        if not el.get("available"):
+            return el
+        pool_ids = {b.get("id") for b in self._buttons}
+        for g in el.get("groups", []):
+            for it in g.get("items", []):
+                bid = self._integration_bid(iid, g["key"], it["id"])
+                if bid:
+                    it["bid"] = bid
+                    it["present"] = bid in pool_ids
+        if iid == "wavelink":
+            for tg in el.get("toggles", []):
+                if tg.get("key") == "couple":
+                    tg["bid"] = "wl_couple_toggle"
+                    tg["present"] = "wl_couple_toggle" in pool_ids
+        return el
+
+    def _elements_raw(self, iid: str) -> dict:
+        """Rohe Element-Auslese (ohne bid/present). Defensiv: fehlende App → available:false + Grund."""
         try:
             if iid == "wavelink":
                 snap = self._wl.snapshot()
@@ -847,6 +867,39 @@ class DeckCoreService:
         if pool_cat and pool_cat not in self._pool_categories:
             self._pool_categories.append(pool_cat)
         return created
+
+    def _pool_remove(self, bid: str) -> bool:
+        """Einen generierten Button aus Pool + ALLEN Deck-Items entfernen (wie delete_button, aber
+        ohne save — der Aufrufer bündelt). Rückgabe True, wenn etwas entfernt wurde."""
+        bid = str(bid or "")
+        n0 = len(self._buttons)
+        self._buttons = [b for b in self._buttons if b.get("id") != bid]
+        for d in self._decks:
+            d["items"] = [it for it in d["items"] if it["button"] != bid]
+        self._resolved.pop(bid, None)
+        self._poll_cache.pop(bid, None)
+        if len(self._buttons) < n0:
+            self._removed.add(bid)   # kein Re-Seed
+            return True
+        return False
+
+    def _integration_bid(self, iid: str, gk: str, item_id) -> str:
+        """Deterministische Pool-Button-id eines generierbaren Elements — für present-Markierung +
+        Sync-Remove. Gibt "" zurück, wenn das Element NICHT 1:1-synchronisierbar ist (obsbot/base =
+        additiv: ein Häkchen ⇒ mehrere/nicht-deterministische Buttons)."""
+        s = _slug(str(item_id))
+        if iid == "wavelink":
+            pref = {"mixes": "wl_mix_", "channels": "wl_chan_", "outputs": "wl_out_"}.get(gk)
+            return (pref + s) if pref else ""
+        if iid == "hwinfo" and gk == "sensors":
+            return "hw_" + s
+        if iid == "obs" and gk == "scenes":
+            return "scene_" + s
+        if iid == "presentmon" and gk == "metrics":
+            return "pm_" + str(item_id)
+        if iid == "displayfusion" and gk == "profiles":
+            return "df_" + s
+        return ""
 
     def integration_generate_selected(self, iid: str, sel: dict) -> dict:
         """Baut NUR die ausgewählten Elemente einer Integration in den Pool (additiv + idempotent).
@@ -941,22 +994,45 @@ class DeckCoreService:
                         "default": {"icon": pm[1], "title": pm[2], "color": "#222"}}, "⚡ Performance")
             elif iid == "obs":
                 r = self.generate_obs_scene_buttons(groups.get("scenes", []))
-                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+                if not r.get("ok") and r.get("reason") != "no_scenes":
+                    return r
+                created += r.get("created", 0); updated += r.get("updated", 0)
             elif iid == "displayfusion":
                 r = self.generate_displayfusion_buttons(only=groups.get("profiles", []))
-                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+                if not r.get("ok") and r.get("reason") != "no_profiles":
+                    return r
+                created += r.get("created", 0); updated += r.get("updated", 0)
             elif iid == "obsbot":
                 cams = int(options.get("cameras", 2) or 2)
                 r = self.generate_obsbot_buttons(cams, only_funcs=groups.get("functions", []))
-                return r if not r.get("ok") else {"ok": True, "created": r.get("created", 0), "updated": r.get("updated", 0)}
+                if not r.get("ok"):
+                    return r
+                created += r.get("created", 0); updated += r.get("updated", 0)
             elif iid == "base":
                 if "volume" in groups.get("audio", []):
                     self.populate_winaudio_volume()
                     created += 1
             else:
                 return {"ok": False, "reason": "Keine generierbaren Elemente"}
+            # SYNC: 1:1-synchronisierbare Elemente, die NICHT (mehr) angehakt sind, aber als Button
+            # existieren → entfernen (nur generator-eigene ids via bid; User-Buttons NIE). Macht das
+            # Panel zum „so soll's aussehen"-Verwalter. obsbot/base haben kein bid → bleiben additiv.
+            removed = 0
+            elx = self.integration_elements(iid)
+            if elx.get("available"):
+                pool_ids = {b.get("id") for b in self._buttons}
+                for g in elx.get("groups", []):
+                    want = set(str(x) for x in groups.get(g["key"], []))
+                    for it in g.get("items", []):
+                        bid = it.get("bid")
+                        if bid and str(it["id"]) not in want and bid in pool_ids and self._pool_remove(bid):
+                            removed += 1
+                for tg in elx.get("toggles", []):
+                    bid = tg.get("bid")
+                    if bid and not toggles.get(tg["key"]) and bid in pool_ids and self._pool_remove(bid):
+                        removed += 1
             self._save(); self._schedule_recompute(); self._publish_cfg()
-            return {"ok": True, "created": created, "updated": updated}
+            return {"ok": True, "created": created, "updated": updated, "removed": removed}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": str(e)}
 
