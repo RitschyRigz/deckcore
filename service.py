@@ -823,8 +823,13 @@ class DeckCoreService:
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
                     return {"available": False, "reason": "OBS nicht verbunden / keine Szenen"}
-                return {"available": True, "groups": [{"key": "scenes", "label": "Szenen — Wechsel-Buttons",
-                        "items": [{"id": str(n), "label": str(n)} for n in sc]}]}
+                srcs = (self.obs_scene_items() or {}).get("sources") or []
+                return {"available": True, "groups": [
+                    {"key": "scenes", "label": "Szenen — Wechsel-Buttons", "items": [{"id": str(n), "label": str(n)} for n in sc]},
+                    {"key": "sources", "label": "Quellen — ein-/ausblenden", "items": [{"id": str(s), "label": str(s)} for s in srcs]},
+                    {"key": "controls", "label": "Steuerung", "items": [
+                        {"id": "stream", "label": "Stream starten/stoppen"}, {"id": "record", "label": "Aufnahme starten/stoppen"}]},
+                ]}
             if iid == "presentmon":
                 return {"available": True, "groups": [{"key": "metrics", "label": "Metriken",
                         "items": [{"id": "fps", "label": "FPS"}, {"id": "frametime", "label": "Frametime (ms)"}]}]}
@@ -893,8 +898,13 @@ class DeckCoreService:
             return (pref + s) if pref else ""
         if iid == "hwinfo" and gk == "sensors":
             return "hw_" + s
-        if iid == "obs" and gk == "scenes":
-            return "scene_" + s
+        if iid == "obs":
+            if gk == "scenes":
+                return "scene_" + s
+            if gk == "sources":
+                return "obssrc_" + s
+            if gk == "controls":
+                return "obs_" + str(item_id)   # obs_stream / obs_record
         if iid == "presentmon" and gk == "metrics":
             return "pm_" + str(item_id)
         if iid == "displayfusion" and gk == "profiles":
@@ -997,6 +1007,23 @@ class DeckCoreService:
                 if not r.get("ok") and r.get("reason") != "no_scenes":
                     return r
                 created += r.get("created", 0); updated += r.get("updated", 0)
+                for name in groups.get("sources", []):
+                    nm = str(name)
+                    _u({"id": "obssrc_" + _slug(nm), "label": nm,
+                        "action": {"type": "obs", "obs_action": "source_toggle", "scene": "*", "source": nm, "mode": "toggle"},
+                        "monitor": {"type": "obs_source_visible", "scene": "*", "source": nm},
+                        "states": [{"when": {"op": "truthy"}, "icon": "👁", "title": nm, "color": "#1f9d55"},
+                                   {"when": {"op": "falsy"}, "icon": "🙈", "title": nm, "color": "#2a2a2a"}],
+                        "default": {"icon": "👁", "title": nm, "color": "#2a2a2a"}}, "OBS-Quellen")
+                _ctrl = {"stream": ("🔴", "Stream", "stream"), "record": ("⏺", "Aufnahme", "record")}
+                for cid in groups.get("controls", []):
+                    c = _ctrl.get(str(cid))
+                    if not c:
+                        continue
+                    _u({"id": "obs_" + str(cid), "label": c[1],
+                        "action": {"type": "obs", "obs_action": c[2], "mode": "toggle"},
+                        "monitor": {"type": "none"}, "states": [],
+                        "default": {"icon": c[0], "title": c[1], "color": "#b04545"}}, "OBS-Steuerung")
             elif iid == "displayfusion":
                 r = self.generate_displayfusion_buttons(only=groups.get("profiles", []))
                 if not r.get("ok") and r.get("reason") != "no_profiles":
