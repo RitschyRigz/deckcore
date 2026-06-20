@@ -60,6 +60,22 @@ def build_streamdeck_router(
         """Aktuell aufgelöste Visuals als Snapshot (Plugin-Fallback ohne SSE)."""
         return JSONResponse(get_service(request).resolved())
 
+    @r.get("/api/integrations")
+    def integrations_list(request: Request) -> JSONResponse:
+        """Alle Integrationen + ``enabled``-Flag (Basis immer an). Speist den Integrationen-Tab."""
+        return JSONResponse({"integrations": get_service(request).integrations_public()})
+
+    @r.post("/api/integrations/{iid}")
+    def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Integration an-/abschalten (Basis nicht abschaltbar). Reines Editor-Gating —
+        bestehende Buttons + Handler laufen unverändert weiter."""
+        svc = get_service(request)
+        ok = svc.set_integration_enabled(iid, bool((body or {}).get("enabled")))
+        if not ok:
+            raise HTTPException(status_code=400,
+                                detail=f"Integration '{iid}' unbekannt oder nicht abschaltbar")
+        return JSONResponse({"integrations": svc.integrations_public()})
+
     @r.post("/api/streamdeck/settings")
     def streamdeck_settings(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Globale Aktualisierungs-Rate setzen (ein Push für ALLE Buttons)."""

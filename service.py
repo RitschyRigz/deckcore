@@ -100,6 +100,7 @@ from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channel
 from .obsbot import ObsBotOSC   # OBSBOT-Kamerasteuerung via lokales OSC/UDP (Tiny/Meet/Tail; send-only)
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
+from . import integrations as _integrations   # deklarative Integrations-Registry (Basis + Fremd-App; host-erweiterbar)
 
 log = logging.getLogger("deckcore")
 
@@ -529,7 +530,8 @@ class DeckCoreService:
                  self_base_url: str = "http://127.0.0.1:7883",
                  default_buttons: list | None = None,
                  obs_host: str = "127.0.0.1", obs_port: int = 4455, obs_password: str = "",
-                 obsbot_host: str = "127.0.0.1", obsbot_port: int = 16284):
+                 obsbot_host: str = "127.0.0.1", obsbot_port: int = 16284,
+                 integrations_seed_all: bool = False):
         self.bus = bus
         # Basis für HTTP-Selfcalls (z.B. obs/alert in einer Hülle). Generische Handler brauchen sie nicht.
         self._self_base = str(self_base_url or "").rstrip("/")
@@ -571,12 +573,18 @@ class DeckCoreService:
         self._monitor_handlers: dict[str, Any] = {}
         self._register_core_handlers()
         self._register_extra_handlers()
+        # ── Integrations-Registry (Basis + generische + host-injizierte) ─────
+        self._integrations_seed_all = bool(integrations_seed_all)
+        self._extra_integrations: list[dict] = []   # eine Host-App injiziert via _register_extra_integrations()
+        self._integrations_enabled: set[str] = set()
+        self._register_extra_integrations()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._eval_task: Optional[asyncio.Task] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._coupling_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._load()
+        self._load_integrations()
 
     # ── Capability-Registry: Handler registrieren ────────────────────────
     def register_action(self, atype: str, handler) -> None:
@@ -634,6 +642,88 @@ class DeckCoreService:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
         Im reinen Kern ein No-op — die generische Teilmenge kommt über _register_core_handlers()."""
         pass
+
+    # ── Integrations-Registry (Basis + generische Fremd-App + host-injizierte) ────────────
+    def _register_extra_integrations(self) -> None:
+        """Hook für Hüllen: host-eigene Integrationen registrieren (z.B. die Eigensteuerung einer
+        größeren App). Im reinen Kern ein No-op — der Kern bringt nur Basis + die generischen
+        Fremd-App-Integrationen (siehe ``deckcore.integrations``) mit."""
+        pass
+
+    def register_integration(self, entry: dict) -> None:
+        """Eine host-eigene Integration anmelden (im ``_register_extra_integrations()``-Hook genutzt).
+        ``entry`` = {id, emoji, label, description, actions[], monitors[], requires?}. Gleiche id
+        überschreibt (zuletzt registrierte gewinnt)."""
+        eid = str(entry.get("id") or "").strip()
+        if not eid:
+            return
+        self._extra_integrations = [e for e in self._extra_integrations if e.get("id") != eid]
+        self._extra_integrations.append({**entry, "id": eid})
+
+    def integrations(self) -> list[dict]:
+        """Vollständige Integrations-Liste (Basis + generische + host-injizierte)."""
+        return _integrations.all_integrations(self._extra_integrations)
+
+    def _load_integrations(self) -> None:
+        """Lädt ``runtime/integrations.json`` (``{enabled:[id,…]}``). Fehlt die Datei → einmalige
+        Migration: Aktiv-Stand seeden + schreiben. Host-Seed: ``integrations_seed_all=True`` (große
+        App) → ALLE Integrationen an; sonst nur die, deren Caps bestehende Buttons schon nutzen →
+        es verschwindet nie ein bestehender Button-Typ aus dem Editor."""
+        f = self._runtime / "integrations.json"
+        if f.exists():
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8-sig"))
+                self._integrations_enabled = {str(x) for x in (raw.get("enabled") or [])}
+                return
+            except Exception as e:  # noqa: BLE001
+                log.warning("integrations.json unlesbar: %s", e)
+        non_base = [it for it in self.integrations() if not it.get("base")]
+        if self._integrations_seed_all:
+            self._integrations_enabled = {it["id"] for it in non_base}
+        else:
+            owners = _integrations.cap_owners(self.integrations())
+            used: set[str] = set()
+            for b in self._buttons:
+                for cap in ((b.get("action") or {}).get("type"), (b.get("monitor") or {}).get("type")):
+                    if cap in owners:
+                        used.add(owners[cap])
+            self._integrations_enabled = used
+        self._save_integrations()
+
+    def _save_integrations(self) -> None:
+        f = self._runtime / "integrations.json"
+        try:
+            f.write_text(json.dumps({"enabled": sorted(self._integrations_enabled)}, indent=2,
+                                    ensure_ascii=False), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            log.warning("integrations.json nicht speicherbar: %s", e)
+
+    def enabled_integration_ids(self) -> set:
+        """Aktive Integrationen (Basis zählt implizit immer als aktiv)."""
+        return set(self._integrations_enabled)
+
+    def integrations_public(self) -> list[dict]:
+        """Für API/Tab: jede Integration + ``enabled``-Flag (Basis immer True)."""
+        return [{**it, "enabled": bool(it.get("base")) or it["id"] in self._integrations_enabled}
+                for it in self.integrations()]
+
+    def set_integration_enabled(self, iid: str, on: bool) -> bool:
+        """Integration an-/abschalten (Basis nicht abschaltbar). Rückgabe True = ok/geändert.
+        ⚠ Reines Editor-Gating — Handler bleiben registriert, bestehende Buttons laufen weiter."""
+        it = next((x for x in self.integrations() if x["id"] == iid), None)
+        if not it or it.get("base"):
+            return False
+        if on:
+            self._integrations_enabled.add(iid)
+        else:
+            self._integrations_enabled.discard(iid)
+        self._save_integrations()
+        return True
+
+    def visible_cap_types(self) -> set:
+        """Cap-Typen, die im Editor sichtbar sein sollen (Basis + aktive Integrationen). Ab P2 vom
+        Gating in ``options()`` genutzt; in P1 nur bereitgestellt (options() bleibt ungefiltert)."""
+        return _integrations.visible_cap_types(self.integrations(), self._integrations_enabled)
 
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
