@@ -793,6 +793,24 @@ class DeckCoreService:
                 if tg.get("key") == "couple":
                     tg["bid"] = "wl_couple_toggle"
                     tg["present"] = "wl_couple_toggle" in pool_ids
+        if iid == "obsbot":
+            # present je Funktion = existiert ein obsbot-Button dieser Funktion (irgendeine Cam)?
+            # cameras-Default = höchste vorhandene Cam-Nummer + 1 (damit „Anwenden" nicht versehentlich
+            # Kameras dazu/weg generiert).
+            _fsuf = {"presets": ("preset0", "preset1", "preset2"), "center": ("recenter",),
+                     "wake": ("wake", "sleep"), "track": ("track",)}
+            obids = [b for b in pool_ids if b and b.startswith("obsbot_c")]
+            for g in el.get("groups", []):
+                if g.get("key") != "functions":
+                    continue
+                for it in g.get("items", []):
+                    sufs = _fsuf.get(it["id"], ())
+                    it["present"] = bool(sufs) and any(b.endswith(tuple("_" + s for s in sufs)) for b in obids)
+            cams_seen = [int(b[8]) for b in obids if len(b) > 8 and b[8].isdigit()]
+            if cams_seen:
+                for op in el.get("options", []):
+                    if op.get("key") == "cameras":
+                        op["default"] = min(max(cams_seen) + 1, 4)
         return el
 
     def _elements_raw(self, iid: str) -> dict:
@@ -909,6 +927,8 @@ class DeckCoreService:
             return "pm_" + str(item_id)
         if iid == "displayfusion" and gk == "profiles":
             return "df_" + s
+        if iid == "base" and gk == "audio" and str(item_id) == "volume":
+            return "wa_master"
         return ""
 
     def integration_generate_selected(self, iid: str, sel: dict) -> dict:
@@ -921,7 +941,7 @@ class DeckCoreService:
         groups = sel.get("groups") or {}
         options = sel.get("options") or {}
         toggles = sel.get("toggles") or {}
-        created = updated = 0
+        created = updated = removed = 0
 
         def _u(fn, cat):
             nonlocal created, updated
@@ -1031,20 +1051,32 @@ class DeckCoreService:
                 created += r.get("created", 0); updated += r.get("updated", 0)
             elif iid == "obsbot":
                 cams = int(options.get("cameras", 2) or 2)
-                r = self.generate_obsbot_buttons(cams, only_funcs=groups.get("functions", []))
+                funcs = set(str(x) for x in groups.get("functions", []))
+                r = self.generate_obsbot_buttons(cams, only_funcs=list(funcs))
                 if not r.get("ok"):
                     return r
                 created += r.get("created", 0); updated += r.get("updated", 0)
+                # OBSBOT-Sync: Buttons ABGEWÄHLTER Funktionen über ALLE Kameras entfernen. Ein Funktions-
+                # Häkchen = mehrere Button-Suffixe je Cam → kein generisches 1:1-bid, daher hier speziell.
+                _fsuf = {"presets": ("preset0", "preset1", "preset2"), "center": ("recenter",),
+                         "wake": ("wake", "sleep"), "track": ("track",)}
+                _drop = tuple("_" + s for fk, sufs in _fsuf.items() if fk not in funcs for s in sufs)
+                if _drop:
+                    for bid in [b.get("id") for b in self._buttons]:
+                        if bid.startswith("obsbot_c") and bid.endswith(_drop) and self._pool_remove(bid):
+                            removed += 1
             elif iid == "base":
                 if "volume" in groups.get("audio", []):
-                    self.populate_winaudio_volume()
-                    created += 1
+                    _u({"id": "wa_master", "label": "Windows-Lautstärke", "render": "fader",
+                        "action": {"type": "winaudio", "wa_action": "toggle_mute"},
+                        "monitor": {"type": "winaudio_volume"}, "states": [],
+                        "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}, "Audio")
             else:
                 return {"ok": False, "reason": "Keine generierbaren Elemente"}
             # SYNC: 1:1-synchronisierbare Elemente, die NICHT (mehr) angehakt sind, aber als Button
             # existieren → entfernen (nur generator-eigene ids via bid; User-Buttons NIE). Macht das
-            # Panel zum „so soll's aussehen"-Verwalter. obsbot/base haben kein bid → bleiben additiv.
-            removed = 0
+            # Panel zum „so soll's aussehen"-Verwalter. (OBSBOT synct sich im eigenen Zweig oben, da
+            # ein Häkchen mehreren Buttons × Kameras entspricht.)
             elx = self.integration_elements(iid)
             if elx.get("available"):
                 pool_ids = {b.get("id") for b in self._buttons}
