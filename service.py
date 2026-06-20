@@ -1671,7 +1671,8 @@ class DeckCoreService:
                                 [{"when": {"op": "eq", "value": "on"}, "icon": icon, "title": title, "color": col},
                                  {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": title, "color": DIM}],
                                 {"icon": "🔌", "title": title, "color": OFF}))
-            # Tracking-Toggle: echter AN/AUS-Zustand + Erreichbarkeit (obsbot_track)
+            # Tracking-Toggle: AN=SetAiMode (Porträt-Follow), AUS=Recenter (Home + Follow-Stop);
+            # Anzeige deck-getrieben (obsbot_track) — OSC hat keinen Tracking-Readback.
             buttons.append(("track", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
                             {"type": "obsbot_track", "device": d},
                             [{"when": {"op": "eq", "value": "trackon"}, "icon": "🎯", "title": "Tracking AN", "color": "#22c55e"},

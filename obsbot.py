@@ -42,7 +42,8 @@ log = logging.getLogger("deckcore.obsbot")
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 16284          # OBSBOT „Receive Port" (Default)
 _PROC_TTL = 3.0                # s — Cache, wie oft wir den App-Prozess prüfen (Status)
-_OBSBOT_PROCS = ("OBSBOT_WebCam.exe", "OBSBOT_Center.exe", "OBSBOT Center.exe", "OBSBOT_Main.exe")
+_PLUGIN_PROC = "obsbot_webcam.exe"   # Elgato-Stream-Deck-Plugin-Backend — spricht KEIN OSC
+_OSC_APP_PROCS = ("obsbot_center.exe", "obsbot center.exe", "obsbot_main.exe", "obsbotcenter.exe")  # OBSBOT Center = der OSC-Server
 _REACHABLE_TTL = 3.5           # s — länger keine OSC-Antwort ⇒ App/OSC gilt als nicht erreichbar
 _POLL_INTERVAL = 1.2           # s — Status-Abfrage-Takt des Pollers
 _POLL_IDLE = 12.0              # s — kein Status-Leser mehr ⇒ Poller stoppt (kein Dauer-Polling)
@@ -192,7 +193,9 @@ class ObsBotOSC:
 
     # ── Befehle: General (geräteübergreifend) ────────────────────────────
     def recenter(self, device: Any = None) -> dict:
-        """Gimbal zurück in die Mitte."""
+        """Gimbal zurück auf die in OBSBOT Center gespeicherte Home-Position. ⚠ Stoppt zugleich den
+        Auto-Follow (Porträtverfolgung) → wir syncen den optimistischen Tracking-Zustand auf AUS mit."""
+        self._track[self._dkey(device)] = False
         return self._dev_send("/OBSBOT/WebCam/General/ResetGimbal", device, 0)
 
     def wake(self, device: Any = None) -> dict:
@@ -242,23 +245,27 @@ class ObsBotOSC:
         except (TypeError, ValueError):
             return None
 
-    def tracking(self, on: Any, device: Any = None) -> dict:
-        """AI-Tracking (Zielverfolgung) an/aus — ToggleAILock 1/0. Merkt den Zustand je Cam (optimistisch)."""
+    def tracking(self, on: Any, device: Any = None, mode: Any = 0) -> dict:
+        """Auto-Follow (Porträtverfolgung) AN/AUS — die echte „Tracking"-Funktion der OBSBOT.
+          • AN  = ``SetAiMode <mode>`` (0=Einzel · 1=Gruppe · 2=Stimme · 3=Desk · 4=Hand · 5=Whiteboard).
+          • AUS = ``ResetGimbal`` (Recenter): OBSBOT kennt **keinen** OSC-Aus-Befehl — Recenter stoppt den
+            Follow UND fährt auf die in Center gespeicherte Home-Position. (Reverse-engineered 2026-06-20.)
+        Der Zustand wird optimistisch gemerkt (es gibt keinen OSC-Readback dafür, s. ``tracking_state``).
+        ⚠ NICHT ``ToggleAILock`` — das ist der separate Ziel-Lock, nicht der Porträt-Follow."""
         st = bool(on)
         self._track[self._dkey(device)] = st
-        return self._dev_send("/OBSBOT/WebCam/Tiny/ToggleAILock", device, 1 if st else 0)
+        return self.ai_mode(mode, device) if st else self.recenter(device)
 
-    def tracking_toggle(self, device: Any = None) -> dict:
-        """Tracking umschalten — anhand des ECHTEN Zustands (Readback, sonst optimistisch)."""
-        return self.tracking(not bool(self.tracking_state(device)), device)
+    def tracking_toggle(self, device: Any = None, mode: Any = 0) -> dict:
+        """Follow umschalten anhand des (optimistischen) Zustands."""
+        return self.tracking(not bool(self.tracking_state(device)), device, mode)
 
     def tracking_state(self, device: Any = None):
-        """ECHTER Tracking-Zustand der Cam aus dem Readback (True/False); Fallback optimistisch; None unbekannt."""
-        self._ensure_poller()
-        with self._cache_lock:
-            info = self._dev.get(self._dkey(device))
-            real = info.get("tracking") if info else None
-        return real if real is not None else self._track.get(self._dkey(device))
+        """Optimistischer Follow-Zustand — das Deck weiß, was es zuletzt geschaltet hat (True/False/None).
+        OSC liefert KEINEN Readback für die Porträtverfolgung: ``AiTrackingInfo`` bleibt 0, egal ob die Cam
+        folgt (gründlich verifiziert 2026-06-20). Wer ausschließlich übers Deck schaltet, hat damit korrekte
+        Anzeige; ``recenter`` (auch der eigene „Zentrieren"-Button) synct den Zustand auf AUS."""
+        return self._track.get(self._dkey(device))
 
     def ai_mode(self, mode: Any, device: Any = None) -> dict:
         """AI-Modus (Tiny 3): 0 Mensch-Einzel · 1 Mensch-Gruppe · 2 Stimme · 3 Desk · 4 Hand · 5 Whiteboard."""
@@ -383,33 +390,65 @@ class ObsBotOSC:
             return "on"
 
     # ── Status (best effort) ─────────────────────────────────────────────
-    def _app_running(self) -> Optional[bool]:
-        """Läuft die OBSBOT-Steuersoftware? (Cache; None außerhalb Windows.)"""
+    def _obsbot_procs(self) -> Optional[set]:
+        """Menge laufender OBSBOT-Prozessnamen (lowercase). None außerhalb Windows / bei Fehler. Gecacht."""
         if not sys.platform.startswith("win"):
             return None
-        running, ts = self._proc_cache
+        procs, ts = self._proc_cache
         if (time.monotonic() - ts) < _PROC_TTL:
-            return running
+            return procs
         found = None
         try:
-            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OBSBOT_WebCam.exe", "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=2.0,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            blob = (out.stdout or "").lower()
-            found = any(p.lower() in blob for p in _OBSBOT_PROCS)
+            out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                                 timeout=3.0, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            names = set()
+            for line in (out.stdout or "").splitlines():
+                low = line.lower()
+                if "obsbot" in low:                      # CSV-Zeile: "name.exe","pid",...
+                    nm = low.split('","', 1)[0].strip().strip('"')
+                    if nm:
+                        names.add(nm)
+            found = names
         except Exception:  # noqa: BLE001
             found = None
         self._proc_cache = (found, time.monotonic())
         return found
 
+    def osc_app_running(self) -> Optional[bool]:
+        """Läuft OBSBOT **Center** (der OSC-Server)? NICHT das Elgato-Plugin (das spricht kein OSC).
+        None außerhalb Windows. Robust gegen unbekannte Center-Prozessnamen: jede OBSBOT-App außer
+        dem Plugin zählt als Center."""
+        procs = self._obsbot_procs()
+        if procs is None:
+            return None
+        return any(p in procs for p in _OSC_APP_PROCS) or any(p != _PLUGIN_PROC for p in procs)
+
     def status(self) -> dict:
-        """Status für die UI: ``reachable`` (OSC-Antwort kürzlich) ist das beste Signal — App läuft UND
-        OSC aktiv. ``devices`` = pro Cam verbunden/wach/tracking. ``app_running`` = nur Prozess-Check."""
+        """Status für die UI. ``state`` macht das Feedback eindeutig:
+          • ``ready``       — OSC antwortet (Center läuft + OSC aktiv) → Steuerung + Rückmeldung gehen.
+          • ``osc_silent``  — Center läuft, aber keine OSC-Antwort → in Center „OSC" aktivieren (Port 16284).
+          • ``plugin_only`` — nur das Elgato-Plugin läuft (kein OSC) → OBSBOT Center starten.
+          • ``no_app``      — keine OBSBOT-App läuft.
+        ``reachable`` = kürzlich eine OSC-Antwort; ``devices`` = pro Cam verbunden/wach/tracking."""
         self._ensure_poller()
         now = time.monotonic()
         with self._cache_lock:
             reachable = (now - self._reachable_ts) < _REACHABLE_TTL
             devices = {d: dict(info) for d, info in self._dev.items()}
+        procs = self._obsbot_procs()
+        osc_app = self.osc_app_running()
+        plugin = bool(procs) and _PLUGIN_PROC in procs
+        if reachable:
+            state = "ready"
+        elif osc_app:
+            state = "osc_silent"
+        elif plugin:
+            state = "plugin_only"
+        else:
+            state = "no_app"
         return {"host": self._host, "port": self._port,
-                "reachable": reachable, "app_running": self._app_running(), "devices": devices,
+                "reachable": reachable, "state": state,
+                "osc_app_running": osc_app, "plugin_running": plugin,
+                "app_running": osc_app,   # = der OSC-Server (Center), nicht das Plugin
+                "devices": devices,
                 "last_send_age": (round(now - self._last_send, 1) if self._last_send else None)}
