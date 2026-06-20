@@ -788,6 +788,9 @@ class DeckCoreService:
                 if bid:
                     it["bid"] = bid
                     it["present"] = bid in pool_ids
+                    if it.get("present") and it.get("renders"):   # aktuelle Darstellung des vorhandenen Buttons vorwählen
+                        cur = (next((b for b in self._buttons if b.get("id") == bid), {}) or {}).get("render")
+                        it["render"] = cur if cur in ("graph", "gauge") else "value"
         if iid == "wavelink":
             for tg in el.get("toggles", []):
                 if tg.get("key") == "couple":
@@ -832,11 +835,11 @@ class DeckCoreService:
                 s = self.hwinfo_sensors() or {}
                 if not s.get("available"):
                     return {"available": False, "reason": "HWiNFO nicht erreichbar / keine Sensoren freigegeben"}
-                items = [{"id": str(x.get("key")), "label": "%s (%s%s)" % (x.get("label"), x.get("value"), x.get("unit") or "")}
+                RND = [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"], ["gauge", "Gauge"]]
+                items = [{"id": str(x.get("key")), "label": "%s (%s%s)" % (x.get("label"), x.get("value"), x.get("unit") or ""),
+                          "render": "auto", "renders": RND}
                          for x in (s.get("sensors") or []) if x.get("key")]
-                return {"available": True, "groups": [{"key": "sensors", "label": "Sensoren", "items": items}],
-                        "options": [{"key": "render", "label": "Darstellung", "default": "auto",
-                                     "choices": [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"]]}]}
+                return {"available": True, "groups": [{"key": "sensors", "label": "Sensoren — Darstellung je Sensor wählbar", "items": items}]}
             if iid == "obs":
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
@@ -994,25 +997,31 @@ class DeckCoreService:
                 data = self._hwinfo.sensors() or {}
                 if not data.get("available"):
                     return {"ok": False, "reason": "hwinfo_unavailable"}
-                want = set(str(x) for x in groups.get("sensors", []))
-                render = str(options.get("render", "auto")).lower()
+                renders = sel.get("renders") or {}   # {sensor_key: 'auto'|'value'|'graph'|'gauge'}
                 by = {str(s.get("key")): s for s in (data.get("sensors") or []) if s.get("key")}
-                for key in want:
-                    s = by.get(key)
+                for key in groups.get("sensors", []):
+                    s = by.get(str(key))
                     if not s:
                         continue
                     nm = str(s.get("label") or key)
                     unit = str(s.get("unit") or "").strip()
+                    rnd = str(renders.get(str(key), "auto")).lower()
+                    sm = _smart_classify(nm, unit)
                     fn = {"id": "hw_" + _slug(key), "label": nm, "pool_cat": "HWiNFO",
                           "action": {"type": "none"}, "monitor": {"type": "hwinfo", "sensor": key}, "states": [],
                           "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"}}
-                    if render == "auto":
-                        c = _smart_classify(nm, unit)
-                        fn["render"], fn["pool_cat"], fn["default"]["color"] = c["render"], c["cat"], c["color"]
-                        if c.get("opts"):
-                            fn["opts"] = c["opts"]
-                    elif render == "graph":
+                    if rnd == "auto":
+                        fn["render"], fn["pool_cat"], fn["default"]["color"] = sm["render"], sm["cat"], sm["color"]
+                        if sm.get("opts"):
+                            fn["opts"] = sm["opts"]
+                    elif rnd == "graph":
                         fn["render"] = "graph"
+                        if sm.get("opts"):
+                            fn["opts"] = sm["opts"]
+                    elif rnd == "gauge":
+                        fn["render"] = "gauge"
+                        fn["opts"] = sm["opts"] if sm.get("opts") else {"min": 0, "max": 100, "unit": unit}
+                    # rnd == 'value' → kein render-Feld (Standard-Zahl)
                     _u(fn, fn["pool_cat"])
             elif iid == "presentmon":
                 for mid in groups.get("metrics", []):

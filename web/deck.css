@@ -143,6 +143,8 @@
   border: 0.5px solid var(--line); border-radius: 6px; background: var(--bg); cursor: pointer; }
 .sd-int-chk input { margin: 0; }
 .sd-int-chk-x { margin-top: 10px; background: var(--bg3); }
+.sd-int-rsel { background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 1px 4px; font-size: 11px; flex: none; }
 .sd-deckbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .sd-deck-tab { display: flex; align-items: center; gap: 7px; background: var(--bg3); color: var(--fg);
   border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; cursor: pointer; font: inherit; }

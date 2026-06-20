@@ -1305,6 +1305,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
   const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
   const [toggles, setToggles] = useState({})
   const [opts, setOpts] = useState({})
+  const [renders, setRenders] = useState({})   // {item_id: render} — pro Item wählbare Darstellung (z.B. HWiNFO)
   const [obsOpen, setObsOpen] = useState(false)
   const [genBusy, setGenBusy] = useState(false)
   const [msg, setMsg] = useState(null)
@@ -1317,6 +1318,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
       setChecked(c)
       const o = {}; (d.options || []).forEach((op) => { o[op.key] = op.default }); setOpts(o)
       const t = {}; (d.toggles || []).forEach((tg) => { t[tg.key] = ('present' in tg) ? !!tg.present : true }); setToggles(t)
+      const rnd = {}; (d.groups || []).forEach((g) => g.items.forEach((x) => { if (x.renders) rnd[x.id] = x.render || 'auto' })); setRenders(rnd)
     }).catch(() => setEl({ available: false, reason: 'Auslesen fehlgeschlagen' }))
   }, [it.id, it.enabled])
   const flip = (gk, id) => setChecked((c) => ({ ...c, [gk]: { ...c[gk], [id]: !(c[gk] || {})[id] } }))
@@ -1326,7 +1328,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
   const gen = () => {
     setGenBusy(true); setMsg(null)
     const groups = {}; Object.keys(checked).forEach((gk) => { groups[gk] = Object.keys(checked[gk]).filter((id) => checked[gk][id]) })
-    postJSON('/api/integrations/' + it.id + '/generate', { groups, toggles, options: opts })
+    postJSON('/api/integrations/' + it.id + '/generate', { groups, toggles, options: opts, renders })
       .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert${r.removed ? ` · ${r.removed} entfernt` : ''} → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
@@ -1357,7 +1359,13 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
               </div>
               {g.items.length
                 ? <div class="sd-int-cols">{g.items.map((x) => (
-                    <label key={x.id} class="sd-int-chk"><input type="checkbox" checked={!!(checked[g.key] || {})[x.id]} onChange={() => flip(g.key, x.id)} /> {x.label}</label>
+                    <label key={x.id} class="sd-int-chk">
+                      <input type="checkbox" checked={!!(checked[g.key] || {})[x.id]} onChange={() => flip(g.key, x.id)} />
+                      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{x.label}</span>
+                      {x.renders && <select class="sd-int-rsel" value={renders[x.id] || x.render || 'auto'} onChange={(e) => setRenders((r) => ({ ...r, [x.id]: e.currentTarget.value }))}>
+                        {x.renders.map((ch) => <option value={ch[0]}>{ch[1]}</option>)}
+                      </select>}
+                    </label>
                   ))}</div>
                 : <span class="muted" style="font-size:12px">— nichts gefunden —</span>}
             </div>
