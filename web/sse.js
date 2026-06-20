@@ -11,6 +11,16 @@ import { useEffect, useRef } from 'preact/hooks'
 // Verbindung riss ALLE Topics mit + Server-Snapshot-Bursts). Dieses Modell hier (kleine,
 // unabhängige Verbindungen pro Mount) lief monatelang stabil. Die Verhungerung der Steuerung
 // im OBS/Live-Tab (HTTP/1.1 6-Connection-Limit) lösen wir später sauber + flackerfrei neu.
+//
+// HEARTBEAT-WATCHDOG (2026-06-20): Tablets verloren „ab und zu" die Verbindung und mussten per
+// App-Neustart wiederbelebt werden. Wurzel = STILLER TCP-Tod (WLAN-Doze/Roaming/AP-Hickup): die
+// Verbindung wird halb-offen — der Browser-EventSource bekommt KEIN error-Event und reconnektet
+// NICHT von selbst → UI eingefroren. Beide Hosts senden alle ~10–15 s einen benannten `ping`-Event;
+// bleibt länger als STALE_MS JEDES Lebenszeichen aus, schließen wir die tote Verbindung aktiv und
+// bauen sie mit Backoff neu auf. Konservativ getimt (40 s > 2 verpasste Pings) + Backoff → KEINE
+// Reconnect-Kaskade wie beim alten Singleton-Modell.
+const STALE_MS = 40000
+
 export function useEventStream(topics, handlers) {
   const hRef = useRef(handlers)
   hRef.current = handlers
@@ -18,21 +28,54 @@ export function useEventStream(topics, handlers) {
   useEffect(() => {
     if (!key) return
     const list = key.split(',')
-    const es = new EventSource('/api/events?topics=' + encodeURIComponent(key))
-    const bound = []
-    for (const t of list) {
-      const fn = (ev) => {
-        let data
-        try { data = JSON.parse(ev.data) } catch { return }
-        const h = hRef.current && hRef.current[t]
-        if (h) h(data)
+    let es = null
+    let lastBeat = Date.now()
+    let retries = 0
+    let reconnectTimer = null
+    let closed = false
+
+    const beat = () => { lastBeat = Date.now(); retries = 0 }
+
+    const open = () => {
+      if (closed) return
+      lastBeat = Date.now()
+      es = new EventSource('/api/events?topics=' + encodeURIComponent(key))
+      es.onopen = beat
+      es.addEventListener('ping', beat)   // Server-Heartbeat = Lebenszeichen, auch ohne echte Topic-Events
+      for (const t of list) {
+        es.addEventListener(t, (ev) => {
+          beat()
+          let data
+          try { data = JSON.parse(ev.data) } catch { return }
+          const h = hRef.current && hRef.current[t]
+          if (h) h(data)
+        })
       }
-      es.addEventListener(t, fn)
-      bound.push([t, fn])
+      // Sauber gemeldeter Fehler UND der Browser hat aufgegeben (readyState CLOSED=2) → selbst neu
+      // aufbauen. Bei CONNECTING (0) reconnektet der Browser bereits selbst → nicht eingreifen.
+      es.onerror = () => { if (es && es.readyState === 2) reconnect() }
     }
+
+    const reconnect = () => {
+      if (closed || reconnectTimer) return
+      try { es && es.close() } catch {}
+      es = null
+      const delay = Math.min(1000 * 2 ** retries, 15000)   // 1s, 2s, 4s, 8s … max 15s
+      retries++
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; open() }, delay)
+    }
+
+    open()
+    // Watchdog fängt den STILLEN Tod ab (kein error-Event) — da greift der Browser-Reconnect nicht.
+    const watchdog = setInterval(() => {
+      if (!closed && Date.now() - lastBeat > STALE_MS) reconnect()
+    }, 5000)
+
     return () => {
-      for (const [t, fn] of bound) es.removeEventListener(t, fn)
-      es.close()
+      closed = true
+      clearInterval(watchdog)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      try { es && es.close() } catch {}
     }
   }, [key])
 }
