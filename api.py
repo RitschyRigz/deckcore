@@ -65,6 +65,13 @@ def build_streamdeck_router(
         """Alle Integrationen + ``enabled``-Flag (Basis immer an). Speist den Integrationen-Tab."""
         return JSONResponse({"integrations": get_service(request).integrations_public()})
 
+    @r.get("/api/integrations/status")
+    def integrations_status(request: Request) -> JSONResponse:
+        """Live-Voraussetzungs-Status je Integration (``{id:{state,detail}}``). ``?probe=1`` erzwingt
+        einen frischen Verbindungsversuch (OBS/Wave Link/OBSBOT)."""
+        probe = request.query_params.get("probe") in ("1", "true", "yes")
+        return JSONResponse({"statuses": get_service(request).integrations_status(probe=probe)})
+
     @r.post("/api/integrations/{iid}")
     def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         """Integration an-/abschalten (Basis nicht abschaltbar). Reines Editor-Gating —

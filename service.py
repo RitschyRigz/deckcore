@@ -725,6 +725,53 @@ class DeckCoreService:
         Gating in ``options()`` genutzt; in P1 nur bereitgestellt (options() bleibt ungefiltert)."""
         return _integrations.visible_cap_types(self.integrations(), self._integrations_enabled)
 
+    def integration_status(self, iid: str, probe: bool = False) -> dict:
+        """Live-Voraussetzungs-Status einer Integration für den Tab: ``{state, detail}`` mit
+        state ∈ ``ok`` (App/Dienst erreichbar/verbunden) · ``off`` (nicht erreichbar/läuft nicht) ·
+        ``na`` (im Build nicht enthalten) · ``unknown`` (kein externer Check — z.B. Host-eigene
+        Integrationen). ``probe`` erzwingt bei den verbindungsbasierten einen frischen Versuch.
+        Defensiv: eine fehlende/abgestürzte App ergibt ``off``, crasht nie."""
+        try:
+            if iid == "obs":
+                s = self.obs_status(probe=probe) or {}
+                if not s.get("available", True):
+                    return {"state": "na", "detail": "Kein OBS-Support in diesem Build"}
+                return {"state": "ok", "detail": "verbunden"} if s.get("connected") \
+                    else {"state": "off", "detail": s.get("error") or "OBS nicht erreichbar (WebSocket aus?)"}
+            if iid == "wavelink":
+                s = self.wavelink_status(probe=probe) or {}
+                return {"state": "ok", "detail": "verbunden"} if s.get("connected") \
+                    else {"state": "off", "detail": "Wave Link läuft nicht / nicht gefunden"}
+            if iid == "hwinfo":
+                s = self.hwinfo_sensors() or {}
+                n = len(s.get("sensors") or [])
+                return {"state": "ok", "detail": f"{n} Sensoren"} if s.get("available") \
+                    else {"state": "off", "detail": "HWiNFO nicht erreichbar / keine Sensoren freigegeben"}
+            if iid == "presentmon":
+                s = self.frametime_status() or {}
+                return {"state": "ok", "detail": s.get("reason") or "Dienst bereit"} if s.get("available") \
+                    else {"state": "off", "detail": s.get("reason") or "Intel-PresentMon-Dienst nicht gefunden"}
+            if iid == "displayfusion":
+                return {"state": "ok", "detail": "installiert"} if _df_command_path() \
+                    else {"state": "off", "detail": "DisplayFusion nicht installiert"}
+            if iid == "obsbot":
+                st = (self.obsbot_status(probe=probe) or {}).get("state")
+                if st == "ready":
+                    return {"state": "ok", "detail": "Center + OSC bereit"}
+                labels = {"osc_silent": "Center läuft, aber OSC aus/stumm", "plugin_only":
+                          "nur Elgato-Plugin (kein OSC)", "no_app": "OBSBOT Center läuft nicht"}
+                return {"state": "off", "detail": labels.get(st, "nicht erreichbar")}
+            if iid == "base":
+                ok = bool((self.winaudio_status() or {}).get("available"))
+                return {"state": "ok", "detail": "Windows-Audio steuerbar" if ok else "Windows-Audio nicht steuerbar"}
+        except Exception as e:  # noqa: BLE001
+            return {"state": "off", "detail": f"Status-Fehler: {e}"}
+        return {"state": "unknown", "detail": ""}   # Host-eigene Integrationen ohne externe Voraussetzung
+
+    def integrations_status(self, probe: bool = False) -> dict:
+        """Live-Status ALLER Integrationen ``{id: {state, detail}}`` — speist den Tab."""
+        return {it["id"]: self.integration_status(it["id"], probe=probe) for it in self.integrations()}
+
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
         (z.B. umbenannte Monitor-Typen). Im reinen Kern ein No-op. Rückgabe True, wenn

@@ -1247,8 +1247,15 @@ function Integrations({ onReload }) {
   const [hwRender, setHwRender] = useState('auto')
   const [obsbotCams, setObsbotCams] = useState(2)
   const [obsOpen, setObsOpen] = useState(false)
+  const [statuses, setStatuses] = useState({})
+  const [probing, setProbing] = useState(false)
   const load = () => getJSON('/api/integrations').then((d) => setItems(d.integrations || [])).catch((e) => setErr(String(e)))
-  useEffect(() => { load() }, [])
+  const loadStatus = (probe) => {
+    if (probe) setProbing(true)
+    return getJSON('/api/integrations/status' + (probe ? '?probe=1' : ''))
+      .then((d) => setStatuses(d.statuses || {})).catch(() => {}).then(() => setProbing(false))
+  }
+  useEffect(() => { load(); loadStatus(false) }, [])
   const toggle = (it) => {
     if (it.base || busy) return
     setBusy(it.id)
@@ -1306,6 +1313,10 @@ function Integrations({ onReload }) {
       <p class="hint">Eine Integration abschalten blendet ihre Button-Typen nur aus den Auswahllisten —
         <b> bestehende Buttons laufen unverändert weiter</b>. „Generieren" liest den Live-Stand und legt
         passende Buttons additiv im Pool an (idempotent — Rescan jederzeit). Die Basis ist immer aktiv.</p>
+      <div class="conn-toolbar" style="margin-bottom:10px">
+        <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Voraussetzungen live prüfen'}</button>
+        <span class="muted" style="font-size:12px">🟢 erreichbar · 🔴 nicht erreichbar / aus · ⚪ nicht im Build</span>
+      </div>
       <div class="sd-int-grid">
         {rest.map((it) => (
           <div key={it.id} class={'sd-int-card' + (it.enabled ? ' on' : '')}>
@@ -1318,6 +1329,11 @@ function Integrations({ onReload }) {
               </button>
             </div>
             <div class="sd-int-desc">{it.description}</div>
+            {statuses[it.id] && statuses[it.id].state !== 'unknown' && (
+              <div class={'sd-int-status ' + statuses[it.id].state}>
+                {statuses[it.id].state === 'ok' ? '🟢' : statuses[it.id].state === 'na' ? '⚪' : '🔴'} {statuses[it.id].detail}
+              </div>
+            )}
             {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
             {genRow(it)}
             {it.id === 'obs' && it.enabled && (
