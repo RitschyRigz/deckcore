@@ -854,9 +854,6 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable 
 
 function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const [adding, setAdding] = useState(false)
-  const [genBusy, setGenBusy] = useState('')
-  const [genMsg, setGenMsg] = useState(null)
-  const [hwRender, setHwRender] = useState('auto')
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem('sd.poolcat.collapsed') || '{}') } catch (_) { return {} }
   })
@@ -881,59 +878,14 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
   const orphans = Object.keys(byCat).filter((c) => c !== POOL_UNCAT && !cats.includes(c)).sort()
   const poolOrder = [...cats, ...orphans]
   if (byCat[POOL_UNCAT]) poolOrder.push(POOL_UNCAT)
-  // Presets generieren: OBS/DisplayFusion NUR in den Pool; Wave Link / Windows-Lautstärke bauen ein Fader-Deck.
-  const gen = async (kind) => {
-    setGenBusy(kind); setGenMsg(null)
-    try {
-      if (kind === 'wl') {
-        const r = await postJSON('/api/streamdeck/wavelink/build', {})
-        setGenMsg({ ok: true, t: `Wave Link → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.mixes || 0} Mixes · ${r.channels || 0} Channels · ${r.outputs || 0} Ausgänge) — Kategorie „Wave Link"` })
-      } else if (kind === 'wa') {
-        const r = await postJSON('/api/streamdeck/winaudio/build', {})
-        setGenMsg({ ok: true, t: `Windows-Lautstärke-Fader → Pool (${r.created || 0} neu) — Kategorie „Audio"` })
-      } else if (kind === 'hw') {
-        const r = await postJSON('/api/streamdeck/generate/hwinfo', { render: hwRender })
-        setGenMsg({ ok: true, t: `HWiNFO → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.render === 'graph' ? 'Graph' : 'Wert'}) — Kategorie „HWiNFO"` })
-      } else if (kind === 'obsbot') {
-        const r = await postJSON('/api/streamdeck/generate/obsbot', { cameras: 2 })
-        setGenMsg({ ok: true, t: `OBSBOT → Pool: ${r.created || 0} neu · ${r.updated || 0} aktualisiert (${r.cameras || 2} Kameras) — Kategorien „📷 Kamera 1/2". Braucht aktives OSC in der OBSBOT-App.` })
-      } else {
-        const r = await postJSON(kind === 'df' ? '/api/streamdeck/generate/displayfusion' : '/api/streamdeck/generate/obs_scenes', {})
-        setGenMsg({ ok: true, t: `${r.created || 0} neu · ${r.updated || 0} aktualisiert` })
-      }
-      onReload && onReload()
-    } catch (e) {
-      const m = String(e.message || e)
-      setGenMsg({ ok: false, t: m === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden — Wave Link starten, dann erneut.'
-        : m === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).'
-        : m === 'hwinfo_unavailable' ? 'HWiNFO nicht verfügbar — HWiNFO starten + Sensoren fürs Gadget/Registry-Export (VSB) freigeben.'
-        : m === 'no_sensors' ? 'Keine HWiNFO-Sensoren freigegeben — in HWiNFO Sensoren fürs Gadget/VSB markieren.' : m })
-    }
-    setGenBusy('')
-  }
   return (
     <div>
       <div class="conn-toolbar">
         <button class="btn ghost small" onClick={() => setAdding(true)}>➕ Neuer Button</button>
         <InlineAdd label="➕ Kategorie" placeholder="Neue Pool-Kategorie" onAdd={addCat} />
-        <span class="muted" style="font-weight:700;font-size:12px;margin-left:4px">· Presets generieren:</span>
-        {options.displayfusion_available && <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('df')}>{genBusy === 'df' ? '…' : '🖥 DisplayFusion-Profile'}</button>}
-        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obs')}>{genBusy === 'obs' ? '… OBS' : '🎬 OBS-Szenen'}</button>
-        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('obsbot')} title="Pro OBSBOT-Kamera ein Button-Set im Pool: 4 Positions-Presets, Zentrieren, Tracking-Toggle (mit AN/AUS-Rückmeldung), Wake/Sleep. Cam 1 blau · Cam 2 violett. Braucht die OBSBOT-App mit aktivem OSC.">{genBusy === 'obsbot' ? '… OBSBOT' : '📷 OBSBOT-Kameras'}</button>
-        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wl')} title="Liest die laufende Wave-Link-App aus und legt pro Mix/Channel einen Fader + pro Ausgang einen Wähler im POOL an (Kategorie Wave Link). Idempotent — dann auf Decks ziehen.">{genBusy === 'wl' ? '… Wave Link' : '🎚 Wave-Link-Fader'}</button>
-        <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('wa')} title="Legt den allgemeinen Windows-Lautstärke-Regler als Fader + Live-VU an (Tab Audio). Folgt automatisch dem Standard-Ausgabegerät.">{genBusy === 'wa' ? '… Windows' : '🔊 Windows-Lautstärke-Fader'}</button>
-        <span class="sd-inline" style="gap:4px" title="Liest die in HWiNFO freigegebenen Sensoren (Gadget / Registry-VSB) und legt pro Sensor einen Anzeige-Button im Pool an (Kategorie HWiNFO).">
-          <button class="btn ghost small" disabled={!!genBusy} onClick={() => gen('hw')}>{genBusy === 'hw' ? '… HWiNFO' : '📊 HWiNFO-Sensoren'}</button>
-          <select class="sd-pool-cat" value={hwRender} onChange={(e) => setHwRender(e.currentTarget.value)} title="Darstellung der Sensor-Buttons">
-            <option value="auto">✨ Auto (Smart)</option>
-            <option value="value">als Wert</option>
-            <option value="graph">als Graph</option>
-          </select>
-        </span>
-        {genMsg && <span class={'msg small ' + (genMsg.ok ? 'ok' : 'err')}>{genMsg.t}</span>}
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
-        <span class="muted">{buttons.length} Buttons im Pool · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks</b>-Tab. <b>Presets</b> erzeugen Buttons nur im Pool.</span>
+        <span class="muted">{buttons.length} Buttons im Pool · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks</b>-Tab. <b>Buttons generieren</b> (OBS-Szenen · Wave-Link-Fader · HWiNFO · OBSBOT · DisplayFusion · Windows-Lautstärke) jetzt im <b>🔌 Integrationen</b>-Tab.</span>
       </div>
       {adding && (
         <FunctionEditor button={blankButton()} options={options} isNew
@@ -1227,11 +1179,16 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 🔌 Integrationen — an-/abschaltbare Capability-Bündel. ABSCHALTEN = reines Editor-Gating
 // (die Button-Typen verschwinden aus den Auswahllisten); bestehende Buttons laufen weiter.
-// onReload lädt die Registry/Optionen neu → das Gating wirkt sofort im Editor.
+// Pro Integration optional ein „Generieren/Rescan"-Knopf (additiv+idempotent gegen den Live-Stand).
+// onReload lädt die Registry/Optionen neu → Gating + frisch generierte Buttons sofort sichtbar.
 function Integrations({ onReload }) {
   const [items, setItems] = useState(null)
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState('')
+  const [genBusy, setGenBusy] = useState('')
+  const [genMsg, setGenMsg] = useState({})
+  const [hwRender, setHwRender] = useState('auto')
+  const [obsbotCams, setObsbotCams] = useState(2)
   const load = () => getJSON('/api/integrations').then((d) => setItems(d.integrations || [])).catch((e) => setErr(String(e)))
   useEffect(() => { load() }, [])
   const toggle = (it) => {
@@ -1242,15 +1199,55 @@ function Integrations({ onReload }) {
       .catch((e) => setErr(String(e)))
       .then(() => setBusy(''))
   }
+  const runGen = async (it) => {
+    const g = it.generator
+    if (!g || genBusy) return
+    setGenBusy(it.id); setGenMsg((m) => ({ ...m, [it.id]: null }))
+    const body = {}
+    if (g.opt === 'hwinfo_render') body.render = hwRender
+    if (g.opt === 'obsbot_cameras') body.cameras = obsbotCams
+    try {
+      const r = await postJSON(g.endpoint, body)
+      setGenMsg((m) => ({ ...m, [it.id]: { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert` } }))
+      onReload && onReload()
+    } catch (e) {
+      const msg = String(e.message || e)
+      const friendly = msg === 'wavelink_offline' ? 'Wave Link läuft nicht / nicht gefunden.'
+        : msg === 'winaudio_unavailable' ? 'Windows-Audio nicht verfügbar (läuft die App auf diesem PC?).'
+        : msg === 'hwinfo_unavailable' ? 'HWiNFO nicht verfügbar — starten + Sensoren fürs Gadget/Registry-Export freigeben.'
+        : msg === 'no_sensors' ? 'Keine HWiNFO-Sensoren freigegeben.' : msg
+      setGenMsg((m) => ({ ...m, [it.id]: { ok: false, t: friendly } }))
+    }
+    setGenBusy('')
+  }
   if (err) return <p class="fatal">Integrationen nicht erreichbar: {err}</p>
   if (!items) return <p class="muted">Lade Integrationen…</p>
   const base = items.find((i) => i.base)
   const rest = items.filter((i) => !i.base)
+  // Generator-Zeile einer Integration (nur wenn aktiv + Generator vorhanden).
+  const genRow = (it) => it.generator && it.enabled && (
+    <div class="sd-int-gen">
+      {it.generator.opt === 'hwinfo_render' && (
+        <select class="sd-pool-cat" value={hwRender} onChange={(e) => setHwRender(e.currentTarget.value)} title="Darstellung der Sensor-Buttons">
+          <option value="auto">✨ Auto</option><option value="value">Wert</option><option value="graph">Graph</option>
+        </select>
+      )}
+      {it.generator.opt === 'obsbot_cameras' && (
+        <label class="sd-int-num-l" title="Anzahl Kameras">Cams <input class="sd-int-num" type="number" min="1" max="4" value={obsbotCams}
+          onInput={(e) => setObsbotCams(Number(e.currentTarget.value) || 2)} /></label>
+      )}
+      <button class="btn ghost small" disabled={genBusy === it.id} onClick={() => runGen(it)}>
+        {genBusy === it.id ? '… generiere' : it.generator.label}
+      </button>
+      {genMsg[it.id] && <span class={'msg small ' + (genMsg[it.id].ok ? 'ok' : 'err')}>{genMsg[it.id].t}</span>}
+    </div>
+  )
   return (
     <div class="card" style="max-width:1100px">
       <h3 class="section-h" style="margin-top:0">🔌 Integrationen <span class="muted" style="font-weight:400;font-size:13px">— steuert, welche Button-Typen im Editor wählbar sind</span></h3>
       <p class="hint">Eine Integration abschalten blendet ihre Button-Typen nur aus den Auswahllisten —
-        <b> bestehende Buttons laufen unverändert weiter</b>. Die Basis ist immer aktiv.</p>
+        <b> bestehende Buttons laufen unverändert weiter</b>. „Generieren" liest den Live-Stand und legt
+        passende Buttons additiv im Pool an (idempotent — Rescan jederzeit). Die Basis ist immer aktiv.</p>
       <div class="sd-int-grid">
         {rest.map((it) => (
           <div key={it.id} class={'sd-int-card' + (it.enabled ? ' on' : '')}>
@@ -1264,10 +1261,23 @@ function Integrations({ onReload }) {
             </div>
             <div class="sd-int-desc">{it.description}</div>
             {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
+            {genRow(it)}
           </div>
         ))}
       </div>
-      {base && <p class="muted" style="margin-top:14px">🧱 <b>Basis</b> — {base.description} (immer aktiv, nicht abschaltbar)</p>}
+      {base && (
+        <div class="sd-int-base">
+          <span>🧱 <b>Basis</b> — {base.description} <span class="muted">(immer aktiv)</span></span>
+          {base.generator && (
+            <div class="sd-int-gen">
+              <button class="btn ghost small" disabled={genBusy === 'base'} onClick={() => runGen(base)}>
+                {genBusy === 'base' ? '… generiere' : base.generator.label}
+              </button>
+              {genMsg.base && <span class={'msg small ' + (genMsg.base.ok ? 'ok' : 'err')}>{genMsg.base.t}</span>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

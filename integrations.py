@@ -19,6 +19,9 @@ Eintrags-Felder:
   actions      [cap-typ, …] besessene Aktions-Typen (fürs Gating)
   monitors     [cap-typ, …] besessene Monitor-Typen (fürs Gating)
   requires     optionaler Voraussetzungs-Hinweis (Klartext; die Live-Probe kommt später)
+  generator    optional {endpoint, label, opt?} — „Buttons generieren/Rescan" für diese Integration
+               (additiv+idempotent gegen den Live-Stand). opt = 'hwinfo_render' | 'obsbot_cameras'
+               schaltet im Tab das passende Zusatzfeld frei.
 """
 
 # ── Basis — immer verfügbar, nie gegated (zur Transparenz mitgelistet, base=True) ─────────────
@@ -29,6 +32,8 @@ BASE = {
                 "media", "hotkey", "winaudio", "none"],
     "monitors": ["flag", "file_field", "poll", "sse_field",
                  "winaudio_default", "winaudio_volume", "none"],
+    "generator": {"endpoint": "/api/streamdeck/winaudio/build",
+                  "label": "🔊 Windows-Lautstärke-Fader generieren"},
 }
 
 # ── Generische Fremd-App-/Hardware-Integrationen (jeder Host kann sie haben) ───────────────────
@@ -38,6 +43,8 @@ CORE_INTEGRATIONS = [
         "description": "Szenen wechseln, Quellen ein-/ausblenden, Stream/Aufnahme steuern (obs-websocket).",
         "actions": ["obs"], "monitors": ["obs_scene", "obs_source_visible"],
         "requires": "OBS läuft + WebSocket-Server aktiv (Standard 127.0.0.1:4455).",
+        "generator": {"endpoint": "/api/streamdeck/generate/obs_scenes",
+                      "label": "🎬 OBS-Szenen-Buttons generieren"},
     },
     {
         "id": "wavelink", "emoji": "🎚", "label": "Wave Link",
@@ -45,12 +52,16 @@ CORE_INTEGRATIONS = [
         "actions": ["wavelink"],
         "monitors": ["wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output"],
         "requires": "Elgato Wave Link läuft (lokaler JSON-RPC-Port wird automatisch gefunden).",
+        "generator": {"endpoint": "/api/streamdeck/wavelink/build",
+                      "label": "🎚 Wave-Link-Fader generieren"},
     },
     {
         "id": "hwinfo", "emoji": "🌡", "label": "HWiNFO",
         "description": "Hardware-Sensoren (Temperaturen, Takt, Auslastung) als Wert/Graph/Gauge.",
         "actions": [], "monitors": ["hwinfo"],
         "requires": "HWiNFO läuft mit Shared-Memory- oder Registry-Export aktiviert.",
+        "generator": {"endpoint": "/api/streamdeck/generate/hwinfo",
+                      "label": "📊 HWiNFO-Sensor-Buttons generieren", "opt": "hwinfo_render"},
     },
     {
         "id": "presentmon", "emoji": "🎯", "label": "PresentMon",
@@ -63,12 +74,16 @@ CORE_INTEGRATIONS = [
         "description": "Monitor-Profile laden (Auflösung/Anordnung umschalten).",
         "actions": ["displayfusion"], "monitors": ["displayfusion_profile"],
         "requires": "DisplayFusion installiert (DisplayFusionCommand.exe).",
+        "generator": {"endpoint": "/api/streamdeck/generate/displayfusion",
+                      "label": "🖥 DisplayFusion-Profil-Buttons generieren"},
     },
     {
         "id": "obsbot", "emoji": "📷", "label": "OBSBOT",
         "description": "OBSBOT-Kameras steuern: Presets, Zentrieren, Wake/Sleep, Tracking-Toggle (OSC).",
         "actions": ["obsbot"], "monitors": ["obsbot_cam", "obsbot_track"],
         "requires": "OBSBOT Center läuft + OSC aktiv (UDP-Server, Standard-Port 16284).",
+        "generator": {"endpoint": "/api/streamdeck/generate/obsbot",
+                      "label": "📷 OBSBOT-Kamera-Buttons generieren", "opt": "obsbot_cameras"},
     },
 ]
 
