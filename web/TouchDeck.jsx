@@ -288,7 +288,7 @@ function downsample(arr, target) {
   return out
 }
 
-function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
   const ttype = mon.target_type || 'mix'
@@ -310,6 +310,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
   const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
   const accentDim = darken(accentHex, 0.34)
   const name = v.label || v.title || id
+  // App-Icon: explizit gesetztes v.image, sonst live aus der .exe des Programms (App-Fader).
+  const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc) : '')
+  const hideImg = (e) => { try { e.currentTarget.style.display = 'none' } catch (_) {} }
 
   // Peak-Hold („Schlepp-Zeiger"): trackt den Spitzenpegel, hält ihn ~1,2 s, fällt dann weich.
   // Bewegt das Marker-Element direkt per DOM (rAF) → kein Re-Render, butterweich.
@@ -391,7 +394,12 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
   return (
     <div class={'t-fader' + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '')} style={`--acc:${accentHex};--acc-dim:${accentDim}`}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
-      <div class="t-fader-name" title={name}>{name}</div>
+      <div class="t-fader-name" title={name}>
+        {iconOnly
+          ? (imgSrc ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={hideImg} />
+             : <span class="t-fader-name-emo">{v.icon || name}</span>)
+          : name}
+      </div>
       <div class="t-fader-body">
         <div class="t-fader-track" ref={trackRef}>
           <div class="t-fader-fill" style={`height:${level}%`} />
@@ -400,9 +408,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
         <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
       </div>
       <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
-      {v.image
-        ? <div class="t-fader-icon t-fader-img" title={name}><img src={v.image} alt="" /></div>
-        : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
+      {!iconOnly && (imgSrc
+        ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={hideImg} /></div>
+        : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}
     </div>
   )
 }
@@ -411,7 +419,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
 // laufendem Programm einen Fader (minus Ausblend-Liste). Pollt selbst (Liste ~1,5 s; Pegel ~90 ms) →
 // Programme erscheinen/verschwinden automatisch. Reine Panel-Schicht — nutzt dieselbe <Fader>-Kachel.
 // Master IMMER zuerst. Nicht manuell editierbar (kein statisches Item-Modell).
-function AudioMixer({ hidden, gridStyle, w, h }) {
+function AudioMixer({ hidden, gridStyle, w, h, iconOnly }) {
   const [apps, setApps] = useState([])
   const [waSnap, setWaSnap] = useState({})       // '' = Windows-Master
   const [appSnap, setAppSnap] = useState({})     // proc -> {available,level,muted,peak}
@@ -440,17 +448,20 @@ function AudioMixer({ hidden, gridStyle, w, h }) {
   }, [procKey])
   const noop = () => {}
   const fw = Math.max(1, Math.min(4, w || 1)), fh = Math.max(1, Math.min(4, h || 2))   // Fader-Spannweite (Felder), in der Kategorie einstellbar
+  // ⚠ .t-key ist per Default quadratisch (aspect-ratio 1/1) — erst die Klasse .spanned löst das auf und
+  // lässt die Kachel die gespannte Grid-Fläche füllen (sonst bleibt der Fader 1×1, nur mit Lücke darunter).
+  const tileCls = 't-key t-fader-key cqsize' + ((fw > 1 || fh > 1) ? ' spanned' : '')
   const tileStyle = `background:var(--bg);grid-column:span ${fw};grid-row:span ${fh}`
   return (
     <div class="t-deck-grid" style={gridStyle + ';grid-auto-rows:var(--sd-size)'}>
-      <div class="t-key t-fader-key cqsize" style={tileStyle}>
-        <Fader id="__master__" v={{ label: 'Windows', color: '#34d39a' }} mon={{ type: 'winaudio_volume' }}
-               meters={{}} state={{}} wa={waSnap[''] || {}} dev="" onMute={noop} />
+      <div class={tileCls} style={tileStyle}>
+        <Fader id="__master__" v={{ label: 'Windows', color: '#34d39a', icon: '🔊' }} mon={{ type: 'winaudio_volume' }}
+               meters={{}} state={{}} wa={waSnap[''] || {}} dev="" onMute={noop} iconOnly={iconOnly} />
       </div>
       {apps.map((a) => (
-        <div key={a.proc} class="t-key t-fader-key cqsize" style={tileStyle}>
+        <div key={a.proc} class={tileCls} style={tileStyle}>
           <Fader id={'app_' + a.proc} v={{ label: a.name || a.proc, color: '#a855f7' }} mon={{ type: 'app_volume' }}
-                 meters={{}} state={{}} app={appSnap[a.proc] || {}} proc={a.proc} onMute={noop} />
+                 meters={{}} state={{}} app={appSnap[a.proc] || {}} proc={a.proc} onMute={noop} iconOnly={iconOnly} />
         </div>
       ))}
       {!apps.length && <div class="t-empty" style="grid-column:1/-1;margin:14px auto;font-size:13px">Warte auf Programme mit Ton … (der Master links regelt die Windows-Gesamtlautstärke)</div>}
@@ -834,7 +845,7 @@ export function TouchDeck() {
       )}
       <div class={'t-deck-body' + (slideDir > 0 ? ' t-slide-next' : slideDir < 0 ? ' t-slide-prev' : '')} key={shownId}>
         {active.auto === 'audio_mixer'
-          ? <AudioMixer hidden={active.mixer_hidden} gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} />
+          ? <AudioMixer hidden={active.mixer_hidden} gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} iconOnly={active.mixer_icon_only} />
           : !(active.items || []).length
           ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
           : freeMode ? (

@@ -518,3 +518,6 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 .t-fader.off { filter: grayscale(1) brightness(.5); opacity: .5; }
 .t-fader.off .t-fader-knob { background: #9aa1ad; box-shadow: none; }
 .t-fader.off .t-fader-foot { color: var(--muted, #8a909c); opacity: .9; }
+/* „Nur Symbol"-Modus: App-Icon statt Titel oben im Fader. */
+.t-fader-name-img { height: 26cqw; max-height: 34px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--acc)); }
+.t-fader-name-emo { font-size: 20cqw; line-height: 1.1; }

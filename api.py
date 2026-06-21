@@ -316,9 +316,9 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/audio_mixer/size")
     def streamdeck_audio_mixer_size(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        """Fader-Spannweite im Mixer-Deck (Felder 1..4). {w?, h?}"""
+        """Mixer-Darstellung: Fader-Spannweite (Felder 1..4) + nur-Symbol. {w?, h?, icon_only?}"""
         b = body or {}
-        return JSONResponse(get_service(request).set_audio_mixer_size(b.get("w"), b.get("h")))
+        return JSONResponse(get_service(request).set_audio_mixer_size(b.get("w"), b.get("h"), b.get("icon_only")))
 
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Button-Pool-Ansicht ──
     @r.post("/api/streamdeck/generate/displayfusion")
@@ -470,6 +470,15 @@ def build_streamdeck_router(
         if not b.get("proc"):
             raise HTTPException(status_code=400, detail="proc erforderlich")
         return JSONResponse(get_service(request).app_set_mute(b.get("proc", ""), b.get("muted")))
+
+    @r.get("/api/winaudio/app_icon")
+    def winaudio_app_icon(request: Request) -> Response:
+        """App-Icon (PNG) eines Programms aus dessen laufender .exe — für die Fader-Kacheln. ``?proc=``.
+        404, wenn kein Icon (Frontend fällt dann auf Emoji/Titel zurück)."""
+        png = get_service(request).app_icon(request.query_params.get("proc") or "")
+        if not png:
+            raise HTTPException(status_code=404, detail="kein Icon")
+        return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
     @r.post("/api/streamdeck/preset")
     def streamdeck_preset(request: Request, body: dict = Body(...)) -> JSONResponse:

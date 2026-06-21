@@ -353,6 +353,41 @@ def _df_reg_val(key, name: str):
         return None
 
 
+_ICON_PNG_CACHE: dict = {}   # exe-Pfad(lower) -> PNG-Bytes | None (App-Icon, einmal extrahiert)
+
+
+def _extract_icon_png(exe_path: str):
+    """App-Icon einer ``.exe`` als PNG-Bytes (Windows, PowerShell ExtractAssociatedIcon, 32px). Pro exe
+    gecacht; None, wenn nicht extrahierbar (kein Windows / kein Icon / Fehler) — Aufrufer fällt dann auf
+    Emoji/Titel zurück."""
+    key = (exe_path or "").strip().lower()
+    if not key:
+        return None
+    if key in _ICON_PNG_CACHE:
+        return _ICON_PNG_CACHE[key]
+    png = None
+    try:
+        import os, subprocess, tempfile
+        tmp = os.path.join(tempfile.gettempdir(), "dc_appicon_%x.png" % (abs(hash(key)) & 0xFFFFFFFF))
+        esc, tesc = exe_path.replace("'", "''"), tmp.replace("'", "''")
+        ps = ("Add-Type -AssemblyName System.Drawing;"
+              "$i=[System.Drawing.Icon]::ExtractAssociatedIcon('%s');"
+              "if($i){$i.ToBitmap().Save('%s',[System.Drawing.Imaging.ImageFormat]::Png)}" % (esc, tesc))
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, timeout=15, creationflags=0x08000000 if os.name == "nt" else 0)
+        if os.path.exists(tmp):
+            with open(tmp, "rb") as f:
+                png = f.read() or None
+            try:
+                os.unlink(tmp)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        png = None
+    _ICON_PNG_CACHE[key] = png
+    return png
+
+
 def _slug(s: str) -> str:
     """ASCII-Slug für Button-/Deck-IDs (a-z0-9 + Unterstrich), wie die Frontend-Normierung."""
     out: list[str] = []
@@ -570,6 +605,7 @@ class DeckCoreService:
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
+        self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -1548,6 +1584,8 @@ class DeckCoreService:
                 v = d.get(k)
                 if isinstance(v, int) and 1 <= v <= 4:
                     out[k] = v
+            if d.get("mixer_icon_only"):           # nur App-Symbol statt Titel
+                out["mixer_icon_only"] = True
         return out
 
     def _sanitize_decks(self, decks, valid_ids: set) -> list[dict]:
@@ -1661,7 +1699,8 @@ class DeckCoreService:
         d = self._deck("audio_mixer")
         return {"enabled": bool(d and d.get("auto") == "audio_mixer"),
                 "hidden": list((d or {}).get("mixer_hidden") or []),
-                "w": int((d or {}).get("mixer_w") or 1), "h": int((d or {}).get("mixer_h") or 2)}
+                "w": int((d or {}).get("mixer_w") or 1), "h": int((d or {}).get("mixer_h") or 2),
+                "icon_only": bool((d or {}).get("mixer_icon_only"))}
 
     def set_audio_mixer(self, enabled: bool) -> dict:
         """Interaktives Audio-Mixer-Deck an/aus. AN: legt ein Deck „🔊 Audio Mixer" mit auto='audio_mixer'
@@ -1700,9 +1739,9 @@ class DeckCoreService:
         self._save(); self._publish_cfg()
         return {"ok": True, **self.audio_mixer_status()}
 
-    def set_audio_mixer_size(self, w=None, h=None) -> dict:
-        """Fader-Spannweite im interaktiven Mixer-Deck setzen (Felder, 1..4): ``w`` Breite, ``h`` Höhe.
-        So macht man die Fader z.B. 1×3 (schmal+hoch) statt nur 1×1."""
+    def set_audio_mixer_size(self, w=None, h=None, icon_only=None) -> dict:
+        """Darstellung des interaktiven Mixer-Decks: ``w``/``h`` = Fader-Spannweite (Felder 1..4),
+        ``icon_only`` = nur App-Symbol statt Titel anzeigen. So macht man die Fader z.B. 1×3 (schmal+hoch)."""
         d = self._deck("audio_mixer")
         if not d:
             return {"ok": False, "reason": "kein Audio-Mixer-Deck"}
@@ -1710,6 +1749,11 @@ class DeckCoreService:
             d["mixer_w"] = max(1, min(4, int(w)))
         if h is not None:
             d["mixer_h"] = max(1, min(4, int(h)))
+        if icon_only is not None:
+            if icon_only:
+                d["mixer_icon_only"] = True
+            else:
+                d.pop("mixer_icon_only", None)
         self._save(); self._publish_cfg()
         return {"ok": True, **self.audio_mixer_status()}
 
@@ -2581,6 +2625,25 @@ class DeckCoreService:
     def app_set_mute(self, proc: str, muted=None) -> dict:
         """App-Mute setzen/umschalten (``muted=None`` = toggle)."""
         return self._winaudio.app_set_mute(proc, muted)
+
+    def app_icon(self, proc: str):
+        """PNG-Bytes des App-Icons (aus der laufenden ``.exe`` des Prozesses) — für die Fader-Kacheln.
+        Findet die exe per psutil (gecacht), extrahiert das Icon einmalig. None, wenn nicht gefunden."""
+        p = (proc or "").strip().lower()
+        if not p:
+            return None
+        exe = self._app_exe_cache.get(p)
+        if not exe:
+            try:
+                import psutil
+                for pr in psutil.process_iter(["name", "exe"]):
+                    if (pr.info.get("name") or "").lower() == p and pr.info.get("exe"):
+                        exe = pr.info["exe"]
+                        self._app_exe_cache[p] = exe
+                        break
+            except Exception:  # noqa: BLE001
+                return None
+        return _extract_icon_png(exe) if exe else None
 
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:

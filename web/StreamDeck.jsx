@@ -1535,6 +1535,10 @@ function AudioMixerControl({ onReload }) {
               {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}</select>
             <span class="muted" style="font-size:11px">Felder (z.B. 1×3 = schmal &amp; hoch). Grundgröße: Schieber „Größe" oben.</span>
           </div>
+          <label class="sd-int-chk sd-int-chk-x" style="margin-bottom:10px">
+            <input type="checkbox" checked={!!st.icon_only} onChange={(e) => setSize({ icon_only: e.currentTarget.checked })} />
+            Nur App-Symbol statt Titel (oben das Programm-Icon)
+          </label>
           <div class="muted" style="font-size:12px;margin-bottom:4px">Im Mixer zeigen <span class="muted">(abwählen = dauerhaft ausblenden)</span>:</div>
           <div class="sd-int-cols">
             {apps.filter((a) => a.proc).map((a) => (
