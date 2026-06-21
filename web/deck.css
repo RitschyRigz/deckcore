@@ -358,6 +358,13 @@
 .t-nav-back:active { transform: scale(.96); }
 .t-nav-crumb { color: var(--muted); font-size: 13px; font-weight: 600; }
 
+/* Vollbild-Side-Scroll: kurz eingeblendeter Deck-Name beim seitlichen Wisch (keine Tableiste im Vollbild). */
+.t-deck-flash { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 40;
+  background: var(--bg3); color: var(--fg); border: 1px solid var(--accent); border-radius: 999px;
+  padding: 8px 18px; font-size: 15px; font-weight: 800; pointer-events: none;
+  box-shadow: 0 6px 24px rgba(0,0,0,.45); animation: t-deck-flash-in .14s ease-out; }
+@keyframes t-deck-flash-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
 /* ── Vollbild-Deck (⛶) ──────────────────────────────────────────────
    Ein ⛶-Knopf rechts in der Deck-Leiste schaltet „nur das aktive Deck".
    Im Vollbild verschwinden Deck-Auswahl + Knopf; die Host-Hülle blendet via

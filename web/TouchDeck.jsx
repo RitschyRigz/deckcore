@@ -473,8 +473,15 @@ export function TouchDeck() {
   const [waSnap, setWaSnap] = useState({})           // Windows-Master {available,level,muted,peak} (geteilter Poll)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
-  const [fullscreen, setFullscreen] = useState(false) // Vollbild-Deck: nur das aktive Deck, Chrome weg
+  // Vollbild-Deck: nur das aktive Deck, Chrome weg. Beim Laden den LETZTEN Zustand wiederherstellen
+  // (App-Neustart / Reconnect-Reload landen sonst auf der Nicht-Vollbild-Ansicht). Das aktive Deck merkt
+  // sich `sd.deck` bereits → zusammen wird die Ansicht 1:1 wiederhergestellt.
+  const [fullscreen, setFullscreen] = useState(() => {
+    try { return localStorage.getItem('sd.fullscreen') === '1' } catch { return false }
+  })
+  const [deckFlash, setDeckFlash] = useState('')     // kurz eingeblendeter Deck-Name beim Vollbild-Wisch
   const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"
+  const flashT = useRef(null)
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
     const dks = d.decks || []
@@ -539,6 +546,7 @@ export function TouchDeck() {
   // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
   useEffect(() => {
     try { document.body.classList.toggle('dc-deck-fs', fullscreen) } catch {}
+    try { localStorage.setItem('sd.fullscreen', fullscreen ? '1' : '0') } catch {}
   }, [fullscreen])
   useEffect(() => () => { try { document.body.classList.remove('dc-deck-fs') } catch {} }, [])
   useEffect(() => {
@@ -552,6 +560,18 @@ export function TouchDeck() {
     setDeck(id); setNavStack([]); setOverlay(null)
     try { localStorage.setItem('sd.deck', id) } catch {}
   }
+  // Vollbild-Side-Scroll: zum nächsten/vorigen Top-Level-Deck (dir=+1/-1), umlaufend. Blendet kurz den
+  // Deck-Namen ein (im Vollbild gibt's keine Tableiste → man sieht sonst nicht, auf welchem Deck man landet).
+  const cycleDeck = (dir) => {
+    const list = visibleDecks
+    if (list.length < 2) return
+    const i = Math.max(0, list.findIndex((d) => d.id === tabSel))
+    const nd = list[(i + dir + list.length) % list.length]
+    switchDeck(nd.id)
+    setDeckFlash(nd.label || nd.id)
+    clearTimeout(flashT.current)
+    flashT.current = setTimeout(() => setDeckFlash(''), 1100)
+  }
   const goBack = () => setNavStack((s) => s.slice(0, -1))
   const closeOverlay = () => setOverlay(null)
 
@@ -563,7 +583,12 @@ export function TouchDeck() {
     const t = e.touches && e.touches[0]; if (!t) return
     const s = swipeRef.current, dy = t.clientY - s.y, dx = t.clientX - s.x
     const vh = (typeof window !== 'undefined' ? window.innerHeight : 800)
-    if (s.y < vh * 0.12 && dy > 70 && dy > Math.abs(dx)) { setFullscreen(false); swipeRef.current = null }
+    if (s.y < vh * 0.12 && dy > 70 && dy > Math.abs(dx)) { setFullscreen(false); swipeRef.current = null; return }
+    // Horizontaler Wisch (klar seitlich, lang) im Vollbild auf Top-Level → Deck wechseln. Links=nächstes,
+    // rechts=voriges. Eine Geste = ein Wechsel (swipeRef nullen). Tippen/Scrollen bleiben unberührt.
+    if (!navStack.length && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null
+    }
   }
   // ⛶ Vollbild-Knopf (rechts in der Deck-Leiste). Im Vollbild selbst ausgeblendet → Rückkehr per Wisch.
   const FsBtn = () => (
@@ -684,6 +709,7 @@ export function TouchDeck() {
 
   return (
     <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}>
+      {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
       {navStack.length > 0 ? (
         <div class="t-nav">
           <button class="t-nav-back" onClick={goBack}>‹ Zurück</button>
