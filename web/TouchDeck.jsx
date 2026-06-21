@@ -288,8 +288,9 @@ function downsample(arr, target) {
   return out
 }
 
-function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute }) {
   const isWa = mon.type === 'winaudio_volume'
+  const isApp = mon.type === 'app_volume'
   const ttype = mon.target_type || 'mix'
   const targetId = mon.id || mon.target || ''
   const mixId = mon.mix_id || ''
@@ -301,11 +302,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
   const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
   const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
 
-  const st = isWa ? (wa || {}) : (state[targetId] || {})
+  const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
   const level = drag != null ? drag : baseLevel
   const muted = optMute != null ? optMute : !!st.muted
-  const mlvl = isWa ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
+  const mlvl = (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
   const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
   const accentDim = darken(accentHex, 0.34)
   const name = v.label || v.title || id
@@ -342,7 +343,8 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
     const t = Date.now()
     if (!force && t - sentRef.current < 45) return     // ~22 Hz drosseln
     sentRef.current = t
-    if (isWa) postJSON('/api/winaudio/volume', { level: lvl, device_id: dev || '' }).catch(() => {})
+    if (isApp) postJSON('/api/winaudio/app_volume', { proc: proc || '', level: lvl }).catch(() => {})
+    else if (isWa) postJSON('/api/winaudio/volume', { level: lvl, device_id: dev || '' }).catch(() => {})
     else postJSON('/api/wavelink/level', { target_type: ttype, id: targetId, level: lvl, mix_id: mixId }).catch(() => {})
   }
   // Tap vs. Drag NUR über Refs (kein State-Timing/Closure-Problem): „bewegt" = >4 px gegen die DOWN-
@@ -371,7 +373,8 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
       push(levelAt(e.clientY), true)                 // finalen Wert sicher senden
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
       setOptMute(!muted)
-      if (isWa) postJSON('/api/winaudio/mute', { device_id: dev || '' }).catch(() => {})
+      if (isApp) postJSON('/api/winaudio/app_mute', { proc: proc || '' }).catch(() => {})
+      else if (isWa) postJSON('/api/winaudio/mute', { device_id: dev || '' }).catch(() => {})
       else onMute()                                   // Wave Link: über den Button-Press (mix/channel_mute)
       setTimeout(() => setOptMute(null), 1500)
     }
@@ -386,7 +389,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
     segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
   }
   return (
-    <div class={'t-fader' + (muted ? ' muted' : '')} style={`--acc:${accentHex};--acc-dim:${accentDim}`}
+    <div class={'t-fader' + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '')} style={`--acc:${accentHex};--acc-dim:${accentDim}`}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>{name}</div>
       <div class="t-fader-body">
@@ -396,10 +399,61 @@ function Fader({ id, v, mon, meters, state, wa, dev, onMute }) {
         </div>
         <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
       </div>
-      <div class="t-fader-foot">{isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
+      <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {v.image
         ? <div class="t-fader-icon t-fader-img" title={name}><img src={v.image} alt="" /></div>
         : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null}
+    </div>
+  )
+}
+
+// Interaktives Audio-Mixer-Deck (deck.auto==='audio_mixer'): rendert LIVE den Windows-Master + je
+// laufendem Programm einen Fader (minus Ausblend-Liste). Pollt selbst (Liste ~1,5 s; Pegel ~90 ms) →
+// Programme erscheinen/verschwinden automatisch. Reine Panel-Schicht — nutzt dieselbe <Fader>-Kachel.
+// Master IMMER zuerst. Nicht manuell editierbar (kein statisches Item-Modell).
+function AudioMixer({ hidden, gridStyle, w, h }) {
+  const [apps, setApps] = useState([])
+  const [waSnap, setWaSnap] = useState({})       // '' = Windows-Master
+  const [appSnap, setAppSnap] = useState({})     // proc -> {available,level,muted,peak}
+  const hideKey = JSON.stringify((hidden || []).map((x) => String(x).toLowerCase()).sort())
+  // Live-Liste der tönenden Programme (minus Ausblend-Liste) — Apps erscheinen/verschwinden automatisch.
+  useEffect(() => {
+    const hide = new Set(JSON.parse(hideKey))
+    let alive = true
+    const poll = () => getJSON('/api/winaudio/sessions')
+      .then((d) => { if (alive) setApps((d.sessions || []).filter((s) => s.proc && !hide.has(String(s.proc).toLowerCase()))) })
+      .catch(() => {})
+    poll(); const iv = setInterval(poll, 1500)
+    return () => { alive = false; clearInterval(iv) }
+  }, [hideKey])
+  // Pegel/VU schnell: Master + jede sichtbare App.
+  const procKey = JSON.stringify(apps.map((a) => a.proc))
+  useEffect(() => {
+    let alive = true
+    const poll = () => {
+      getJSON('/api/winaudio/volume').then((d) => { if (alive) setWaSnap({ '': d || {} }) }).catch(() => {})
+      JSON.parse(procKey).forEach((p) => getJSON('/api/winaudio/app_volume?proc=' + encodeURIComponent(p))
+        .then((d) => { if (alive) setAppSnap((s) => ({ ...s, [p]: d || {} })) }).catch(() => {}))
+    }
+    poll(); const iv = setInterval(poll, 90)
+    return () => { alive = false; clearInterval(iv) }
+  }, [procKey])
+  const noop = () => {}
+  const fw = Math.max(1, Math.min(4, w || 1)), fh = Math.max(1, Math.min(4, h || 2))   // Fader-Spannweite (Felder), in der Kategorie einstellbar
+  const tileStyle = `background:var(--bg);grid-column:span ${fw};grid-row:span ${fh}`
+  return (
+    <div class="t-deck-grid" style={gridStyle + ';grid-auto-rows:var(--sd-size)'}>
+      <div class="t-key t-fader-key cqsize" style={tileStyle}>
+        <Fader id="__master__" v={{ label: 'Windows', color: '#34d39a' }} mon={{ type: 'winaudio_volume' }}
+               meters={{}} state={{}} wa={waSnap[''] || {}} dev="" onMute={noop} />
+      </div>
+      {apps.map((a) => (
+        <div key={a.proc} class="t-key t-fader-key cqsize" style={tileStyle}>
+          <Fader id={'app_' + a.proc} v={{ label: a.name || a.proc, color: '#a855f7' }} mon={{ type: 'app_volume' }}
+                 meters={{}} state={{}} app={appSnap[a.proc] || {}} proc={a.proc} onMute={noop} />
+        </div>
+      ))}
+      {!apps.length && <div class="t-empty" style="grid-column:1/-1;margin:14px auto;font-size:13px">Warte auf Programme mit Ton … (der Master links regelt die Windows-Gesamtlautstärke)</div>}
     </div>
   )
 }
@@ -471,6 +525,7 @@ export function TouchDeck() {
   const [wlMeters, setWlMeters] = useState({})       // Wave-Link VU-Pegel {id:0..1} (geteilter schneller Poll)
   const [wlState, setWlState] = useState({})         // Wave-Link {id:{level,muted}} (geteilter langsamer Poll)
   const [waSnap, setWaSnap] = useState({})           // Windows-Master {available,level,muted,peak} (geteilter Poll)
+  const [appSnap, setAppSnap] = useState({})         // App-Mixer pro Programm {proc:{available,level,muted,peak}} (geteilter Poll)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
   // Vollbild-Deck: nur das aktive Deck, Chrome weg. Beim Laden den LETZTEN Zustand wiederherstellen
@@ -513,12 +568,16 @@ export function TouchDeck() {
   // Fader-Kachel existiert. Wave Link: VU schnell + Level/Mute langsam. Windows-Master: ein Poll (der
   // Peak ändert schnell, Level/Mute kommen gratis mit). Quelle = der Monitor-Typ des Fader-Buttons.
   const faderMons = Object.entries(monById).filter(([fid]) => renderById[fid] === 'fader')
-  const hasWlFader = faderMons.some(([, m]) => (m || {}).type !== 'winaudio_volume')
+  const hasWlFader = faderMons.some(([, m]) => { const ty = (m || {}).type; return ty !== 'winaudio_volume' && ty !== 'app_volume' })
   // Windows-Volume-Fader können je auf ein anderes Gerät zeigen ('' = Standard) → pro DISTINKTEM Gerät ein Poll.
   // Das Gerät steht an der AKTION des Fader-Buttons (device_id), nicht am Monitor.
   const waDevices = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'winaudio_volume')
     .map(([fid]) => (actionById[fid] || {}).device_id || ''))]
   const waKey = JSON.stringify(waDevices)   // [] vs [''] MUSS sich unterscheiden — join('|') macht beide zu '', dann startet der Poll nie
+  // App-Mixer-Fader: pro DISTINKTEM Programm (app_proc, an der Aktion) ein Poll auf den App-Snapshot.
+  const appProcs = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'app_volume')
+    .map(([fid]) => (actionById[fid] || {}).app_proc || '').filter(Boolean))]
+  const appKey = JSON.stringify(appProcs)
   useEffect(() => {
     if (!hasWlFader) return
     let alive = true
@@ -544,6 +603,16 @@ export function TouchDeck() {
     const iv = setInterval(poll, 90)
     return () => { alive = false; clearInterval(iv) }
   }, [waKey])
+  useEffect(() => {
+    if (!appProcs.length) return
+    let alive = true
+    const poll = () => appProcs.forEach((proc) =>
+      getJSON('/api/winaudio/app_volume?proc=' + encodeURIComponent(proc))
+        .then((d) => { if (alive) setAppSnap((s) => ({ ...s, [proc]: d || {} })) }).catch(() => {}))
+    poll()
+    const iv = setInterval(poll, 90)
+    return () => { alive = false; clearInterval(iv) }
+  }, [appKey])
 
   // Vollbild: body-Klasse umschalten (die Host-Hülle blendet darüber ihre EIGENE Nav aus), Escape
   // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
@@ -694,7 +763,9 @@ export function TouchDeck() {
         <div key={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + (spanned ? ' spanned' : '')}
              style={'background:var(--bg)' + place}>
           <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState}
-                 dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}} onMute={() => onTap(id)} />
+                 dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
+                 proc={(actionById[id] || {}).app_proc || ''} app={appSnap[(actionById[id] || {}).app_proc || ''] || {}}
+                 onMute={() => onTap(id)} />
         </div>
       )
     }
@@ -762,7 +833,9 @@ export function TouchDeck() {
         <div class="t-deck-bar-min"><FsBtn /></div>
       )}
       <div class={'t-deck-body' + (slideDir > 0 ? ' t-slide-next' : slideDir < 0 ? ' t-slide-prev' : '')} key={shownId}>
-        {!(active.items || []).length
+        {active.auto === 'audio_mixer'
+          ? <AudioMixer hidden={active.mixer_hidden} gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} />
+          : !(active.items || []).length
           ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
           : freeMode ? (
             <div class="t-deck-grid t-deck-free" style={freeStyle}>

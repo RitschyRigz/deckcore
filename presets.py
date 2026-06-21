@@ -54,6 +54,13 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
                 "states": [_state("truthy", None, "🔊", name)],
                 "default": {"icon": "🔈", "title": name, "color": GREY}}
 
+    if t == "app_audio":
+        # App-Mixer: vertikaler Fader + Live-VU je Programm. Das Programm steht an der AKTION (app_proc);
+        # der Monitor liest es von dort → hier KEIN Programm im Monitor. Violett = App-Mixer-Identität.
+        return {"render": "fader",
+                "monitor": {"type": "app_volume"},
+                "states": [], "default": {"icon": "🎵", "title": "{value}%", "color": "#a855f7"}}
+
     # ── OBS (generisch) ──────────────────────────────────────────────────
     if t == "obs":
         sub = a.get("obs_action") or "scene"

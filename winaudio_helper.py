@@ -11,7 +11,11 @@ IPC = JSON-Zeilen über stdin/stdout (eine kompakte Zeile pro Nachricht):
   stdin  (Host → Helfer):  {"cmd":"watch","target":"<id>|"} · {"cmd":"set_volume","target":..,"level":0..100}
                            {"cmd":"set_mute","target":..,"muted":bool|null} · {"cmd":"set_default","device_id":..,"roles":[..]}
   stdout (Helfer → Host):  {"type":"state","available":bool,"default_id":str|null,"devices":[{id,name}],
-                            "snaps":{"<key>":{available,level,muted,peak,reason}}}   (~12 Hz)
+                            "sessions":[{id,name,proc}],"snaps":{"<key>":{available,level,muted,peak,reason}}}  (~12 Hz)
+
+Target-Keys: ``""`` = Standard-Render-Gerät · ``<device_id>`` = bestimmtes Gerät · ``app:<procname>`` =
+App-Audio-Session(s) eines Prozesses (App-Mixer, alle Sessions desselben Prozesses aggregiert) ·
+``@sessions`` = Sentinel, sammelt nur die App-Liste fürs Editor-Dropdown.
 
 ALLES COM läuft im Haupt-Loop-Thread (ein einziger STA). Der stdin-Reader-Thread macht KEIN COM.
 """
@@ -30,7 +34,12 @@ _RERESOLVE = 1.0         # s → Standard-Render-Gerät neu auflösen (folgt Wec
 _VOL_EVERY = 0.15        # s → Level/Mute nachlesen (selten); Peak jeden Tick
 _DEV_EVERY = 2.0         # s → Geräteliste neu lesen
 _DEF_EVERY = 1.0         # s → Standard-Gerät-ID neu lesen
+_SESS_EVERY = 1.0        # s → Audio-Sessions (App-Mixer) neu auflösen (GetAllSessions ist nicht billig)
 _TICK = 0.08             # s → Loop-/Sende-Rate (~12 Hz)
+
+# Sentinel-Watch-Key: sammelt NUR die Session-LISTE (App-Mixer-Dropdown/Generator), ohne eine
+# bestimmte App zu sampeln. Echte App-Targets sind ``app:<procname>`` (siehe sample()/sample_app()).
+_SESSIONS_KEY = "@sessions"
 
 _IPolicyConfig = None
 
@@ -68,6 +77,8 @@ class _Com:
 
     def __init__(self):
         self._ifaces = {}   # key ('' = Standard | device_id) -> {vol, meter, resolved, last_vol, err}
+        self._sess = {}     # procname(lower) -> {vols:[ISimpleAudioVolume], meters:[IAudioMeterInformation], last_vol, level, muted}
+        self._sessions = []  # zuletzt aufgelöste App-Liste [{id, name, proc}] (fürs Editor-Dropdown/Generator)
 
     # ── Lesen ──
     def default_id(self, role="multimedia"):
@@ -139,7 +150,10 @@ class _Com:
             return None, None, repr(e)
 
     def sample(self, key, want_id, now):
-        """Einen Target sampeln → {available, level, muted, peak, reason}. want_id = aufgelöste Geräte-ID."""
+        """Einen Target sampeln → {available, level, muted, peak, reason}. want_id = aufgelöste Geräte-ID.
+        ``app:<proc>`` → App-Audio-Session(s) (eigener Pfad); sonst Geräte-Endpunkt (Standard/bestimmtes)."""
+        if key.startswith("app:"):
+            return self.sample_app(key[4:].lower(), now)
         st = self._ifaces.setdefault(key, {"vol": None, "meter": None, "resolved": None,
                                             "last_vol": 0.0, "err": None, "level": None, "muted": None})
         if not want_id:
@@ -191,6 +205,131 @@ class _Com:
 
     def drop(self, key):
         self._ifaces.pop(key, None)
+        if key.startswith("app:"):
+            self._sess.pop(key[4:].lower(), None)
+
+    # ── App-Audio-Sessions (App-Mixer, ISimpleAudioVolume je App) ──
+    @staticmethod
+    def _nice_name(proc, display):
+        """Schöner App-Name: DisplayName, wenn brauchbar; sonst aus dem Prozessnamen abgeleitet.
+        Resource-Strings (``@%SystemRoot%\\…``) sind unbrauchbar → Prozessname (ohne .exe, kapitalisiert)."""
+        d = (display or "").strip()
+        if d and not d.startswith("@"):
+            return d
+        p = (proc or "").strip()
+        if p.lower().endswith(".exe"):
+            p = p[:-4]
+        return (p[:1].upper() + p[1:]) if p else "App"
+
+    def collect_sessions(self, procs, want_list):
+        """EIN ``GetAllSessions()`` → optional die App-LISTE bauen (``want_list``) UND die Interface-
+        Caches der gewünschten ``procs`` (lowercase) auffrischen (= folgt neuen/geschlossenen Sessions).
+        Sessions OHNE Prozess (System-Sounds) werden übersprungen."""
+        try:
+            from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sessions = AudioUtilities.GetAllSessions()
+        except Exception:  # noqa: BLE001
+            if want_list:
+                self._sessions = []
+            return
+        by_proc = {}   # key(lower) -> {vols, meters, name, proc}
+        order = []
+        for s in sessions:
+            try:
+                p = s.Process
+                proc = (p.name() if p else "") or ""
+            except Exception:  # noqa: BLE001
+                proc = ""
+            if not proc:
+                continue
+            key = proc.lower()
+            ent = by_proc.get(key)
+            if ent is None:
+                ent = by_proc[key] = {"vols": [], "meters": [], "name": None, "proc": proc}
+                order.append(key)
+            if ent["name"] is None:
+                try:
+                    ent["name"] = self._nice_name(proc, s.DisplayName)
+                except Exception:  # noqa: BLE001
+                    ent["name"] = self._nice_name(proc, "")
+            if key in procs:   # Interfaces nur für gewatchte Apps holen (billig halten)
+                try:
+                    ent["vols"].append(s.SimpleAudioVolume)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    ent["meters"].append(s._ctl.QueryInterface(IAudioMeterInformation))
+                except Exception:  # noqa: BLE001
+                    pass
+        if want_list:
+            self._sessions = [{"id": "app:" + by_proc[k]["proc"], "name": by_proc[k]["name"],
+                               "proc": by_proc[k]["proc"]} for k in order]
+        for key in procs:
+            st = self._sess.setdefault(key, {"vols": [], "meters": [], "last_vol": 0.0,
+                                             "level": None, "muted": None})
+            ent = by_proc.get(key)
+            st["vols"] = ent["vols"] if ent else []      # leer = App spielt gerade nichts (Interfaces fallen weg)
+            st["meters"] = ent["meters"] if ent else []
+
+    def has_app(self, proc):
+        st = self._sess.get(proc)
+        return bool(st and st.get("meters"))
+
+    def sample_app(self, proc, now):
+        st = self._sess.get(proc)
+        if st is None:
+            return {"available": False, "level": None, "muted": None, "peak": 0.0, "reason": "wird aufgelöst …"}
+        if not st.get("meters"):
+            return {"available": False, "level": None, "muted": None, "peak": 0.0,
+                    "reason": "App spielt gerade keinen Ton"}
+        peak, dead = 0.0, False
+        for mt in st["meters"]:
+            try:
+                v = float(mt.GetPeakValue())
+                if v > peak:
+                    peak = v
+            except Exception:  # noqa: BLE001
+                dead = True
+        if dead:                          # Session ist weg → Neuauflösung beim nächsten collect erzwingen
+            st["vols"] = st["meters"] = []
+        if st.get("vols") and (now - st.get("last_vol", 0.0)) > _VOL_EVERY:
+            try:
+                st["level"] = round(float(st["vols"][0].GetMasterVolume()) * 100)
+                st["muted"] = bool(st["vols"][0].GetMute())
+                st["last_vol"] = now
+            except Exception:  # noqa: BLE001
+                st["vols"] = []
+        return {"available": True, "peak": 0.0 if peak < 0 else 1.0 if peak > 1 else peak,
+                "reason": None, "level": st.get("level"), "muted": st.get("muted")}
+
+    def set_app_volume(self, proc, level_0_100):
+        st = self._sess.get(proc)
+        if not st or not st.get("vols"):
+            return
+        lvl = max(0.0, min(1.0, float(level_0_100) / 100.0))
+        for v in list(st["vols"]):
+            try:
+                v.SetMasterVolume(lvl, None)
+            except Exception:  # noqa: BLE001
+                st["vols"] = st["meters"] = []
+                break
+
+    def set_app_mute(self, proc, muted):
+        st = self._sess.get(proc)
+        if not st or not st.get("vols"):
+            return
+        try:
+            m = bool(muted) if muted is not None else (not bool(st["vols"][0].GetMute()))
+        except Exception:  # noqa: BLE001
+            m = bool(muted) if muted is not None else True
+        for v in list(st["vols"]):
+            try:
+                v.SetMute(m, None)
+            except Exception:  # noqa: BLE001
+                st["vols"] = st["meters"] = []
+                break
 
 
 def main() -> int:
@@ -223,13 +362,14 @@ def main() -> int:
     com = _Com()
     watched = {}        # key -> last_watch ts
     devices = []
+    sessions = []
     default_id = None
-    last_dev = last_def = 0.0
+    last_dev = last_def = last_sess = 0.0
     available = None    # None bis zum ersten Lib-Check
 
     def emit(snaps):
         msg = {"type": "state", "available": bool(available), "default_id": default_id,
-               "devices": devices, "snaps": snaps}
+               "devices": devices, "sessions": sessions, "snaps": snaps}
         try:
             sys.stdout.write(json.dumps(msg) + "\n")
             sys.stdout.flush()
@@ -280,11 +420,27 @@ def main() -> int:
         for k in [k for k, ts in watched.items() if now - ts > _WATCH_IDLE]:
             watched.pop(k, None); com.drop(k)
 
+        # App-Audio-Sessions (App-Mixer): @sessions = nur die Liste sammeln; app:<proc> = diese Apps
+        # sampeln. EIN GetAllSessions/Sekunde — außer eine NEUE App oder ein App-Set wartet (dann sofort,
+        # damit die Interfaces offen sind und schon der erste Fader-Zug/Mute sitzt).
+        app_procs = {k[4:].lower() for k in watched if k.startswith("app:")}
+        want_list = _SESSIONS_KEY in watched
+        if app_procs or want_list:
+            app_set = any(k.startswith("app:") for _, k, _ in sets)
+            if app_set or any(not com.has_app(p) for p in app_procs) or (now - last_sess) > _SESS_EVERY:
+                com.collect_sessions(app_procs, want_list); last_sess = now
+                sessions = com._sessions
+
         snaps = {}
         for k in list(watched.keys()):
+            if k == _SESSIONS_KEY:
+                continue                                     # reiner Listen-Trigger, kein Sampling-Target
             snaps[k] = com.sample(k, k or default_id, now)   # öffnet/hält die Interfaces
         for cmd, k, c in sets:                                # Interfaces sind jetzt offen
-            if cmd == "set_volume":
+            if k.startswith("app:"):
+                proc = k[4:].lower()
+                com.set_app_volume(proc, c.get("level", 0)) if cmd == "set_volume" else com.set_app_mute(proc, c.get("muted"))
+            elif cmd == "set_volume":
                 com.set_volume(k, c.get("level", 0))
             else:
                 com.set_mute(k, c.get("muted"))

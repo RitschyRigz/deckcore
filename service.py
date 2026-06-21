@@ -621,6 +621,7 @@ class DeckCoreService:
         A("open_deck", self._act_open_deck)
         A("wavelink", self._act_wavelink)
         A("winaudio", self._act_winaudio)
+        A("app_audio", self._act_app_audio)
         A("obsbot", self._act_obsbot)
         M("none", self._mon_none)
         M("flag", self._mon_flag)
@@ -639,6 +640,7 @@ class DeckCoreService:
         M("wavelink_main_output", self._mon_wavelink_main_output)
         M("winaudio_default", self._mon_winaudio_default)
         M("winaudio_volume", self._mon_winaudio_volume)
+        M("app_volume", self._mon_app_volume)
         M("obsbot_cam", self._mon_obsbot_cam)
         M("obsbot_track", self._mon_obsbot_track)
 
@@ -765,7 +767,7 @@ class DeckCoreService:
                 labels = {"osc_silent": "Center läuft, aber OSC aus/stumm", "plugin_only":
                           "nur Elgato-Plugin (kein OSC)", "no_app": "OBSBOT Center läuft nicht"}
                 return {"state": "off", "detail": labels.get(st, "nicht erreichbar")}
-            if iid == "base":
+            if iid == "audio":
                 ok = bool((self.winaudio_status() or {}).get("available"))
                 return {"state": "ok", "detail": "Windows-Audio steuerbar" if ok else "Windows-Audio nicht steuerbar"}
         except Exception as e:  # noqa: BLE001
@@ -878,9 +880,15 @@ class DeckCoreService:
                         "groups": [{"key": "functions", "label": "Funktionen je Kamera", "items": [
                             {"id": "presets", "label": "Positions-Presets"}, {"id": "center", "label": "Zentrieren"},
                             {"id": "wake", "label": "Wake/Sleep"}, {"id": "track", "label": "Tracking-Toggle"}]}]}
-            if iid == "base":
-                groups = [{"key": "audio", "label": "Windows-Audio",
+            if iid == "audio":
+                groups = [{"key": "audio", "label": "Windows-Lautstärke (Master-Fader)",
                            "items": [{"id": "volume", "label": "Windows-Lautstärke-Fader"}]}]
+                apps = (self.audio_sessions() or {}).get("sessions") or []
+                if apps:
+                    groups.append({"key": "apps",
+                                   "label": "App-Lautstärke — je Programm ein Fader (App-Mixer)",
+                                   "items": [{"id": str(a.get("proc")), "label": str(a.get("name") or a.get("proc"))}
+                                             for a in apps if a.get("proc")]})
                 devs = (self.winaudio_devices() or {}).get("devices") or []
                 if devs:
                     groups.append({"key": "devices",
@@ -973,8 +981,8 @@ class DeckCoreService:
             return "displayfusion"
         if s.startswith("obsbot_c"):
             return "obsbot"
-        if s == "wa_master" or s.startswith("wa_dev_"):
-            return "base"
+        if s == "wa_master" or s.startswith(("wa_dev_", "app_")):
+            return "audio"
         if s.startswith("folder_"):
             return "folders"
         return ""
@@ -1000,9 +1008,11 @@ class DeckCoreService:
             return "pm_" + str(item_id)
         if iid == "displayfusion" and gk == "profiles":
             return "df_" + s
-        if iid == "base" and gk == "audio" and str(item_id) == "volume":
+        if iid == "audio" and gk == "audio" and str(item_id) == "volume":
             return "wa_master"
-        if iid == "base" and gk == "devices":
+        if iid == "audio" and gk == "apps":
+            return "app_" + s
+        if iid == "audio" and gk == "devices":
             return "wa_dev_" + s
         if iid == "folders" and gk == "folders":
             return "folder_" + s
@@ -1148,12 +1158,23 @@ class DeckCoreService:
                     for bid in [b.get("id") for b in self._buttons]:
                         if bid.startswith("obsbot_c") and bid.endswith(_drop) and self._pool_remove(bid):
                             removed += 1
-            elif iid == "base":
+            elif iid == "audio":
                 if "volume" in groups.get("audio", []):
                     _u({"id": "wa_master", "label": "Windows-Lautstärke", "render": "fader",
                         "action": {"type": "winaudio", "wa_action": "toggle_mute"},
                         "monitor": {"type": "winaudio_volume"}, "states": [],
                         "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}, "Audio")
+                want_apps = set(str(x) for x in groups.get("apps", []))
+                if want_apps:
+                    for a in ((self.audio_sessions() or {}).get("sessions") or []):
+                        proc = str(a.get("proc") or "")
+                        if not proc or proc not in want_apps:
+                            continue
+                        nm = str(a.get("name") or proc)
+                        _u({"id": "app_" + _slug(proc), "label": nm, "render": "fader",
+                            "action": {"type": "app_audio", "aa_action": "toggle_mute", "app_proc": proc},
+                            "monitor": {"type": "app_volume"}, "states": [],
+                            "default": {"icon": "🎵", "title": "{value}%", "color": "#a855f7"}}, "App-Lautstärke")
                 want_devs = set(str(x) for x in groups.get("devices", []))
                 if want_devs:
                     for d in ((self.winaudio_devices() or {}).get("devices") or []):
@@ -1512,10 +1533,22 @@ class DeckCoreService:
             si = self._sanitize_item(it, valid_ids, iseen)
             if si:
                 items.append(si)
-        return {"id": did, "label": str(d.get("label") or did).strip() or did,
-                "icon": str(d.get("icon") or "🎛"), "folder": bool(d.get("folder")),
-                "layout": self._sanitize_layout(d.get("layout") or {}, _LAYOUT_DEFAULT),
-                "categories": cats, "items": items}
+        out = {"id": did, "label": str(d.get("label") or did).strip() or did,
+               "icon": str(d.get("icon") or "🎛"), "folder": bool(d.get("folder")),
+               "layout": self._sanitize_layout(d.get("layout") or {}, _LAYOUT_DEFAULT),
+               "categories": cats, "items": items}
+        # Interaktives Auto-Deck (z.B. „audio_mixer") + dessen Ausblend-Liste (procnames) erhalten —
+        # sonst strippt der Sanitizer beim Laden den Deck-Typ und es wird ein normales (leeres) Deck.
+        if d.get("auto"):
+            out["auto"] = str(d.get("auto"))
+            mh = [str(x).lower() for x in (d.get("mixer_hidden") or []) if str(x).strip()]
+            if mh:
+                out["mixer_hidden"] = sorted(set(mh))
+            for k in ("mixer_w", "mixer_h"):       # Fader-Spannweite im Mixer-Deck (1..4 Felder)
+                v = d.get(k)
+                if isinstance(v, int) and 1 <= v <= 4:
+                    out[k] = v
+        return out
 
     def _sanitize_decks(self, decks, valid_ids: set) -> list[dict]:
         out, seen = [], set()
@@ -1621,6 +1654,64 @@ class DeckCoreService:
         if opener:
             out["opener"] = opener
         return out
+
+    # ── Interaktives Audio-Mixer-Deck (Deck-Typ auto='audio_mixer', live-getrieben) ──
+    def audio_mixer_status(self) -> dict:
+        """{enabled, hidden:[procname,…], w, h} des interaktiven Audio-Mixer-Decks (w/h = Fader-Spannweite)."""
+        d = self._deck("audio_mixer")
+        return {"enabled": bool(d and d.get("auto") == "audio_mixer"),
+                "hidden": list((d or {}).get("mixer_hidden") or []),
+                "w": int((d or {}).get("mixer_w") or 1), "h": int((d or {}).get("mixer_h") or 2)}
+
+    def set_audio_mixer(self, enabled: bool) -> dict:
+        """Interaktives Audio-Mixer-Deck an/aus. AN: legt ein Deck „🔊 Audio Mixer" mit auto='audio_mixer'
+        an — das Panel rendert darin LIVE den Master + alle tönenden Programme (nichts manuell platziert),
+        Programme kommen/gehen automatisch. AUS: entfernt das Deck. Idempotent (feste id 'audio_mixer')."""
+        did = "audio_mixer"
+        d = self._deck(did)
+        if enabled:
+            if not d:
+                deck = self._fresh_deck(did, "Audio Mixer", "🔊", False)
+                deck["auto"] = "audio_mixer"
+                deck["layout"] = {**deck["layout"], "button_size": 120}   # etwas größer für Fader (frei justierbar)
+                self._decks.append(deck)
+            elif d.get("auto") != "audio_mixer":
+                d["auto"] = "audio_mixer"
+        elif d:
+            self._decks = [x for x in self._decks if x["id"] != did]
+        self._save(); self._publish_cfg()
+        return {"ok": True, **self.audio_mixer_status()}
+
+    def set_audio_mixer_hidden(self, proc: str, hidden: bool = True) -> dict:
+        """Ein Programm im interaktiven Mixer dauerhaft aus-/einblenden (Ausblend-Liste am Deck).
+        Abgewählte Programme tauchen im Live-Mixer nicht mehr auf, bis wieder eingeblendet."""
+        d = self._deck("audio_mixer")
+        if not d:
+            return {"ok": False, "reason": "kein Audio-Mixer-Deck"}
+        p = str(proc or "").lower()
+        if not p:
+            return {"ok": False, "reason": "kein Programm"}
+        cur = set(str(x).lower() for x in (d.get("mixer_hidden") or []))
+        cur.add(p) if hidden else cur.discard(p)
+        if cur:
+            d["mixer_hidden"] = sorted(cur)
+        else:
+            d.pop("mixer_hidden", None)
+        self._save(); self._publish_cfg()
+        return {"ok": True, **self.audio_mixer_status()}
+
+    def set_audio_mixer_size(self, w=None, h=None) -> dict:
+        """Fader-Spannweite im interaktiven Mixer-Deck setzen (Felder, 1..4): ``w`` Breite, ``h`` Höhe.
+        So macht man die Fader z.B. 1×3 (schmal+hoch) statt nur 1×1."""
+        d = self._deck("audio_mixer")
+        if not d:
+            return {"ok": False, "reason": "kein Audio-Mixer-Deck"}
+        if w is not None:
+            d["mixer_w"] = max(1, min(4, int(w)))
+        if h is not None:
+            d["mixer_h"] = max(1, min(4, int(h)))
+        self._save(); self._publish_cfg()
+        return {"ok": True, **self.audio_mixer_status()}
 
     def _prune_dangling_openers(self) -> int:
         """Entfernt „Ordner öffnen"-Buttons (open_deck), deren Ziel-Deck nicht (mehr) existiert.
@@ -2473,6 +2564,24 @@ class DeckCoreService:
         """Master-Mute setzen/umschalten (``muted=None`` = toggle)."""
         return self._winaudio.set_master_mute(muted, device_id or None)
 
+    # ── App-Mixer: Lautstärke/Mute/VU je Programm (ISimpleAudioVolume) ──
+    def audio_sessions(self) -> dict:
+        """Aktive App-Audio-Sessions ``{available, sessions:[{id,name,proc}]}`` fürs Editor-Dropdown
+        (app_audio-Action / app_volume-Monitor) + den App-Mixer-Generator. Leer, wenn nichts spielt."""
+        return {"available": self._winaudio.available(), "sessions": self._winaudio.audio_sessions() or []}
+
+    def app_volume(self, proc: str) -> dict:
+        """{available, level(0..100), muted, peak(0..1)} eines Programms — die Fader-Kachel pollt das schnell."""
+        return self._winaudio.app_snapshot(proc)
+
+    def app_set_volume(self, proc: str, level) -> dict:
+        """App-Lautstärke (0..100) setzen — stufenloser Fader."""
+        return self._winaudio.app_set_volume(proc, level)
+
+    def app_set_mute(self, proc: str, muted=None) -> dict:
+        """App-Mute setzen/umschalten (``muted=None`` = toggle)."""
+        return self._winaudio.app_set_mute(proc, muted)
+
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
                                         active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button im POOL (Funktion) + Item im Ziel-Deck.
@@ -2866,6 +2975,23 @@ class DeckCoreService:
             return self._winaudio.set_master_mute(None, device_id)
         return {"success": False, "message": f"Unbekannte wa_action: {sub}"}
 
+    def _act_app_audio(self, action: dict, btn: dict) -> dict:
+        # App-Mixer: Lautstärke/Mute EINES Programms (alle seine Audio-Sessions). Das Programm steht an
+        # der AKTION (app_proc, z.B. „spotify.exe"). Der STUFENLOSE Fader zieht über /api/winaudio/
+        # app_volume — der diskrete Druck (auch Hardware) läuft hier: absolut ``level``/relativ ``delta``,
+        # sonst (default) Mute toggeln.
+        proc = str(action.get("app_proc") or "")
+        if not proc:
+            return {"success": False, "message": "Kein Programm gewählt"}
+        sub = str(action.get("aa_action") or "toggle_mute")
+        if sub == "set_volume":
+            delta = action.get("delta")
+            if delta is not None:
+                cur = self._winaudio.app_snapshot(proc).get("level")
+                return self._winaudio.app_set_volume(proc, (cur or 0) + float(delta))
+            return self._winaudio.app_set_volume(proc, float(action.get("level", 0)))
+        return self._winaudio.app_set_mute(proc, None)   # toggle_mute (default)
+
     # (host-spezifische Aktions-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)
 
@@ -2880,11 +3006,11 @@ class DeckCoreService:
             pass
         _ACTION_ORDER = ["process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
                          "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
-                         "obsbot", "wavelink", "winaudio", "events_action", "none"]
+                         "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
-                          "winaudio_default", "winaudio_volume", "obs_source_visible", "obs_scene",
+                          "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
@@ -3182,6 +3308,15 @@ class DeckCoreService:
             if not dev:
                 return None                        # benanntes Gerät gerade nicht aktiv
         return self._winaudio.master_volume(dev)
+
+    def _mon_app_volume(self, mon: dict, btn: dict) -> Any:
+        # Aktueller App-Reglerstand (0..100) — Knopf-Stellung + {value}-Titel. Das PROGRAMM steht an der
+        # AKTION (app_proc); Monitor-Feld = Fallback. Live-VU + schneller Stand: /api/winaudio/app_volume.
+        a = btn.get("action") or {}
+        proc = str(a.get("app_proc") or mon.get("app_proc") or "")
+        if not proc:
+            return None
+        return self._winaudio.app_snapshot(proc).get("level")
 
     # (host-spezifische Monitor-Handler leben in der Hülle und werden
     #  über _register_extra_handlers() registriert.)

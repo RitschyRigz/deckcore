@@ -514,3 +514,7 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 .t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
 .t-fader.muted .t-fader-knob { background: #9aa1ad; box-shadow: none; }
 .t-fader.muted .t-fader-foot { color: #ff8a8a; opacity: .95; }
+/* App-Fader, dessen Programm gerade NICHT läuft (kein Audio-Stream) → ausgegraut/inaktiv. */
+.t-fader.off { filter: grayscale(1) brightness(.5); opacity: .5; }
+.t-fader.off .t-fader-knob { background: #9aa1ad; box-shadow: none; }
+.t-fader.off .t-fader-foot { color: var(--muted, #8a909c); opacity: .9; }

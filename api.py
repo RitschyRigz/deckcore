@@ -295,6 +295,31 @@ def build_streamdeck_router(
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)
 
+    # ── Interaktives Audio-Mixer-Deck (Deck-Typ auto='audio_mixer', rendert live) ─────────
+    @r.get("/api/streamdeck/audio_mixer")
+    def streamdeck_audio_mixer_status(request: Request) -> JSONResponse:
+        """{enabled, hidden:[procname,…]} des interaktiven Audio-Mixer-Decks."""
+        return JSONResponse(get_service(request).audio_mixer_status())
+
+    @r.post("/api/streamdeck/audio_mixer")
+    def streamdeck_audio_mixer(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Interaktives Audio-Mixer-Deck an/aus. {enabled:true|false} → legt das Deck an / entfernt es."""
+        return JSONResponse(get_service(request).set_audio_mixer(bool((body or {}).get("enabled"))))
+
+    @r.post("/api/streamdeck/audio_mixer/hide")
+    def streamdeck_audio_mixer_hide(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Programm im Mixer dauerhaft aus-/einblenden (Ausblend-Liste). {proc, hidden:true|false}"""
+        b = body or {}
+        if not b.get("proc"):
+            raise HTTPException(status_code=400, detail="proc erforderlich")
+        return JSONResponse(get_service(request).set_audio_mixer_hidden(b.get("proc", ""), bool(b.get("hidden", True))))
+
+    @r.post("/api/streamdeck/audio_mixer/size")
+    def streamdeck_audio_mixer_size(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Fader-Spannweite im Mixer-Deck (Felder 1..4). {w?, h?}"""
+        b = body or {}
+        return JSONResponse(get_service(request).set_audio_mixer_size(b.get("w"), b.get("h")))
+
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Button-Pool-Ansicht ──
     @r.post("/api/streamdeck/generate/displayfusion")
     def streamdeck_generate_df(request: Request) -> JSONResponse:
@@ -416,6 +441,35 @@ def build_streamdeck_router(
         """Master-Mute setzen/umschalten. {muted?, device_id?} (muted weglassen = toggle)."""
         b = body or {}
         return JSONResponse(get_service(request).winaudio_set_mute(b.get("muted"), b.get("device_id", "")))
+
+    # ── App-Mixer: Lautstärke/Mute/VU je Programm (ISimpleAudioVolume) ─────
+    @r.get("/api/winaudio/sessions")
+    def winaudio_sessions(request: Request) -> JSONResponse:
+        """Aktive App-Audio-Sessions {available, sessions:[{id,name,proc}]} fürs Editor-Dropdown
+        (app_audio-Action / app_volume-Monitor) + App-Mixer-Generator."""
+        return JSONResponse(get_service(request).audio_sessions())
+
+    @r.get("/api/winaudio/app_volume")
+    def winaudio_app_volume(request: Request) -> JSONResponse:
+        """{available, level(0..100), muted, peak(0..1)} eines Programms — die Fader-Kachel pollt das
+        schnell fürs Live-VU + den Reglerstand. ``?proc=<procname>`` (z.B. spotify.exe)."""
+        return JSONResponse(get_service(request).app_volume(request.query_params.get("proc") or ""))
+
+    @r.post("/api/winaudio/app_volume")
+    def winaudio_app_set_volume(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Stufenloser App-Fader: Lautstärke (0..100) eines Programms setzen. {proc, level}"""
+        b = body or {}
+        if "level" not in b or not b.get("proc"):
+            raise HTTPException(status_code=400, detail="proc und level erforderlich")
+        return JSONResponse(get_service(request).app_set_volume(b.get("proc", ""), b.get("level")))
+
+    @r.post("/api/winaudio/app_mute")
+    def winaudio_app_set_mute(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """App-Mute setzen/umschalten. {proc, muted?} (muted weglassen = toggle)."""
+        b = body or {}
+        if not b.get("proc"):
+            raise HTTPException(status_code=400, detail="proc erforderlich")
+        return JSONResponse(get_service(request).app_set_mute(b.get("proc", ""), b.get("muted")))
 
     @r.post("/api/streamdeck/preset")
     def streamdeck_preset(request: Request, body: dict = Body(...)) -> JSONResponse:

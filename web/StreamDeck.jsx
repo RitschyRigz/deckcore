@@ -35,6 +35,7 @@ const ACTION_LABELS = {
   obsbot: '📷 OBSBOT-Kamera (Tiny/Meet — Gimbal/Zoom/Tracking/Preset/Wake)',
   wavelink: '🎚 Wave Link (Mix/Channel: Mute / Level / Main-Output)',
   winaudio: '🔊 Windows-Standardgerät setzen (Ausgabe umschalten)',
+  app_audio: '🎵 App-Lautstärke (pro Programm: Spotify · Spiel · Discord …)',
   flag_toggle: '🚩 Flag umschalten (Fortgeschritten)',
   flag_set: '📌 Flag setzen (Fortgeschritten)',
   http: '🌐 HTTP-Aufruf (Fortgeschritten)',
@@ -58,6 +59,7 @@ const MONITOR_LABELS = {
   displayfusion_profile: 'Welches DisplayFusion-Profil ist aktiv? (Profilname)',
   winaudio_default: 'Ist dieses Gerät das Windows-Standard-Ausgabegerät? (an/aus)',
   winaudio_volume: 'Windows-Lautstärke (0..100) — Master-Regler + VU',
+  app_volume: 'App-Lautstärke (0..100) — pro Programm, Fader + VU',
 }
 const MONITOR_INFO = {
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
@@ -76,6 +78,7 @@ const MONITOR_INFO = {
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
   winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
   winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
+  app_volume: { text: 'Liefert die Lautstärke (0..100) EINES Programms (App-Mixer, wie der Windows-Lautstärkemixer). Das Programm wählst du an der Aktion „🎵 App-Lautstärke". Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
   wavelink_main_output: { text: 'Zeigt den aktiven Wave-Link-Monitor-Hauptausgang. Einfach „{value}" in den Titel setzen → der Button zeigt live den GERÄTE-NAMEN (keine Status-Regel, kein Gerät-Wählen nötig). Tipp: Darstellung „🪪 Status-Karte" → Rahmen + Glow + automatisch passendes Emoji je Quelle (🎧 Kopfhörer · 🔊 Boxen · 📺 HDMI/TV).', values: null, bool: false },
 }
 const OP_LABELS = {
@@ -1195,24 +1198,33 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
 }
 
 // 🎚 Eingabequelle eines Faders wählen/umhängen — lädt die LIVE Wave-Link-Quellen (Mixes/Channels)
-// + Windows-Lautstärke und schreibt action + monitor + label der bestehenden Kachel um. Erkennt
-// verwaiste Quellen (id nicht mehr in der Live-Liste, z. B. nach Geräte-Neuzuordnung durch Windows).
+// + Windows-Lautstärke + App-Lautstärken (App-Mixer) und schreibt action + monitor + label der
+// bestehenden Kachel um. Erkennt verwaiste Quellen (id nicht mehr in der Live-Liste, z. B. nach
+// Geräte-Neuzuordnung durch Windows oder weil ein Programm gerade keinen Ton ausgibt).
 function FaderSource({ b, onPick }) {
   const [src, setSrc] = useState(null)
+  const [apps, setApps] = useState([])
   useEffect(() => {
     let off = false
     fetch('/api/wavelink/state').then((r) => r.json()).then((d) => { if (!off) setSrc(d || {}) }).catch(() => { if (!off) setSrc({}) })
+    fetch('/api/winaudio/sessions').then((r) => r.json()).then((d) => { if (!off) setApps(d.sessions || []) }).catch(() => {})
     return () => { off = true }
   }, [])
   const a = b.action || {}, m = b.monitor || {}
   const isWa = m.type === 'winaudio_volume' || a.type === 'winaudio'
-  const curId = isWa ? '__wa__' : (m.id || a.mix_id || a.channel_id || '')
+  const isApp = m.type === 'app_volume' || a.type === 'app_audio'
+  const curId = isWa ? '__wa__' : isApp ? ('app:' + (a.app_proc || '')) : (m.id || a.mix_id || a.channel_id || '')
   const mixes = (src && src.mixes) || [], channels = (src && src.channels) || []
-  const known = isWa || (!!curId && (mixes.some((x) => x.id === curId) || channels.some((x) => x.id === curId)))
+  const known = isWa || (isApp && apps.some((x) => ('app:' + x.proc) === curId))
+    || (!!curId && (mixes.some((x) => x.id === curId) || channels.some((x) => x.id === curId)))
   const orphan = !!curId && !known
   const pick = (val) => {
     if (val === '__none__') return
     if (val === '__wa__') { onPick({ action: { type: 'winaudio', wa_action: 'toggle_mute' }, monitor: { type: 'winaudio_volume' }, label: 'Windows-Lautstärke' }); return }
+    if (val.indexOf('app:') === 0) {
+      const proc = val.slice(4), ap = apps.find((x) => x.proc === proc)
+      onPick({ action: { type: 'app_audio', aa_action: 'toggle_mute', app_proc: proc }, monitor: { type: 'app_volume' }, label: ap ? ap.name : proc }); return
+    }
     const mix = mixes.find((x) => x.id === val)
     if (mix) { onPick({ action: { type: 'wavelink', wl_action: 'mix_mute', mix_id: mix.id }, monitor: { type: 'wavelink_level', target_type: 'mix', id: mix.id }, label: mix.name }); return }
     const ch = channels.find((x) => x.id === val)
@@ -1220,20 +1232,21 @@ function FaderSource({ b, onPick }) {
   }
   return (
     <div class="sd-block">
-      <p class="sd-block-h">🎚 Eingabequelle <span class="muted">— welche Wave-Link-Quelle / Windows-Lautstärke dieser Fader regelt (hier umhängen, falls Windows neu zuordnet)</span></p>
+      <p class="sd-block-h">🎚 Eingabequelle <span class="muted">— welche Wave-Link-Quelle / Windows- oder App-Lautstärke dieser Fader regelt (hier umhängen, falls Windows neu zuordnet)</span></p>
       <div class="reward-row">
         <select class="reward-input" value={known ? curId : '__none__'} onChange={(e) => pick(e.currentTarget.value)}>
           <option value="__none__">{orphan ? '⚠ Quelle verloren — neu wählen …' : '— Eingabequelle wählen …'}</option>
           <option value="__wa__">🔊 Windows-Hauptlautstärke</option>
           {mixes.length > 0 && <optgroup label="Wave Link · Mixes">{mixes.map((x) => <option value={x.id}>{x.name}</option>)}</optgroup>}
           {channels.length > 0 && <optgroup label="Wave Link · Channels">{channels.map((x) => <option value={x.id}>{x.name}</option>)}</optgroup>}
+          {apps.length > 0 && <optgroup label="App-Lautstärke (App-Mixer)">{apps.map((x) => <option value={'app:' + x.proc}>{x.name}</option>)}</optgroup>}
         </select>
         {src === null && <span class="muted" style="font-size:12px;margin-left:6px">lädt …</span>}
       </div>
       {src && mixes.length === 0 && channels.length === 0
-        ? <p class="muted sd-help" style="margin:4px 0 0">Wave Link nicht verbunden — nur „Windows-Hauptlautstärke" wählbar. Verbindung im OBS/Wave-Link-Tab prüfen.</p>
+        ? <p class="muted sd-help" style="margin:4px 0 0">Wave Link nicht verbunden — „Windows-Hauptlautstärke" + laufende App-Lautstärken wählbar. Wave-Link-Verbindung im OBS/Wave-Link-Tab prüfen.</p>
         : orphan
-          ? <p class="msg err" style="font-size:12px;margin:4px 0 0">Die bisherige Quelle gibt's in Wave Link nicht mehr (Gerät neu zugeordnet?). Wähl oben die neue — der Fader wird umgehängt, ohne neu zu erzeugen.</p>
+          ? <p class="msg err" style="font-size:12px;margin:4px 0 0">Die bisherige Quelle gibt's gerade nicht (Gerät neu zugeordnet oder Programm ohne Ton?). Wähl oben die neue — der Fader wird umgehängt, ohne neu zu erzeugen.</p>
           : null}
     </div>
   )
@@ -1478,6 +1491,72 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
 }
 
 // Panel der gewählten Integration: Status + An/Aus + live ausgelesene Elemente zum Ankreuzen + Generieren.
+// Steuerung des interaktiven Audio-Mixer-Decks (nur in der „🔊 Windows Audio"-Kategorie): Toggle legt
+// ein Live-Deck an/entfernt es; darunter eine Ausblend-Liste (abwählen = Programm dauerhaft aus dem
+// Mixer nehmen). Das Deck selbst rendert das Panel live (deck.auto==='audio_mixer').
+function AudioMixerControl({ onReload }) {
+  const [st, setSt] = useState(null)        // {enabled, hidden:[procname]}
+  const [apps, setApps] = useState([])
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    getJSON('/api/streamdeck/audio_mixer').then(setSt).catch(() => setSt({ enabled: false, hidden: [] }))
+    let alive = true
+    const poll = () => getJSON('/api/winaudio/sessions').then((d) => { if (alive) setApps(d.sessions || []) }).catch(() => {})
+    poll(); const iv = setInterval(poll, 2000)   // pollen, nicht einmalig — fängt den Helfer-Warmup + neue Apps
+    return () => { alive = false; clearInterval(iv) }
+  }, [])
+  const toggle = () => {
+    setBusy(true)
+    postJSON('/api/streamdeck/audio_mixer', { enabled: !(st && st.enabled) })
+      .then((r) => { setSt(r); onReload && onReload() }).catch(() => {}).then(() => setBusy(false))
+  }
+  const hidden = new Set(((st && st.hidden) || []).map((x) => String(x).toLowerCase()))
+  const flipHide = (proc) => postJSON('/api/streamdeck/audio_mixer/hide',
+    { proc, hidden: !hidden.has(String(proc).toLowerCase()) }).then(setSt).catch(() => {})
+  const setSize = (patch) => postJSON('/api/streamdeck/audio_mixer/size', patch).then(setSt).catch(() => {})
+  const goneHidden = [...hidden].filter((p) => !apps.some((a) => String(a.proc).toLowerCase() === p))
+  return (
+    <div class="sd-int-grp" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px">
+      <div class="sd-int-grp-h">
+        <span>🎛 Interaktives Mixer-Deck</span>
+        <button class={'sd-int-toggle' + (st && st.enabled ? ' on' : '')} disabled={busy || !st} onClick={toggle}
+                title="Live-Deck Audio Mixer an/aus">{busy ? '…' : (st && st.enabled) ? '● An' : '○ Aus'}</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:2px 0 8px">Erstellt ein Live-Deck <b>„🔊 Audio Mixer"</b> im Decks-Tab, das automatisch den Master + jedes tönende Programm als Fader zeigt (kommen/gehen von selbst). Nicht manuell editierbar — dafür immer aktuell.</p>
+      {st && st.enabled && (
+        <>
+          <div class="reward-row" style="margin-bottom:10px">
+            <span class="muted conn-label">Fader-Größe</span>
+            <span class="muted" style="font-size:12px">Breite</span>
+            <select class="so-delay" value={st.w || 1} onChange={(e) => setSize({ w: Number(e.currentTarget.value) })}>
+              {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}</select>
+            <span class="muted" style="font-size:12px">Höhe</span>
+            <select class="so-delay" value={st.h || 2} onChange={(e) => setSize({ h: Number(e.currentTarget.value) })}>
+              {[1, 2, 3, 4].map((n) => <option value={n}>{n}</option>)}</select>
+            <span class="muted" style="font-size:11px">Felder (z.B. 1×3 = schmal &amp; hoch). Grundgröße: Schieber „Größe" oben.</span>
+          </div>
+          <div class="muted" style="font-size:12px;margin-bottom:4px">Im Mixer zeigen <span class="muted">(abwählen = dauerhaft ausblenden)</span>:</div>
+          <div class="sd-int-cols">
+            {apps.filter((a) => a.proc).map((a) => (
+              <label key={a.proc} class="sd-int-chk">
+                <input type="checkbox" checked={!hidden.has(String(a.proc).toLowerCase())} onChange={() => flipHide(a.proc)} />
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{a.name || a.proc}</span>
+              </label>
+            ))}
+            {goneHidden.map((p) => (
+              <label key={p} class="sd-int-chk">
+                <input type="checkbox" checked={false} onChange={() => flipHide(p)} />
+                <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{p} — ausgeblendet</span>
+              </label>
+            ))}
+            {!apps.length && !goneHidden.length && <span class="muted" style="font-size:12px">— kein Programm gibt gerade Ton aus —</span>}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolCategories, resolved, options }) {
   const [el, setEl] = useState(null)
   const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
@@ -1539,10 +1618,12 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       <div class="sd-int-desc">{it.description}</div>
       {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
       {!it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
+      {it.id === 'audio' && <AudioMixerControl onReload={onReload} />}
       {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
       {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
       {it.enabled && el && el.available && (
         <>
+          {it.id === 'audio' && <div class="sd-int-grp-h" style="margin-top:16px;border-top:0.5px solid var(--line);padding-top:12px"><span>📌 Feste Fader-Buttons erstellen <span class="muted">— landen im Pool, auf jedes Deck ziehbar (grau, wenn App aus)</span></span></div>}
           {(el.groups || []).map((g) => (
             <div key={g.key} class="sd-int-grp">
               <div class="sd-int-grp-h">
@@ -1654,10 +1735,12 @@ export function StreamDeck() {
                    dfAvailable={options.displayfusion_available} onSelect={setActiveDeck} onReload={load} />
           {deck && (
             <div class="card" style="max-width:1100px">
-              <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
+              <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— {deck.auto === 'audio_mixer' ? 'Interaktiv (Live-Audio)' : 'Layout & Buttons'}</span></h3>
               <DeckLayout deck={deck} onReload={load} />
-              <DeckGrid deck={deck} pool={data.buttons || []} options={options} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
-                        dfAvailable={options.displayfusion_available} onNavigateDeck={setActiveDeck} />
+              {deck.auto === 'audio_mixer'
+                ? <p class="hint" style="margin-top:10px">🔊 <b>Interaktives Audio-Mixer-Deck.</b> Zeigt automatisch die Windows-Hauptlautstärke + einen Fader für jedes Programm, das gerade Ton ausgibt — wird <b>nicht</b> manuell mit Buttons gefüllt (deshalb kein Raster). Programme dauerhaft ausblenden: Tab <b>🔌 Buttons &amp; Kategorien → 🔊 Windows Audio</b>. Größe/Spalten oben frei einstellbar.</p>
+                : <DeckGrid deck={deck} pool={data.buttons || []} options={options} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
+                        dfAvailable={options.displayfusion_available} onNavigateDeck={setActiveDeck} />}
             </div>
           )}
         </>
@@ -1680,6 +1763,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const [eaActions, setEaActions] = useState([])
   const [dfProfiles, setDfProfiles] = useState([])
   const [winDevs, setWinDevs] = useState([])
+  const [appSessions, setAppSessions] = useState([])
   const [picking, setPicking] = useState(false)
   const [pickMsg, setPickMsg] = useState(null)
   const [deckOpts, setDeckOpts] = useState(options.decks || [])   // Ziel-Deck-Liste (open_deck), lokal aktualisierbar
@@ -1697,6 +1781,8 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       .then((d) => setDfProfiles(d.profiles || [])).catch(() => {})
     if (t === 'winaudio') getJSON('/api/winaudio/devices')
       .then((d) => setWinDevs(d.devices || [])).catch(() => {})
+    if (t === 'app_audio') getJSON('/api/winaudio/sessions')
+      .then((d) => setAppSessions(d.sessions || [])).catch(() => {})
   }, [t])
   const pickFile = async () => {
     setPicking(true); setPickMsg(null)
@@ -2162,6 +2248,35 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
           )}
         </>
       )}
+      {t === 'app_audio' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Programm</span>
+            <select class="reward-input" value={action.app_proc || ''}
+                    onChange={(e) => {
+                      const proc = e.currentTarget.value
+                      const s = appSessions.find((x) => x.proc === proc)
+                      onChange({ aa_action: 'toggle_mute', app_proc: proc || undefined })
+                      if (onPicked && s) onPicked({ name: s.name })
+                    }}>
+              <option value="">— Programm wählen …</option>
+              {appSessions.map((s) => <option value={s.proc}>{s.name}</option>)}
+            </select>
+          </div>
+          {!appSessions.length && (
+            <div class="reward-row">
+              <span class="muted conn-label">Prozessname</span>
+              <input class="reward-input" placeholder="z. B. spotify.exe / chrome.exe / firefox.exe"
+                     value={action.app_proc || ''}
+                     onInput={(e) => onChange({ aa_action: 'toggle_mute', app_proc: e.currentTarget.value })} />
+            </div>
+          )}
+          <p class="muted sd-help">Regelt die Lautstärke <b>eines Programms</b> (App-Mixer, wie der Windows-
+            Lautstärkemixer). Vertikaler <b>Fader + Live-VU</b> (oben <b>Darstellung → 🎚 Fader</b> bzw.
+            „✨ Vorlage anwenden"; Tippen = Stumm). Den <b>Anzeigenamen</b> setzt du oben im Feld „Name".
+            {appSessions.length ? '' : ' (Liste leer — das Programm muss gerade Ton ausgeben, sonst hat es keine Audio-Session. Sonst Prozessnamen eintippen.)'}</p>
+        </>
+      )}
     </div>
   )
 }
@@ -2368,7 +2483,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
     // Status-Karte: Quelle für das Auto-Emoji aus dem Monitor-Typ vorbelegen (Audio-Monitore → 🎧/🔊/…),
     // sonst „neutral" (kein geratenes Symbol). Sichtbar im Editor, vom Nutzer überschreibbar.
     if (r === 'readout' && (opts || {}).kind == null) {
-      onOpts({ ...(opts || {}), kind: /wavelink|winaudio|audio/.test(mType) ? 'audio' : 'generic' })
+      onOpts({ ...(opts || {}), kind: /wavelink|winaudio|audio|app_vol/.test(mType) ? 'audio' : 'generic' })
     }
   }
   const add = () => onStates([...(states || []), { when: { op: knownValues ? 'eq' : 'any' }, title: '', icon: '', color: '#2a2a2a' }])

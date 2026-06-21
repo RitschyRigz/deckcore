@@ -42,7 +42,7 @@ class WinAudio:
         self._lock = threading.RLock()
         self._proc: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
-        self._state = {"available": False, "default_id": None, "devices": [], "snaps": {}}
+        self._state = {"available": False, "default_id": None, "devices": [], "sessions": [], "snaps": {}}
         self._state_ts = 0.0
         self._last_fail = 0.0
 
@@ -92,6 +92,7 @@ class WinAudio:
                         self._state = {"available": bool(obj.get("available")),
                                        "default_id": obj.get("default_id"),
                                        "devices": obj.get("devices") or [],
+                                       "sessions": obj.get("sessions") or [],
                                        "snaps": obj.get("snaps") or {}}
                         self._state_ts = time.monotonic()
         except Exception:  # noqa: BLE001
@@ -100,7 +101,7 @@ class WinAudio:
         with self._lock:
             if self._proc is proc:
                 self._proc = None
-                self._state = {"available": False, "default_id": None, "devices": [], "snaps": {}}
+                self._state = {"available": False, "default_id": None, "devices": [], "sessions": [], "snaps": {}}
                 self._last_fail = time.monotonic()
         log.warning("Audio-Helfer beendet (EOF) — wird bei Bedarf neu gestartet.")
 
@@ -129,7 +130,7 @@ class WinAudio:
     def _fresh(self) -> dict:
         with self._lock:
             if self._state_ts and (time.monotonic() - self._state_ts) > _STATE_STALE:
-                return {"available": False, "default_id": None, "devices": [], "snaps": {}}
+                return {"available": False, "default_id": None, "devices": [], "sessions": [], "snaps": {}}
             return self._state
 
     # ── Status / Lesen ───────────────────────────────────────────────────
@@ -145,6 +146,24 @@ class WinAudio:
         """Aktive Ausgabegeräte ``[{id, name}]`` (vom Helfer gepusht)."""
         self._ensure_proc()
         return list(self._fresh().get("devices") or [])
+
+    def audio_sessions(self) -> list:
+        """Aktive App-Audio-Sessions ``[{id:'app:<proc>', name, proc}]`` (vom Helfer gepusht). Sendet
+        zugleich den ``@sessions``-Watch → der Helfer sammelt + hält die Liste frisch (App-Mixer-Dropdown).
+        Beim ALLERERSTEN Aufruf ist die Liste noch leer (der Helfer sammelt sie erst NACH dem Watch, ~1
+        Tick) → kurz (≤0.8 s) darauf warten, damit das Editor-Dropdown sofort gefüllt ist statt erst beim
+        zweiten Öffnen. Nur eine Editor-/Generator-Abfrage (nicht der schnelle Fader-Poll) → ok zu warten."""
+        self._send({"cmd": "watch", "target": "@sessions"})
+        s = self._fresh().get("sessions") or []
+        # Erst-Aufruf: der Helfer braucht nach (Neu-)Start ~1 s, bis er „available" meldet UND die Liste
+        # gesammelt hat. Kurz darauf warten (unabhängig vom available-Flag — beim Spawn ist es noch False),
+        # damit das Editor-Dropdown/die Kategorie-Liste sofort gefüllt sind statt leer zu erscheinen.
+        if not s:
+            deadline = time.monotonic() + 1.2
+            while not s and time.monotonic() < deadline:
+                time.sleep(0.1)
+                s = self._fresh().get("sessions") or []
+        return list(s)
 
     def resolve_render_id(self, name_substring: str) -> Optional[str]:
         sub = (name_substring or "").lower()
@@ -193,6 +212,18 @@ class WinAudio:
 
     def master_muted(self, device_id: Optional[str] = None) -> Optional[bool]:
         return self.volume_snapshot(device_id).get("muted")
+
+    # ── App-Audio (App-Mixer: Lautstärke/Mute/VU je Programm via ISimpleAudioVolume) ──
+    # Opaker Target-Key ``app:<proc>`` durch dieselbe watch/snaps-Mechanik wie die Geräte-Snapshots.
+    def app_snapshot(self, proc: str) -> dict:
+        """{available, level(0..100|None), muted(bool|None), peak(0..1)} aller Sessions eines Prozesses."""
+        return self.volume_snapshot("app:" + str(proc or ""))
+
+    def app_set_volume(self, proc: str, level_0_100) -> dict:
+        return self.set_master_volume(level_0_100, "app:" + str(proc or ""))
+
+    def app_set_mute(self, proc: str, muted: Optional[bool] = None) -> dict:
+        return self.set_master_mute(muted, "app:" + str(proc or ""))
 
     # ── Setzen: Windows-Standard-Ausgabegerät ────────────────────────────
     def set_default(self, device_id: str, roles=("console", "multimedia")) -> dict:

@@ -29,11 +29,21 @@ BASE = {
     "id": "base", "emoji": "🧱", "label": "Basis", "base": True,
     "description": "Grundfunktionen ohne externe Abhängigkeit — immer verfügbar.",
     "actions": ["launch", "open_folder", "open_deck", "http", "flag_toggle", "flag_set",
-                "media", "hotkey", "winaudio", "none"],
-    "monitors": ["flag", "file_field", "poll", "sse_field",
-                 "winaudio_default", "winaudio_volume", "none"],
-    "generator": {"endpoint": "/api/streamdeck/winaudio/build",
-                  "label": "🔊 Windows-Lautstärke-Fader generieren"},
+                "media", "hotkey", "none"],
+    "monitors": ["flag", "file_field", "poll", "sse_field", "none"],
+}
+
+# ── Windows-Audio — eigene Kategorie (base=True → immer da, kein externes Programm nötig). ──────
+# Lautstärke-Fader (Live-VU) für: Hauptlautstärke · je laufendem Programm (App-Mixer) · plus Buttons
+# zum Umschalten des Standard-Ausgabegeräts. Die Elemente liest der Host LIVE aus → im Kategorie-Panel
+# einzeln ankreuzbar (analog zu allen anderen Kategorien). KEIN Pauschal-Generator-Knopf (granular).
+WINDOWS_AUDIO = {
+    "id": "audio", "emoji": "🔊", "label": "Windows Audio", "base": True,
+    "description": "Lautstärke-Fader (mit Live-VU): Windows-Hauptlautstärke, je laufendem Programm "
+                   "(App-Mixer) und Umschalt-Buttons fürs Standard-Ausgabegerät. Programme erscheinen, "
+                   "sobald sie Ton ausgeben (wie der Windows-Lautstärkemixer) — anhaken legt den Fader an.",
+    "actions": ["winaudio", "app_audio"],
+    "monitors": ["winaudio_default", "winaudio_volume", "app_volume"],
 }
 
 # ── „Eigene Buttons" — frei definierte/handgemachte Buttons (keine externe Abhängigkeit). ──────
@@ -110,8 +120,8 @@ CORE_INTEGRATIONS = [
 
 
 def all_integrations(extra=None):
-    """Vollständige Liste: Basis + Eigene + Ordner + generische Integrationen + host-injizierte (``extra``)."""
-    return [BASE, CUSTOM, FOLDERS] + list(CORE_INTEGRATIONS) + list(extra or [])
+    """Vollständige Liste: Basis + Windows-Audio + Eigene + Ordner + generische Integrationen + host-injizierte (``extra``)."""
+    return [BASE, WINDOWS_AUDIO, CUSTOM, FOLDERS] + list(CORE_INTEGRATIONS) + list(extra or [])
 
 
 def cap_owners(integrations):
