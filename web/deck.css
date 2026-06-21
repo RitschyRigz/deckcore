@@ -350,7 +350,11 @@
 
 /* ===== Ordner (open_deck) — Navigation + Radial-Menü ===== */
 /* Ordner-Kennzeichnung auf einer Kachel: Akzent-Innenrahmen + kleines Eck-Badge. */
-.t-key.is-folder { box-shadow: 0 2px 6px rgba(0,0,0,.35), inset 0 0 0 2px var(--accent); }
+/* Ordner-Markierung: gedämpftes „Windows-Ordner"-Gelb als Innen-Rahmen. Als OUTLINE (nicht inset-shadow)
+   gezeichnet → liegt ÜBER dem Inhalt und ist damit KONSISTENT auf ALLEN Ordnern sichtbar — Emoji UND
+   Bild-/PNG-Icons (ein inset-shadow würde vom Vollbild-Bild verdeckt). Klar abgesetzt von der blauen
+   Druck-Animation (--accent2). Farbe via --folder (eine Stelle zum Nachjustieren). */
+.t-key.is-folder { outline: 2px solid var(--folder, #c8a44e); outline-offset: -3px; }
 .t-folder-badge { position: absolute; top: 4px; right: 6px; z-index: 2; font-size: 13px; line-height: 1;
   color: #fff; opacity: .9; text-shadow: 0 1px 2px rgba(0,0,0,.6); pointer-events: none; }
 
