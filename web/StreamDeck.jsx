@@ -515,6 +515,9 @@ function DeckItemInspector({ deck, item, btn, options, onReload, onClose }) {
 }
 
 const POOL_UNCAT = '__uncat__'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
+const CUSTOM_CAT = 'Custom Buttons'   // EINE feste Sammel-Kategorie für eigene (owner-lose) Buttons.
+// Eigene Pool-Kategorien gibt es bewusst NICHT mehr (2026-06-21): generierte Buttons ordnet das
+// System über ihre Integration (pool_cat: HWiNFO/OBS-Szenen/…), eigene landen alle unter „Custom Buttons".
 
 // Geteilte Paletten-Auswahl (Decks-Tab): Pool-Buttons nach pool_cat gruppiert, klappbar, DEFAULT ZUGEKLAPPT.
 // renderChip rendert den Drag-Chip (Mechanik unterscheidet sich je Editor → als Prop reingereicht).
@@ -529,7 +532,8 @@ function PalettePicker({ palette, poolCategories, hint, renderChip }) {
   })
   const cats = poolCategories || []
   const byCat = {}
-  for (const b of palette) { const c = b.pool_cat || POOL_UNCAT; (byCat[c] = byCat[c] || []).push(b) }
+  // Eigene (owner-lose) Buttons → IMMER „Custom Buttons"; generierte → ihre System-Kategorie (pool_cat).
+  for (const b of palette) { const c = b.owner ? (b.pool_cat || POOL_UNCAT) : CUSTOM_CAT; (byCat[c] = byCat[c] || []).push(b) }
   const orphans = Object.keys(byCat).filter((c) => c !== POOL_UNCAT && !cats.includes(c)).sort()
   const order = [...cats, ...orphans, POOL_UNCAT].filter((c) => (byCat[c] || []).length > 0)
   return (
@@ -880,76 +884,37 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
 //  BUTTON-POOL (Funktionen) — global, einmal definiert
 // ══════════════════════════════════════════════════════════════════════════════
 
-function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
+function PoolList({ buttons, resolved, options, onReload }) {
+  // Eigene Buttons EINE flache Liste („Custom Buttons") — KEINE eigenen Pool-Kategorien mehr
+  // (2026-06-21). Generierte Buttons ordnet das System über ihre Integration; eigene landen hier.
   const [adding, setAdding] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('sd.poolcat.collapsed') || '{}') } catch (_) { return {} }
-  })
-  const toggleCol = (k) => setCollapsed((c) => {
-    const n = { ...c, [k]: !c[k] }
-    try { localStorage.setItem('sd.poolcat.collapsed', JSON.stringify(n)) } catch (_) {}
-    return n
-  })
-  const cats = poolCategories || []
-  const postCat = (url, body) => postJSON(url, body).then(() => onReload && onReload()).catch(() => {})
-  const addCat = (name) => postCat('/api/streamdeck/pool_category/add', { name })
-  const renameCat = (old, nw) => postCat('/api/streamdeck/pool_category/rename', { old, new: nw })
-  const delCat = (name) => postCat('/api/streamdeck/pool_category/delete', { name })
-  const moveCat = (name, dir) => {
-    const i = cats.indexOf(name); const j = i + dir
-    if (i < 0 || j < 0 || j >= cats.length) return
-    const next = cats.slice(); next.splice(i, 1); next.splice(j, 0, name)
-    postCat('/api/streamdeck/pool_categories', { categories: next })
-  }
-  const byCat = {}
-  for (const b of buttons) { const c = b.pool_cat || POOL_UNCAT; (byCat[c] = byCat[c] || []).push(b) }
-  const orphans = Object.keys(byCat).filter((c) => c !== POOL_UNCAT && !cats.includes(c)).sort()
-  const poolOrder = [...cats, ...orphans]
-  if (byCat[POOL_UNCAT]) poolOrder.push(POOL_UNCAT)
   return (
     <div>
       <div class="conn-toolbar">
         <button class="btn ghost small" onClick={() => setAdding(true)}>➕ Neuer Button</button>
-        <InlineAdd label="➕ Kategorie" placeholder="Neue Pool-Kategorie" onAdd={addCat} />
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
-        <span class="muted">{buttons.length} eigene Buttons · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen, zum Bearbeiten aufklappen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab. Generierte Buttons (OBS · Wave Link · HWiNFO · …) liegen in ihren eigenen <b>Kategorien</b> oben.</span>
+        <span class="muted">{buttons.length} eigene Buttons. Zum Bearbeiten aufklappen, Platzierung aufs Deck per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab. Generierte Buttons (OBS · Wave Link · HWiNFO · …) ordnet das System in ihren eigenen <b>Kategorien</b> — eigene Kategorien gibt es bewusst nicht mehr.</span>
       </div>
       {adding && (
         <FunctionEditor button={blankButton()} options={options} isNew
           onSaved={() => { setAdding(false); onReload && onReload() }} onCancel={() => setAdding(false)} />
       )}
-      {poolOrder.map((cat) => {
-        const isUncat = cat === POOL_UNCAT
-        const list = byCat[cat] || []
-        const idx = cats.indexOf(cat)
-        const isCol = !!collapsed[cat]
-        return (
-          <div class="sd-poolcat" key={cat}>
-            <div class="sd-poolcat-h">
-              <button class="sd-poolcat-toggle" onClick={() => toggleCol(cat)} title={isCol ? 'aufklappen' : 'zuklappen'}>{isCol ? '▸' : '▾'}</button>
-              <span class="sd-poolcat-name">{isUncat ? 'Ohne Kategorie' : cat}</span>
-              <span class="muted" style="font-size:11px">({list.length})</span>
-              {!isUncat && <>
-                <InlineEdit value={cat} title="Kategorie umbenennen" onSave={(nm) => renameCat(cat, nm)} />
-                {idx > 0 && <button class="sd-poolcat-mv" title="nach oben" onClick={() => moveCat(cat, -1)}>↑</button>}
-                {idx >= 0 && idx < cats.length - 1 && <button class="sd-poolcat-mv" title="nach unten" onClick={() => moveCat(cat, 1)}>↓</button>}
-                <ConfirmX title="Kategorie löschen — Buttons bleiben (werden Ohne Kategorie)" onConfirm={() => delCat(cat)} />
-              </>}
-            </div>
-            {!isCol && (list.length === 0
-              ? <div class="sd-wys-empty">— leer — weise Buttons über ihr Kategorie-Feld zu —</div>
-              : <div class="cards">{list.map((b) => <PoolCard key={b.id} b={b} vis={resolved[b.id]} options={options}
-                                                              cats={cats} allIds={buttons.map((x) => x.id)} onChanged={onReload} />)}</div>
-            )}
-          </div>
-        )
-      })}
+      <div class="sd-poolcat">
+        <div class="sd-poolcat-h">
+          <span class="sd-poolcat-name">{CUSTOM_CAT}</span>
+          <span class="muted" style="font-size:11px">({buttons.length})</span>
+        </div>
+        {buttons.length === 0
+          ? <div class="sd-wys-empty">— noch keine eigenen Buttons — „➕ Neuer Button" —</div>
+          : <div class="cards">{buttons.map((b) => <PoolCard key={b.id} b={b} vis={resolved[b.id]} options={options}
+                                                             allIds={buttons.map((x) => x.id)} onChanged={onReload} />)}</div>}
+      </div>
     </div>
   )
 }
 
-function PoolCard({ b, vis, options, cats, allIds, onChanged }) {
+function PoolCard({ b, vis, options, allIds, onChanged }) {
   const [open, setOpen] = useState(false)
   const [msg, setMsg] = useState(null)
   const press = async () => {
@@ -983,11 +948,6 @@ function PoolCard({ b, vis, options, cats, allIds, onChanged }) {
           {b.hidden && <span class="sd-hidden-badge" title="ausgeblendet — über 🔌 Buttons &amp; Kategorien wieder anhaken">🚫 aus</span>}
           <span class="muted conn-id">⚡{ACTION_LABELS[aType] ? aType : 'none'} · 👁{mType}</span>
         </button>
-        <select class="sd-pool-cat" value={b.pool_cat || ''} title="Pool-Kategorie (klappbare Gruppe im Pool)"
-                onChange={(e) => postJSON(`/api/streamdeck/buttons/${b.id}/pool_category`, { category: e.currentTarget.value }).then(() => onChanged && onChanged()).catch(() => {})}>
-          <option value="">— Kategorie —</option>
-          {(cats || []).map((c) => <option value={c}>{c}</option>)}
-        </select>
         <ConfirmX cls="btn ghost small danger" label="🗑" title="Button löschen (aus Pool + allen Decks)" onConfirm={del} />
       </div>
       {open && (
@@ -1029,6 +989,22 @@ function RefreshOverride({ value, options, onChange }) {
   )
 }
 
+// Mehrzeiliges Titel-Eingabefeld: ein <textarea>, das wie ein einzeiliges Feld aussieht, aber
+// ZEILENUMBRÜCHE erlaubt — damit man eigene Buttons genauso mehrzeilig betiteln kann wie die
+// generierten (deren Titel ein "\n" enthalten). Verhalten: Shift+Enter = neue Zeile; Enter ohne
+// Shift = Feld verlassen (kein versehentlicher Umbruch). Wächst automatisch mit dem Inhalt.
+function TitleInput({ value, onInput, cls, style, placeholder }) {
+  const ref = useRef(null)
+  const grow = (el) => { if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 84) + 'px' } }
+  useEffect(() => { grow(ref.current) }, [value])
+  return (
+    <textarea ref={ref} class={((cls || '') + ' sd-title-area').trim()} style={style} rows={1}
+              placeholder={placeholder || 'Titel'} value={value || ''}
+              onInput={(e) => { grow(e.currentTarget); onInput(e.currentTarget.value) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur() } }} />
+  )
+}
+
 // Funktions-Editor (Pool): Aktion + Überwachung + Refresh + Zustände/Default. KEINE Platzierung.
 // Typ-Felder für Text-/Uhr-Buttons — Teil der „Aussehen"-Sektion (bei Darstellung text|clock). Bearbeitet
 // opts (Schrift/Farbe/Uhr-Modus) + bei Text den angezeigten Text (= der Titel).
@@ -1042,8 +1018,8 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
       {render === 'text' && (
         <>
           <span class="muted conn-label">Text</span>
-          <input class="reward-input" placeholder="Überschrift / Text" value={(def || {}).title || ''}
-                 onInput={(e) => onDefault({ title: e.currentTarget.value })} />
+          <TitleInput cls="reward-input" placeholder="Überschrift / Text" value={(def || {}).title || ''}
+                      onInput={(v) => onDefault({ title: v })} />
         </>
       )}
       {isClock && (
@@ -1433,8 +1409,17 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       )}
       {it.id === 'obs' && it.enabled && (
         <div style="margin-top:12px">
-          <button class="btn ghost small" onClick={() => setObsOpen((o) => !o)}>{obsOpen ? '⚙ Verbindung ▴' : '⚙ Verbindung ▾'}</button>
-          {obsOpen && <ObsConn />}
+          {(options.obs_self_managed !== false) ? (
+            <>
+              {st && st.state === 'off' && !obsOpen && (
+                <p class="hint" style="margin:0 0 8px">🔌 OBS noch nicht verbunden — unter <b>⚙ Verbindung</b> die OBS-WebSocket-Daten (Host / Port / Passwort) eintragen, dann scannt der Tab die Szenen automatisch.</p>
+              )}
+              <button class="btn ghost small" onClick={() => setObsOpen((o) => !o)}>{obsOpen ? '⚙ Verbindung ▴' : '⚙ Verbindung ▾'}</button>
+              {obsOpen && <ObsConn />}
+            </>
+          ) : (
+            <p class="hint" style="margin:0">OBS-Verbindung wird von der Host-App verwaltet — dort einrichten (Host / Port / Passwort).</p>
+          )}
         </div>
       )}
     </div>
@@ -2184,8 +2169,8 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
       <span class="muted sd-when">zeige</span>
       <input class="so-delay" style="width:44px" placeholder="Icon" value={st.icon || ''}
              onInput={(e) => onChange({ ...st, icon: e.currentTarget.value })} />
-      <input class="so-delay" style="width:100px" placeholder="Titel" value={st.title || ''}
-             onInput={(e) => onChange({ ...st, title: e.currentTarget.value })} />
+      <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={st.title || ''}
+                  onInput={(v) => onChange({ ...st, title: v })} />
       <IconPicker value={st.image} onChange={(url) => onChange({ ...st, image: url })} />
       <input type="color" class="sd-color" value={st.color || '#2a2a2a'}
              onInput={(e) => onChange({ ...st, color: e.currentTarget.value })} />
@@ -2281,8 +2266,8 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
             <span class="muted conn-label">Standard</span>
             <input class="so-delay" style="width:44px" placeholder="Icon" value={def.icon || ''}
                    onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
-            <input class="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
-                   onInput={(e) => onDefault({ title: e.currentTarget.value })} />
+            <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
+                        onInput={(v) => onDefault({ title: v })} />
             <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
             <input type="color" class="sd-color" value={def.color || '#2a2a2a'}
                    onInput={(e) => onDefault({ color: e.currentTarget.value })} />

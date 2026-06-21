@@ -787,7 +787,9 @@ class DeckCoreService:
                 bid = it.get("bid") or self._integration_bid(iid, g["key"], it["id"])
                 if bid:
                     it["bid"] = bid
-                    it["present"] = (bid in pool_ids) and not self._btn_hidden(bid)
+                    # „present" = angehakt = der Button existiert im Pool. Abwählen LÖSCHT ihn (Pool +
+                    # alle Decks) — kein verstecktes „hidden"-Zwischending mehr (eine Button-Klasse).
+                    it["present"] = bid in pool_ids
                     if it.get("present") and it.get("renders"):   # aktuelle Darstellung des vorhandenen Buttons vorwählen
                         cur = (next((b for b in self._buttons if b.get("id") == bid), {}) or {}).get("render")
                         it["render"] = cur if cur in ("graph", "gauge") else "value"
@@ -938,10 +940,10 @@ class DeckCoreService:
         return False
 
     def _is_hide_group(self, iid: str, gk: str) -> bool:
-        """Gruppen, deren ABWÄHLEN den Button AUSBLENDET statt löscht — für Elemente, die man typ.
-        nur zeigen/verstecken will (Standard-Ausgabegeräte; Hüllen erweitern das für ihre Tools,
-        z.B. System-/Prozess-Buttons). Standard: nur die generischen Audio-Geräte."""
-        return iid == "base" and gk == "devices"
+        """DEPRECATED (2026-06-21): Abwählen LÖSCHT jetzt EINHEITLICH (Pool + alle Decks). Es gibt
+        kein „Ausblenden statt Löschen" mehr — EINE Button-Klasse, kein verstecktes Zwischending.
+        No-op, damit Alt-Aufrufer nicht brechen (immer löschen)."""
+        return False
 
     def _button_owner(self, bid: str) -> str:
         """Welche Integration „besitzt" diesen Button (eigene vs. generierte Buttons trennen)?
@@ -2790,6 +2792,10 @@ class DeckCoreService:
             "action_types": _gated(_ordered(self._action_handlers, _ACTION_ORDER)),
             "monitor_types": _gated(_ordered(self._monitor_handlers, _MONITOR_ORDER)),
             "displayfusion_available": bool(_df_command_path()),
+            # OBS-Verbindung verwaltet der Kern SELBST (eigener obs-websocket-Client + /api/obs/config)
+            # → der OBS-Tab zeigt das Konfig-Formular. Eine größere Host-App (Cockpit) verwaltet OBS
+            # extern und setzt das via _extra_options() auf False → Formular ausgeblendet.
+            "obs_self_managed": True,
             "match_ops": ["any", "truthy", "falsy", "eq", "ne", "gt", "lt", "gte", "lte", "contains"],
             "known_flags": flags,
             # Deck-Liste fürs „Ordner"-Dropdown (open_deck) — leicht (id/label/icon + folder-Flag).

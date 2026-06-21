@@ -18,6 +18,10 @@
 .sd-block-h { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .sd-state { gap: 6px; flex-wrap: wrap; align-items: center; }
 .sd-color { width: 36px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
+/* Mehrzeiliges Titel-Feld (Shift+Enter = neue Zeile). Erbt Rahmen/Polster/Farbe von der
+   Host-Input-Klasse (so-delay / reward-input); hier nur die textarea-Eigenheiten glätten. */
+.sd-title-area { resize: none; overflow: hidden; font: inherit; line-height: 1.25;
+  min-height: 28px; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
 .sd-help { font-size: 12px; margin: 2px 0 8px; line-height: 1.5; }
 .sd-when { font-size: 12px; }
 .sd-iconpick { display: inline-flex; align-items: center; gap: 4px; }
