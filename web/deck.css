@@ -277,7 +277,12 @@
 /* ── Deck-Tab (Soft-Stream-Deck) ────────────────────── */
 /* Touch-Deck — Größen/Abstände aus dem zentralen Layout (CSS-Variablen vom Desktop-Tab).
    --sd-size = Button-Kachelgröße/-Kappung, --sd-font = Schrift-Skalierung. */
-.t-deck { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; --sd-size: 116px; --sd-font: 1; }
+.t-deck { height: 100%; overflow-y: auto; overflow-x: clip; -webkit-overflow-scrolling: touch; --sd-size: 116px; --sd-font: 1; }
+/* Side-Scroll-Slide beim Deck-Wechsel im Vollbild (nur das einlaufende Deck wird animiert — kein Preload nötig). */
+.t-deck-body.t-slide-next { animation: t-slide-next .2s ease-out; }
+.t-deck-body.t-slide-prev { animation: t-slide-prev .2s ease-out; }
+@keyframes t-slide-next { from { opacity: .25; transform: translateX(12%); } to { opacity: 1; transform: translateX(0); } }
+@keyframes t-slide-prev { from { opacity: .25; transform: translateX(-12%); } to { opacity: 1; transform: translateX(0); } }
 /* Deck-Umschalter (nur bei >1 Deck) — bleibt beim Scrollen oben kleben */
 .t-deck-tabs { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px;
   padding: 2px 0 10px; margin-bottom: 8px; background: var(--bg); border-bottom: 1px solid var(--line); }

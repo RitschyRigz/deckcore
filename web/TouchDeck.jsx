@@ -480,6 +480,7 @@ export function TouchDeck() {
     try { return localStorage.getItem('sd.fullscreen') === '1' } catch { return false }
   })
   const [deckFlash, setDeckFlash] = useState('')     // kurz eingeblendeter Deck-Name beim Vollbild-Wisch
+  const [slideDir, setSlideDir] = useState(0)        // Slide-Animation beim Side-Scroll: +1 nächstes / -1 voriges / 0 keine
   const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"
   const flashT = useRef(null)
 
@@ -567,12 +568,13 @@ export function TouchDeck() {
     if (list.length < 2) return
     const i = Math.max(0, list.findIndex((d) => d.id === tabSel))
     const nd = list[(i + dir + list.length) % list.length]
+    setSlideDir(dir)   // löst die Slide-Animation aus (nur beim Side-Scroll, nicht bei Tab/Ordner)
     switchDeck(nd.id)
     setDeckFlash(nd.label || nd.id)
     clearTimeout(flashT.current)
     flashT.current = setTimeout(() => setDeckFlash(''), 1100)
   }
-  const goBack = () => setNavStack((s) => s.slice(0, -1))
+  const goBack = () => { setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
   const closeOverlay = () => setOverlay(null)
 
   // Wisch von oben nach unten (aus dem oberen Bildschirmrand) beendet das Vollbild. Verbraucht das
@@ -610,7 +612,7 @@ export function TouchDeck() {
         const r = evt.currentTarget.getBoundingClientRect()
         setOverlay({ deck: a.deck, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
       } else {
-        setOverlay(null); setNavStack((s) => [...s, a.deck])
+        setSlideDir(0); setOverlay(null); setNavStack((s) => [...s, a.deck])
       }
       return
     }
@@ -720,7 +722,7 @@ export function TouchDeck() {
         <div class="t-deck-tabs">
           {visibleDecks.map((dk) => (
             <button key={dk.id} class={'t-deck-tab' + (dk.id === tabSel ? ' active' : '')}
-                    onClick={() => switchDeck(dk.id)}>
+                    onClick={() => { setSlideDir(0); switchDeck(dk.id) }}>
               <span class="t-deck-tab-icon">{dk.icon || '🎛'}</span>
               <span class="t-deck-tab-label">{dk.label || dk.id}</span>
             </button>
@@ -730,22 +732,24 @@ export function TouchDeck() {
       ) : (
         <div class="t-deck-bar-min"><FsBtn /></div>
       )}
-      {!(active.items || []).length
-        ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
-        : freeMode ? (
-          <div class="t-deck-grid t-deck-free" style={freeStyle}>
-            {(active.items || []).filter((it) => !it.hidden).map((it) => tile(it))}
-          </div>
-        ) : (
-          groups.map((g) => (
-            <section class="t-deck-grp" key={g.name}>
-              {showCatTitles && <h2 class="t-col-h">{g.name}</h2>}
-              <div class="t-deck-grid" style={gridStyle}>
-                {g.items.map((it) => tile(it))}
-              </div>
-            </section>
-          ))
-        )}
+      <div class={'t-deck-body' + (slideDir > 0 ? ' t-slide-next' : slideDir < 0 ? ' t-slide-prev' : '')} key={shownId}>
+        {!(active.items || []).length
+          ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
+          : freeMode ? (
+            <div class="t-deck-grid t-deck-free" style={freeStyle}>
+              {(active.items || []).filter((it) => !it.hidden).map((it) => tile(it))}
+            </div>
+          ) : (
+            groups.map((g) => (
+              <section class="t-deck-grp" key={g.name}>
+                {showCatTitles && <h2 class="t-col-h">{g.name}</h2>}
+                <div class="t-deck-grid" style={gridStyle}>
+                  {g.items.map((it) => tile(it))}
+                </div>
+              </section>
+            ))
+          )}
+      </div>
       {overlay && overlayDeck && (
         <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById}
                     anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />
