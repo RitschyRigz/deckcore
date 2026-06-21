@@ -2161,6 +2161,18 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
   const stateless = mType === 'none'
   const isWidget = render === 'text' || render === 'clock'
   const isGauge = render === 'gauge'
+  // Render-Wechsel: beim Sprung auf „Gauge" sinnvolle Grenzen SICHTBAR vorbefüllen (sonst leere Felder →
+  // implizit 0..100, der Nutzer sieht nichts zum Anpassen). Einheit aus dem Titel-Template („{value} °C").
+  // Die smarten Grenzen je Sensor setzt weiterhin der HWiNFO-Generator (_smart_classify) — hier nur der
+  // manuelle Editor-Weg, bewusst ohne Klassifizier-Duplikat.
+  const pickRender = (r) => {
+    onRender(r)
+    if (r === 'gauge' && (opts || {}).min == null && (opts || {}).max == null) {
+      const o = opts || {}
+      const m = String((def || {}).title || '').match(/\{value\}\s*([°%]?[\w/]*)/)
+      onOpts({ ...o, min: 0, max: 100, unit: o.unit || (m && m[1]) || undefined })
+    }
+  }
   const add = () => onStates([...(states || []), { when: { op: knownValues ? 'eq' : 'any' }, title: '', icon: '', color: '#2a2a2a' }])
   const upd = (i, st) => onStates(states.map((s, j) => (j === i ? st : s)))
   const rm = (i) => onStates(states.filter((_, j) => j !== i))
@@ -2170,7 +2182,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
       {/* Darstellung steuert, welche Aussehen-Felder unten erscheinen (ein Ort, typgesteuert). */}
       <div class="reward-row">
         <span class="muted conn-label">Darstellung</span>
-        <select class="so-delay" value={render || 'value'} onChange={(e) => onRender(e.currentTarget.value)}>
+        <select class="so-delay" value={render || 'value'} onChange={(e) => pickRender(e.currentTarget.value)}>
           <option value="value">Standard (Symbol / Wert)</option>
           <option value="graph">📈 Graph (Verlaufskurve)</option>
           <option value="text">🔤 Text / Überschrift</option>
