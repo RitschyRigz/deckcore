@@ -240,6 +240,11 @@
 .sd-wys-key-wrap:active { cursor: grabbing; }
 .sd-wys-key-wrap.sel { outline: 2px solid var(--accent); outline-offset: 3px; }
 .sd-wys-key-wrap.is-hidden { opacity: .4; }
+/* Drag-in-Ordner: Ziel-Ordner hebt sich ab + zeigt „📥 in Ordner". */
+.sd-wys-key-wrap.folder-drop { outline: 2px dashed var(--accent); outline-offset: 3px; }
+.sd-wys-key-wrap.folder-drop::after { content: '📥 in Ordner'; position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; border-radius: 16px; background: rgba(138,92,255,.55);
+  color: #fff; font-size: 11px; font-weight: 800; pointer-events: none; z-index: 3; text-align: center; }
 .sd-tile-acts { position: absolute; top: 2px; right: 2px; display: none; gap: 2px; z-index: 2; }
 .sd-wys-key-wrap:hover .sd-tile-acts { display: flex; }
 .sd-tile-act { background: rgba(0,0,0,.6); color: #fff; border: 0; border-radius: 6px; width: 20px; height: 20px;

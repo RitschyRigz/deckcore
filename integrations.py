@@ -46,6 +46,17 @@ CUSTOM = {
     "actions": [], "monitors": [],
 }
 
+# ── „Ordner" — jedes angelegte Sub-Deck als ankreuzbarer Öffnen-Button ─────────────────────────
+# base=True → immer sichtbar. KEIN Cap-Owner (open_deck bleibt eine Basis-Aktion); diese Integration
+# ist ein GENERATOR: ankreuzen legt den open_deck-Button für den Ordner an, abwählen entfernt ihn —
+# einheitlich wie alles andere. So muss man für einen Ordner keinen „Eigenen Button" mehr von Hand bauen.
+FOLDERS = {
+    "id": "folders", "emoji": "📁", "label": "Ordner", "base": True,
+    "description": "Jeder angelegte Ordner (Sub-Deck) als Öffnen-Button — ankreuzen legt den Button an, "
+                   "abwählen entfernt ihn. Das Aussehen ist frei (z.B. die Health-Ampel per Aussehen-einfügen).",
+    "actions": [], "monitors": [],
+}
+
 # ── Generische Fremd-App-/Hardware-Integrationen (jeder Host kann sie haben) ───────────────────
 CORE_INTEGRATIONS = [
     {
@@ -99,8 +110,8 @@ CORE_INTEGRATIONS = [
 
 
 def all_integrations(extra=None):
-    """Vollständige Liste: Basis + Eigene + generische Integrationen + host-injizierte (``extra``)."""
-    return [BASE, CUSTOM] + list(CORE_INTEGRATIONS) + list(extra or [])
+    """Vollständige Liste: Basis + Eigene + Ordner + generische Integrationen + host-injizierte (``extra``)."""
+    return [BASE, CUSTOM, FOLDERS] + list(CORE_INTEGRATIONS) + list(extra or [])
 
 
 def cap_owners(integrations):

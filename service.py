@@ -821,6 +821,12 @@ class DeckCoreService:
     def _elements_raw(self, iid: str) -> dict:
         """Rohe Element-Auslese (ohne bid/present). Defensiv: fehlende App → available:false + Grund."""
         try:
+            if iid == "folders":
+                # Jeder angelegte Ordner (Sub-Deck) als ankreuzbares Element → bid folder_<slug>.
+                items = [{"id": d["id"], "label": d.get("label") or d["id"]}
+                         for d in self._decks if d.get("folder")]
+                return {"available": True, "groups": [
+                    {"key": "folders", "label": "Ordner — ankreuzen legt den Öffnen-Button an", "items": items}]}
             if iid == "wavelink":
                 snap = self._wl.snapshot()
                 if not snap.get("app"):
@@ -965,6 +971,8 @@ class DeckCoreService:
             return "obsbot"
         if s == "wa_master" or s.startswith("wa_dev_"):
             return "base"
+        if s.startswith("folder_"):
+            return "folders"
         return ""
 
     def _integration_bid(self, iid: str, gk: str, item_id) -> str:
@@ -992,6 +1000,8 @@ class DeckCoreService:
             return "wa_master"
         if iid == "base" and gk == "devices":
             return "wa_dev_" + s
+        if iid == "folders" and gk == "folders":
+            return "folder_" + s
         return ""
 
     def integration_generate_selected(self, iid: str, sel: dict) -> dict:
@@ -1152,6 +1162,15 @@ class DeckCoreService:
                             "monitor": {"type": "winaudio_default", "device_name": nm},
                             "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": nm, "color": "#1f9d55"}],
                             "default": {"icon": "🔈", "title": nm, "color": "#2a2a2a"}}, "Audio-Geräte")
+            elif iid == "folders":
+                # Jeder angekreuzte Ordner → ein open_deck-Button (id folder_<slug>). Standard-Look =
+                # Ordner-Symbol; via „🎨 Aussehen einfügen" frei überschreibbar. Abwählen entfernt ihn (Sync unten).
+                by_deck = {d["id"]: d for d in self._decks if d.get("folder")}
+                for did in groups.get("folders", []):
+                    d = by_deck.get(str(did))
+                    if not d:
+                        continue
+                    _u(self._folder_opener_def(d), "📁 Ordner")
             else:
                 return {"ok": False, "reason": "Keine generierbaren Elemente"}
             # SYNC: 1:1-synchronisierbare Elemente, die NICHT (mehr) angehakt sind, aber als Button
@@ -1281,7 +1300,10 @@ class DeckCoreService:
                 dd["items"].append({"button": bid, "category": cat, "style": {}, "hidden": False})
                 placed.add(bid); seeded_placed = True
 
-        if seeded or migrated or seeded_placed or not self._file.exists():
+        # Selbstheilung: tote „Ordner öffnen"-Buttons (Ziel-Deck gelöscht) aus Pool + Decks räumen.
+        pruned = self._prune_dangling_openers()
+
+        if seeded or migrated or seeded_placed or pruned or not self._file.exists():
             self._save()
 
     def _migrate_to_decks(self, order, placement, raw_decks, legacy_layout,
@@ -1545,11 +1567,35 @@ class DeckCoreService:
         self._save(); self._publish_cfg()
         return {"ok": True, "decks": self.decks()}
 
-    def add_deck(self, label: str, icon: str = "🎛", copy_from: str = "", folder=None) -> dict:
+    def _folder_opener_def(self, deck: dict) -> dict:
+        """Standard-Definition des „Ordner öffnen"-Buttons (open_deck, 📁-Look) für ein Ordner-Deck.
+        EINE Wahrheit — genutzt vom „➕ Ordner"-Anlegen, vom „📁 Ordner"-Generator und (als Basis)
+        beim Umwandeln. Die id ``folder_<slug>`` macht ihn in der „📁 Ordner"-Kategorie ankreuzbar."""
+        lbl = deck.get("label") or deck["id"]
+        return {"id": "folder_" + _slug(deck["id"]), "label": lbl,
+                "action": {"type": "open_deck", "deck": str(deck["id"]), "mode": "replace"},
+                "monitor": {"type": "none"}, "states": [],
+                "default": {"icon": deck.get("icon") or "📁", "title": lbl, "color": "#3a3a3a"}}
+
+    def _make_folder_opener(self, deck_id: str) -> str:
+        """Öffnen-Button für ein Ordner-Deck anlegen (idempotent). So ist ein frisch erstellter Ordner
+        sofort „aktiv" (angehakt) in der „📁 Ordner"-Kategorie und sein Button bleibt nach dem Neuladen
+        erhalten — sonst würde er ohne Opener als unaktiv gelten und beim nächsten Sync verschwinden.
+        Rückgabe = Button-id ("" bei unbekanntem Deck). Speichert NICHT (Aufrufer bündelt)."""
+        d = self._deck(deck_id)
+        if not d:
+            return ""
+        fn = self._folder_opener_def(d)
+        self._pool_upsert(fn, "📁 Ordner")
+        return fn["id"]
+
+    def add_deck(self, label: str, icon: str = "🎛", copy_from: str = "", folder=None,
+                 make_opener: bool = False) -> dict:
         """Neues Deck. ``copy_from`` = id eines bestehenden Decks → dessen Layout+Kategorien+
         Items klonen (= „Deck duplizieren"). Sonst leeres Deck mit Default-Layout. ``folder``:
         True = als Ordner anlegen (nicht in der Panel-Tableiste, nur per open_deck erreichbar);
-        None = von der Quelle erben (Duplizieren) bzw. kein Ordner."""
+        None = von der Quelle erben (Duplizieren) bzw. kein Ordner. ``make_opener`` (nur für Ordner):
+        legt direkt den Öffnen-Button an → der Ordner ist sofort „aktiv"/angehakt und bleibt erhalten."""
         label = str(label or "").strip() or "Deck"
         ids = self._deck_ids()
         base = _slug(label); did = base; n = 2
@@ -1565,20 +1611,41 @@ class DeckCoreService:
         else:
             deck = self._fresh_deck(did, label, icon, is_folder)
         self._decks.append(deck)
+        opener = self._make_folder_opener(did) if (is_folder and make_opener) else ""
         self._save(); self._publish_cfg()
-        return {"ok": True, "id": did, "decks": self.decks()}
+        out = {"ok": True, "id": did, "decks": self.decks()}
+        if opener:
+            out["opener"] = opener
+        return out
+
+    def _prune_dangling_openers(self) -> int:
+        """Entfernt „Ordner öffnen"-Buttons (open_deck), deren Ziel-Deck nicht (mehr) existiert.
+        Ohne das bleibt nach dem Löschen eines Ordner-Decks ein toter Öffnen-Button im Pool UND
+        auf den Decks zurück — er zeigt ins Leere und lässt sich im „📁 Ordner"-Tab nicht mehr
+        abwählen (kein Backing-Deck). Läuft als Selbstheilung beim Laden + als Kaskade beim
+        Deck-Löschen. Rückgabe = Anzahl entfernter Buttons. Speichert NICHT (Aufrufer bündelt)."""
+        ids = self._deck_ids()
+        dead = [b.get("id") for b in self._buttons
+                if isinstance(b.get("action"), dict)
+                and b["action"].get("type") == "open_deck"
+                and str(b["action"].get("deck") or "") not in ids]
+        for bid in dead:
+            self._pool_remove(bid)
+        return len(dead)
 
     def delete_deck(self, deck_id: str) -> dict:
         """Deck löschen. Die Pool-Buttons bleiben (sie können auf anderen Decks liegen bzw.
-        im Pool verfügbar bleiben). Das Default-Deck ist unlöschbar."""
+        im Pool verfügbar bleiben). Ausnahme: „Ordner öffnen"-Buttons, die auf dieses Deck
+        zeigten, werden mitentfernt (sonst tote Buttons). Das Default-Deck ist unlöschbar."""
         deck_id = str(deck_id or "")
         if deck_id == _DEFAULT_DECK:
             return {"ok": False, "reason": "cannot_delete_default"}
         if not self._deck(deck_id):
             return {"ok": False, "reason": "unknown_deck"}
         self._decks = [d for d in self._decks if d["id"] != deck_id]
+        removed_openers = self._prune_dangling_openers()   # Kaskade: tote Öffnen-Buttons mitlöschen
         self._save(); self._publish_cfg()
-        return {"ok": True, "decks": self.decks()}
+        return {"ok": True, "decks": self.decks(), "removed_openers": removed_openers}
 
     def set_deck_folder(self, deck_id: str, folder: bool) -> dict:
         """Deck ↔ Ordner umschalten. Ordner-Decks tauchen NICHT in der Panel-Tableiste auf
@@ -1846,6 +1913,44 @@ class DeckCoreService:
         deck["items"] = [it for it in deck["items"] if it["button"] != str(button_id or "")]
         self._save(); self._publish_cfg()
         return {"ok": True, "removed": before - len(deck["items"])}
+
+    def item_to_folder(self, deck_id: str, button_id: str) -> dict:
+        """„In Ordner umwandeln": macht aus einem platzierten Button selbsterklärend einen Ordner.
+        Es entsteht (1) ein neuer Ordner und (2) an der Stelle des Buttons ein Öffnen-Button mit
+        GENAU dessen Aussehen+Statusanzeigen (Position/Kategorie/Größe bleiben). Der Original-Button
+        wird als ERSTER Button in den Ordner gelegt. Der Öffnen-Button bekommt die id ``folder_<slug>``
+        → er taucht damit gleich als angehakt in der „📁 Ordner"-Kategorie auf (einheitlich)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        src_item = next((it for it in deck["items"] if it["button"] == str(button_id)), None)
+        if src_item is None:
+            return {"ok": False, "reason": "not_in_deck"}
+        btn = next((b for b in self._buttons if b.get("id") == str(button_id)), None)
+        if btn is None:
+            return {"ok": False, "reason": "unknown_button"}
+        look = btn.get("default") or {}
+        label = btn.get("label") or look.get("title") or str(button_id)
+        # 1) Ordner anlegen (Icon/Label vom Button — fühlt sich an wie „der Button selbst").
+        did = self.add_deck(label, str(look.get("icon") or "📁"), folder=True)["id"]
+        # 2) Öffnen-Button mit GENAU dem Aussehen des Buttons (nur die Aktion wird zu open_deck).
+        opener = {"id": "folder_" + _slug(did), "label": label,
+                  "action": {"type": "open_deck", "deck": str(did), "mode": "replace"},
+                  "monitor": json.loads(json.dumps(btn.get("monitor") or {"type": "none"})),
+                  "states": json.loads(json.dumps(btn.get("states") or [])),
+                  "default": json.loads(json.dumps(look))}
+        for k in ("render", "opts", "refresh_seconds"):
+            if k in btn:
+                opener[k] = json.loads(json.dumps(btn[k]))
+        self._pool_upsert(opener, "📁 Ordner")
+        # 3) Original-Button als ersten (= einzigen) Button in den frischen Ordner.
+        self._deck(did)["items"] = [{"button": str(button_id), "category": "",
+                                     "style": {}, "hidden": False}]
+        # 4) Im Quell-Deck den Slot durch den Öffnen-Button ersetzen (Platzierung erhalten).
+        new_item = dict(src_item); new_item["button"] = opener["id"]
+        deck["items"][deck["items"].index(src_item)] = new_item
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "folder": did, "opener": opener["id"]}
 
     def populate_obs_scenes(self, deck_id: str, scenes: list, *, group: str = "OBS-Szenen",
                             active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:

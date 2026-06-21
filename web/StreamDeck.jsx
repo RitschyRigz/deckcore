@@ -356,15 +356,29 @@ function RefreshRate({ reg, onSaved }) {
 //  DECK-EDITOR (WYSIWYG): Deck wählen → Layout/Kategorien + Buttons direkt im Raster
 // ══════════════════════════════════════════════════════════════════════════════
 function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }) {
+  const [popBusy, setPopBusy] = useState('')
+  const [popMsg, setPopMsg] = useState(null)
   const setDecks = (next) => postJSON('/api/streamdeck/decks', { decks: next.map((d) => ({ id: d.id, label: d.label, icon: d.icon })) }).then(() => onReload && onReload()).catch(() => {})
   const addDeck = (label) => postJSON('/api/streamdeck/deck/add', { label }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
-  const addFolder = (label) => postJSON('/api/streamdeck/deck/add', { label, icon: '📁', folder: true }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
+  const addFolder = (label) => postJSON('/api/streamdeck/deck/add', { label, icon: '📁', folder: true, make_opener: true }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const dupDeck = () => postJSON('/api/streamdeck/deck/add', { label: (cur.label || 'Deck') + ' (Kopie)', icon: cur.icon, copy_from: cur.id, folder: cur.folder }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const delDeck = () => postJSON('/api/streamdeck/deck/delete', { id: active }).then(() => onReload && onReload()).catch(() => {})
   const move = (dir) => { const arr = decks.slice(); const i = arr.findIndex((x) => x.id === active); const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return;[arr[i], arr[j]] = [arr[j], arr[i]]; setDecks(arr) }
   const rename = (label) => setDecks(decks.map((x) => x.id === active ? { ...x, label } : x))
   const setIcon = (icon) => setDecks(decks.map((x) => x.id === active ? { ...x, icon } : x))
   const setFolder = (val) => postJSON(`/api/streamdeck/deck/${active}/folder`, { folder: val }).then(() => onReload && onReload()).catch(() => {})
+  // Dieses Deck mit allen Live-Elementen einer Quelle füllen (OBS-Szenen / DisplayFusion-Profile).
+  // Ersetzt das alte „Preset beim Ordner-Button-Anlegen" — Befüllen gehört dorthin, wo man das Deck
+  // bearbeitet, nicht in die Button-Erstellung.
+  const populate = async (kind) => {
+    setPopBusy(kind); setPopMsg(null)
+    try {
+      if (kind === 'df') await postJSON(`/api/streamdeck/deck/${active}/populate_displayfusion`, {})
+      else await postJSON('/api/streamdeck/deck/populate_obs_scenes', { deck_id: active })
+      onReload && onReload(); setPopMsg({ ok: true, t: 'befüllt ✓' })
+    } catch (e) { setPopMsg({ ok: false, t: 'fehlgeschlagen (Quelle offline?)' }) }
+    setPopBusy('')
+  }
   const cur = decks.find((d) => d.id === active) || decks[0] || {}
   const idx = decks.findIndex((d) => d.id === active)
   const regular = decks.filter((d) => !d.folder)
@@ -387,7 +401,7 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
         <span class="sd-deckbar-h">📁 Ordner</span>
         {folders.map(Tab)}
         <InlineAdd label="➕ Ordner" placeholder="Name des Ordners" onAdd={addFolder} />
-        <span class="muted" style="font-size:12px;flex-basis:100%">Ordner erscheinen NICHT in der Panel-Tableiste — nur über einen „📁 Ordner öffnen"-Button erreichbar. <b>Presets</b> (DisplayFusion/OBS) lädst du direkt beim Anlegen eines „📁 Ordner öffnen"-Buttons — oder per „Importieren" unten im Deck.</span>
+        <span class="muted" style="font-size:12px;flex-basis:100%">Ein Ordner ist einfach ein Deck: hier anlegen, dann <b>füllen wie jedes Deck</b> (Buttons reinziehen — oder oben „📥 Füllen aus" OBS/DisplayFusion). Erreichbar wird er über einen „📁 Ordner öffnen"-Button (dessen Aussehen frei wählbar ist — z.B. die Health-Ampel per „🎨 Aussehen einfügen").</span>
       </div>
       <div class="sd-deck-tools">
         <span class="muted" style="font-size:12px">Aktiv:</span>
@@ -402,8 +416,16 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
           ? <button class="btn ghost small" title="In ein normales Deck umwandeln (kommt zurück in die Tableiste)" onClick={() => setFolder(false)}>→ Deck</button>
           : <button class="btn ghost small" title="In einen Ordner umwandeln (raus aus der Tableiste)" onClick={() => setFolder(true)}>→ Ordner</button>)}
         {active !== defaultDeck
-          ? <ConfirmX cls="btn ghost small danger" label="🗑 löschen" title="Löschen (Buttons bleiben im Pool)" onConfirm={delDeck} />
+          ? <ConfirmX cls="btn ghost small danger" label="🗑 löschen"
+                      title={cur.folder ? 'Ordner löschen — sein „Ordner öffnen"-Button wird mitentfernt' : 'Löschen (Buttons bleiben im Pool)'}
+                      onConfirm={delDeck} />
           : <span class="muted" style="font-size:12px">· Standard-Deck (nicht löschbar)</span>}
+        <span class="muted" style="font-size:12px;margin-left:6px">· 📥 Füllen aus:</span>
+        <button class="btn ghost small" disabled={!!popBusy} onClick={() => populate('obs')}
+                title="Dieses Deck mit allen OBS-Szenen-Buttons füllen (additiv)">{popBusy === 'obs' ? '…' : '🎬 OBS-Szenen'}</button>
+        {dfAvailable && <button class="btn ghost small" disabled={!!popBusy} onClick={() => populate('df')}
+                title="Dieses Deck mit allen DisplayFusion-Profil-Buttons füllen (additiv)">{popBusy === 'df' ? '…' : '🖥 DisplayFusion'}</button>}
+        {popMsg && <span class={'msg small ' + (popMsg.ok ? 'ok' : 'err')}>{popMsg.t}</span>}
       </div>
     </div>
   )
@@ -497,13 +519,57 @@ function ItemInspector({ deck, item, onReload }) {
 // Geteilter Deck-Inspektor: Klick auf einen platzierten Button → die VOLLEN Funktions-Einstellungen
 // (derselbe FunctionEditor wie in der Button-Bibliothek) PLUS die deck-eigene Platzierung/Stil.
 // Wird vom Kategorie-Raster UND vom Frei-Editor genutzt (eine Wahrheit, kein Duplikat).
-function DeckItemInspector({ deck, item, btn, options, onReload, onClose }) {
+function DeckItemInspector({ deck, item, btn, options, onReload, onClose, onNavigateDeck }) {
+  const [folderBusy, setFolderBusy] = useState(false)
   if (!item) return <ItemInspector deck={deck} item={null} onReload={onReload} />
+  // Schon ein Ordner-Öffnen-Button? Dann nicht nochmal „in Ordner umwandeln" anbieten.
+  const isFolderOpener = !!(btn && btn.action && btn.action.type === 'open_deck')
+  // Vorhandene Ordner (außer diesem Deck) → „verschieben in"-Auswahl. Funktioniert in BEIDEN Editoren
+  // (auch auf „Frei anordnen"-Decks, wo Tile-Drag fürs Positionieren reserviert ist).
+  const folders = (options.decks || []).filter((d) => d.folder && d.id !== deck.id)
+  const toFolder = async () => {
+    if (folderBusy) return
+    setFolderBusy(true)
+    try {
+      const r = await postJSON(`/api/streamdeck/deck/${deck.id}/item/${encodeURIComponent(item.button)}/to_folder`, {})
+      if (onReload) await onReload()
+      onClose && onClose()
+      if (r && r.folder && onNavigateDeck) onNavigateDeck(r.folder)   // direkt in den neuen Ordner springen
+    } catch (_) {}
+    setFolderBusy(false)
+  }
+  const moveToFolder = async (fid) => {
+    if (folderBusy || !fid) return
+    setFolderBusy(true)
+    try {
+      await postJSON(`/api/streamdeck/deck/${fid}/item`, { button: item.button })            // in den Ordner legen
+      await delJSON(`/api/streamdeck/deck/${deck.id}/item/${encodeURIComponent(item.button)}`) // hier vom Deck nehmen
+      if (onReload) await onReload()
+      onClose && onClose()   // BEWUSST NICHT in den Ordner springen — Button verschwindet nur vom Deck, man bleibt
+                             // hier und kann zügig weitere Buttons einsortieren (Ordner selbst: oben antippen).
+    } catch (_) {}
+    setFolderBusy(false)
+  }
   return (
     <div class="sd-deck-inspect-panel">
       <div class="sd-inspect-head">
         <span class="sd-inspect-title">✏️ <b>{(btn || {}).label || item.button}</b> — Einstellungen</span>
-        <button class="btn ghost small" onClick={onClose}>✕ schließen</button>
+        <span class="sd-inline">
+          {!isFolderOpener && (
+            <button class="btn ghost small" disabled={folderBusy} onClick={toFolder}
+                    title="Diesen Button in einen Ordner verwandeln — der Ordner sieht genauso aus und enthält den Button als ersten Eintrag.">
+              📁 In Ordner umwandeln
+            </button>
+          )}
+          {folders.length > 0 && (
+            <select class="so-delay" disabled={folderBusy} title="Diesen Button in einen bestehenden Ordner verschieben"
+                    onChange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = ''; moveToFolder(v) }}>
+              <option value="">📁 In Ordner verschieben…</option>
+              {folders.map((f) => <option value={f.id}>{(f.icon || '📁') + ' ' + (f.label || f.id)}</option>)}
+            </select>
+          )}
+          <button class="btn ghost small" onClick={onClose}>✕ schließen</button>
+        </span>
       </div>
       {btn
         ? <FunctionEditor key={item.button} button={btn} options={options} onSaved={onReload} />
@@ -562,7 +628,7 @@ function PalettePicker({ palette, poolCategories, hint, renderChip }) {
 // 🧩 Freier Drag-/Resize-Editor (gridstack) — Kachel-Positionen sind DATEN (Item x/y/w/h), kein Auto-Flow.
 // Spiegelt das Muster des Stream-Tab-Layout-Editors. ⚠ Position/Größe gelten NUR im Touch-Panel; das physische
 // Elgato-Plugin liest nur resolved[button] und rendert JEDEN Button 1×1.
-function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, options }) {
+function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, options, onNavigateDeck }) {
   const elRef = useRef(null)
   const gridRef = useRef(null)
   const saveT = useRef(null)
@@ -660,7 +726,7 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, 
         </div>
       </div>
       <DeckItemInspector deck={deck} item={selItem} btn={byId[sel]} options={options}
-                         onReload={onReload} onClose={() => setSel('')} />
+                         onReload={onReload} onClose={() => setSel('')} onNavigateDeck={onNavigateDeck} />
       <PalettePicker palette={palette} poolCategories={poolCategories}
         hint="🧩 Pool — Kategorie aufklappen, dann in den Canvas ziehen (oder klicken = landet automatisch):"
         renderChip={(b) => (
@@ -675,10 +741,38 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, 
   )
 }
 
-function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable, options }) {
+// Auto-Scroll während HTML5-Drag: der Browser scrollt bei Drag&Drop NICHT von selbst. Wenn unten der
+// Inspector offen ist, liegt die Palette weit unten und das Deck-Raster oben aus dem Bild — man käme
+// beim Hochziehen eines Palette-Buttons gar nicht mehr ans Raster. Dieser Hook scrollt die Seite,
+// sobald der Cursor WÄHREND eines Drags nahe an den oberen/unteren Fensterrand kommt (dragover feuert
+// nur während eines aktiven Drags). rAF-Schleife → scrollt auch, wenn man am Rand stehen bleibt.
+function useDragAutoScroll() {
+  useEffect(() => {
+    const EDGE = 110, MAX = 22
+    let y = 0, raf = 0, on = false
+    const scrollIfEdge = () => {
+      const h = window.innerHeight
+      if (y < EDGE) window.scrollBy(0, -MAX * (1 - y / EDGE))
+      else if (y > h - EDGE) window.scrollBy(0, MAX * (1 - (h - y) / EDGE))
+    }
+    const step = () => { if (!on) return; scrollIfEdge(); raf = requestAnimationFrame(step) }
+    // Sofort beim dragover scrollen (greift schon beim Hochziehen) UND rAF-Schleife für „am Rand stehen
+    // bleiben" (falls rAF gedrosselt ist, trägt der dragover-Scroll trotzdem).
+    const over = (e) => { y = e.clientY || 0; scrollIfEdge(); if (!on) { on = true; raf = requestAnimationFrame(step) } }
+    const stop = () => { on = false; cancelAnimationFrame(raf) }
+    document.addEventListener('dragover', over)
+    document.addEventListener('drop', stop)
+    document.addEventListener('dragend', stop)
+    return () => { stop(); document.removeEventListener('dragover', over); document.removeEventListener('drop', stop); document.removeEventListener('dragend', stop) }
+  }, [])
+}
+
+function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable, options, onNavigateDeck }) {
+  useDragAutoScroll()
   const [sel, setSel] = useState('')
   const drag = useRef(null)   // {id, from:'grid'|'palette'}
   const [hot, setHot] = useState('')   // Kategorie-Name unter dem Cursor (Drop-Highlight)
+  const [folderHot, setFolderHot] = useState('')   // Ordner-Button-id unter dem Cursor (Drop-in-Ordner-Highlight)
   const [obsBusy, setObsBusy] = useState(false)
   const [obsMsg, setObsMsg] = useState(null)
   const [dfBusy, setDfBusy] = useState(false)
@@ -693,7 +787,7 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
   const toggleFree = () => postJSON(`/api/streamdeck/deck/${deck.id}/layout`, { ...layout, free: !free })
     .then(() => onReload && onReload()).catch(() => {})
   // Freie Anordnung (gridstack) ist ein eigener Editor → früh raus (alle Hooks oben liefen bereits).
-  if (free) return <FreeDeckGrid deck={deck} pool={pool} poolCategories={poolCategories} resolved={resolved} onReload={onReload} onExit={toggleFree} options={options} />
+  if (free) return <FreeDeckGrid deck={deck} pool={pool} poolCategories={poolCategories} resolved={resolved} onReload={onReload} onExit={toggleFree} options={options} onNavigateDeck={onNavigateDeck} />
   const cats = deck.categories || []
   const itemsById = {}; for (const it of deck.items || []) itemsById[it.button] = it
   const btnById = {}; for (const b of pool) btnById[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
@@ -709,9 +803,19 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
   const patchItem = (bid, body) => postJSON(`${itemURL}/${bid}`, body)
 
   // Drop auf eine Kachel → vor diese einsortieren (+ ggf. Kategorie übernehmen / aus Pool holen).
+  // SONDERFALL: ist die Ziel-Kachel ein Ordner (open_deck), wandert der Button IN den Ordner —
+  // dort hinein gelegt und (wenn er vom Deck kam) hier entfernt. Selbsterklärendes Drag-in-Ordner.
   const dropOnTile = async (dropId) => {
-    const d = drag.current; drag.current = null; setHot('')
+    const d = drag.current; drag.current = null; setHot(''); setFolderHot('')
     if (!d || d.id === dropId) return
+    const tgt = btnById[dropId]
+    const intoDeck = (tgt && tgt.action && tgt.action.type === 'open_deck') ? tgt.action.deck : null
+    if (intoDeck) {
+      await postJSON(`/api/streamdeck/deck/${intoDeck}/item`, { button: d.id }).catch(() => {})
+      if (d.from === 'grid') await delJSON(`${itemURL}/${d.id}`).catch(() => {})
+      onReload && onReload()
+      return
+    }
     const targetCat = catOf(dropId)
     if (d.from === 'palette') await addItem(d.id, targetCat).catch(() => {})
     else if (catOf(d.id) !== targetCat) await patchItem(d.id, { category: targetCat }).catch(() => {})
@@ -824,14 +928,19 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
                       const eff = resolveStyle(it.style, layout)
                       const sw = Math.max(1, it.w || 1), sh = Math.max(1, it.h || 1)
                       const spanned = sw > 1 || sh > 1
+                      const tb = btnById[it.button]
+                      const isFolder = !!(tb && tb.action && tb.action.type === 'open_deck')   // Ordner-Öffnen-Button
                       return (
-                        <div key={it.button} class={'sd-wys-key-wrap' + (sel === it.button ? ' sel' : '') + (it.hidden ? ' is-hidden' : '') + (spanned ? ' spanned' : '')}
+                        <div key={it.button} class={'sd-wys-key-wrap' + (sel === it.button ? ' sel' : '') + (it.hidden ? ' is-hidden' : '') + (spanned ? ' spanned' : '') + (folderHot === it.button ? ' folder-drop' : '')}
                              style={spanned ? `grid-column:span ${sw};grid-row:span ${sh}` : ''}
                              draggable onDragStart={(e) => { e.stopPropagation(); drag.current = { id: it.button, from: 'grid' } }}
-                             onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+                             onDragOver={(e) => { e.preventDefault(); e.stopPropagation()
+                               if (isFolder && drag.current && drag.current.id !== it.button) setFolderHot(it.button)
+                               else if (folderHot) setFolderHot('') }}
+                             onDragLeave={() => setFolderHot((h) => h === it.button ? '' : h)}
                              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); dropOnTile(it.button) }}
                              onClick={() => setSel(sel === it.button ? '' : it.button)}
-                             title={it.button}>
+                             title={isFolder ? 'Ordner — Buttons hierauf ziehen = in den Ordner verschieben' : it.button}>
                           <LiveKey v={resolved[it.button]} eff={eff} base="sd-prev-key"
                                    render={(btnById[it.button] || {}).render} opts={(btnById[it.button] || {}).opts} />
                           <span class="sd-tile-acts">
@@ -863,7 +972,7 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
       </div>
 
       <DeckItemInspector deck={deck} item={selItem} btn={btnById[sel]} options={options}
-                         onReload={onReload} onClose={() => setSel('')} />
+                         onReload={onReload} onClose={() => setSel('')} onNavigateDeck={onNavigateDeck} />
 
       <PalettePicker palette={palette} poolCategories={poolCategories}
         hint="🧩 Pool — Kategorie aufklappen, dann ziehen oder klicken zum Hinzufügen:"
@@ -1128,6 +1237,27 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
     setPresetOn(true)
     try { applyPresetData(await postJSON('/api/streamdeck/preset', { action: b.action })) } catch (e) { /* noop */ }
   }
+  // 🎨 Aussehen + Status kopieren/einfügen: das gesamte Look-+-Status-Paket (Darstellung · Monitor ·
+  // Zustände · Standard · Refresh) — NICHT die Aktion. Damit kann z.B. die Health-Ampel auf einen
+  // Ordner-Button (open_deck) übertragen werden, ohne alles manuell nachzubauen. Clipboard in
+  // localStorage (überlebt Button-/Session-Wechsel).
+  const [lookClip, setLookClip] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sd.lookClip') || 'null') } catch (_) { return null }
+  })
+  const copyLook = () => {
+    const s = JSON.stringify({ render: b.render, opts: b.opts, monitor: b.monitor,
+                               states: b.states, default: b.default, refresh_seconds: b.refresh_seconds })
+    try { localStorage.setItem('sd.lookClip', s) } catch (_) {}
+    setLookClip(JSON.parse(s)); setMsg({ ok: true, t: '🎨 Aussehen + Status kopiert' })
+  }
+  const pasteLook = () => {
+    if (!lookClip) return
+    stopPreset()
+    const lc = JSON.parse(JSON.stringify(lookClip))
+    setB({ ...b, render: lc.render, opts: lc.opts, monitor: lc.monitor,
+           states: lc.states, default: lc.default, refresh_seconds: lc.refresh_seconds })
+    setMsg({ ok: true, t: '🎨 eingefügt — nur Aussehen + Status, Aktion bleibt' })
+  }
 
   const save = async () => {
     const id = (b.id || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_')
@@ -1163,6 +1293,14 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
           <span class="muted" style="font-size:12px">{presetOn
             ? 'füllt Symbol + Logik automatisch — sobald du unten etwas änderst, hört das auf.'
             : 'füllt Überwachung, Zustände + passendes Symbol zur Aktion vor.'}</span>
+        </div>
+        <div class="reward-row" style="margin:6px 0 2px;align-items:center">
+          <span class="muted conn-label">🎨 Aussehen</span>
+          <button class="btn ghost small" type="button" onClick={copyLook}
+                  title="Darstellung + Statuslogik (Monitor / Zustände / Standard) dieses Buttons kopieren — NICHT die Aktion.">📋 kopieren</button>
+          <button class="btn ghost small" type="button" disabled={!lookClip} onClick={pasteLook}
+                  title="Kopiertes Aussehen + Statusanzeige hier einsetzen (die Aktion bleibt). Z.B. die Health-Ampel auf einen Ordner-Button übertragen.">📥 einfügen</button>
+          <span class="muted" style="font-size:12px">überträgt Look + Statusanzeige (Monitor/Zustände), nicht die Aktion — z.B. Health-Status auf einen Ordner.</span>
         </div>
         <MonitorEditor monitor={b.monitor} options={options} onChange={setMonitor} replace={(m) => { stopPreset(); set({ monitor: m }) }} />
         <RefreshOverride value={b.refresh_seconds} options={options} onChange={(v) => set({ refresh_seconds: v })} />
@@ -1483,7 +1621,7 @@ export function StreamDeck() {
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
               <DeckLayout deck={deck} onReload={load} />
               <DeckGrid deck={deck} pool={data.buttons || []} options={options} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
-                        dfAvailable={options.displayfusion_available} />
+                        dfAvailable={options.displayfusion_available} onNavigateDeck={setActiveDeck} />
             </div>
           )}
         </>
@@ -1547,25 +1685,19 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
     } catch (e) { setPickMsg({ ok: false, t: 'Auswahl fehlgeschlagen: ' + (e.message || e) }) }
     setPicking(false)
   }
-  // open_deck-Preset: einen befüllten Ordner anlegen (DisplayFusion-Profile / OBS-Szenen) und
-  // direkt als Ziel dieses Ordner-Buttons setzen. Die Deck-Liste lokal nachladen, damit das
-  // Dropdown den frischen Ordner sofort zeigt.
+  // Neuen LEEREN Ordner anlegen + direkt als Ziel setzen. Befüllen passiert danach im Decks-Tab
+  // (Buttons reinziehen oder „📥 Füllen aus OBS/DisplayFusion") — kein Preset-Sonderflow mehr beim
+  // Button-Anlegen. Deck-Liste lokal nachladen, damit das Dropdown den frischen Ordner sofort zeigt.
   const refreshDeckOpts = async () => {
     try { const d = await getJSON('/api/streamdeck/registry'); setDeckOpts((d.options && d.options.decks) || []) } catch { /* noop */ }
   }
-  const makePresetFolder = async (kind) => {
+  const makeEmptyFolder = async () => {
     setPresetBusy(true); setPresetMsg(null)
-    const meta = kind === 'df' ? { label: 'Monitor-Profile', icon: '🖥' } : { label: 'OBS-Szenen', icon: '🎬' }
     try {
-      const r = await postJSON('/api/streamdeck/deck/add', { ...meta, folder: true })
+      const r = await postJSON('/api/streamdeck/deck/add', { label: 'Neuer Ordner', icon: '📁', folder: true })
       if (!r || !r.id) throw new Error('Ordner nicht angelegt')
-      let filled = true
-      try {
-        if (kind === 'df') await postJSON(`/api/streamdeck/deck/${r.id}/populate_displayfusion`, {})
-        else await postJSON('/api/streamdeck/deck/populate_obs_scenes', { deck_id: r.id })
-      } catch { filled = false }
       await refreshDeckOpts(); onChange({ deck: r.id })
-      setPresetMsg({ ok: true, t: filled ? 'Ordner angelegt + befüllt ✓' : 'Ordner angelegt (Quelle offline — später befüllen)' })
+      setPresetMsg({ ok: true, t: 'Leerer Ordner angelegt + als Ziel gesetzt — jetzt im Decks-Tab füllen' })
     } catch (e) { setPresetMsg({ ok: false, t: 'Fehlgeschlagen: ' + (e.message || e) }) }
     setPresetBusy(false)
   }
@@ -1600,11 +1732,9 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             </select>
           </div>
           <div class="reward-row">
-            <span class="muted conn-label">oder Preset laden</span>
-            <button class="btn ghost small" disabled={presetBusy} onClick={() => makePresetFolder('df')}
-                    title="Neuen Ordner mit allen DisplayFusion-Monitor-Profilen anlegen und hier direkt als Ziel setzen">🖥 DisplayFusion-Ordner</button>
-            <button class="btn ghost small" disabled={presetBusy} onClick={() => makePresetFolder('obs')}
-                    title="Neuen Ordner mit allen OBS-Szenen anlegen und hier direkt als Ziel setzen">🎬 OBS-Szenen-Ordner</button>
+            <span class="muted conn-label">oder neu</span>
+            <button class="btn ghost small" disabled={presetBusy} onClick={makeEmptyFolder}
+                    title="Neuen leeren Ordner anlegen und hier direkt als Ziel setzen — danach im Decks-Tab füllen (Buttons reinziehen oder per Füllen-aus-OBS/DisplayFusion).">➕ Neuer leerer Ordner</button>
             {presetMsg && <span class={'msg small ' + (presetMsg.ok ? 'ok' : 'err')}>{presetMsg.t}</span>}
           </div>
           <div class="reward-row">
@@ -1615,8 +1745,9 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             </select>
           </div>
           <p class="muted sd-help">Macht diesen Button zu einem <b>Ordner</b>: beim Tippen öffnet sich das
-            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü. <b>„Preset laden"</b> legt
-            direkt einen befüllten Ordner an (alle DisplayFusion-Profile / OBS-Szenen) und setzt ihn als Ziel.
+            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü. Den Ordner-Inhalt füllst du
+            im <b>Decks-Tab</b> (Buttons reinziehen oder „📥 Füllen aus OBS/DisplayFusion"). Das <b>Aussehen</b>
+            dieses Buttons ist frei — z.B. via „🎨 Aussehen einfügen" die Health-Ampel statt des Ordner-Symbols.
             Nur im Touch-Panel; auf der Elgato-Hardware ohne Wirkung.</p>
         </>
       )}
