@@ -361,12 +361,23 @@ function RefreshRate({ reg, onSaved }) {
 function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }) {
   const [popBusy, setPopBusy] = useState('')
   const [popMsg, setPopMsg] = useState(null)
+  const [dragId, setDragId] = useState('')   // Deck-Tabs per Drag&Drop sortieren (Reihenfolge = Panel-Tableiste + Sidescroll)
+  const [overId, setOverId] = useState('')
   const setDecks = (next) => postJSON('/api/streamdeck/decks', { decks: next.map((d) => ({ id: d.id, label: d.label, icon: d.icon })) }).then(() => onReload && onReload()).catch(() => {})
   const addDeck = (label) => postJSON('/api/streamdeck/deck/add', { label }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const addFolder = (label) => postJSON('/api/streamdeck/deck/add', { label, icon: '📁', folder: true, make_opener: true }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const dupDeck = () => postJSON('/api/streamdeck/deck/add', { label: (cur.label || 'Deck') + ' (Kopie)', icon: cur.icon, copy_from: cur.id, folder: cur.folder }).then((r) => { onReload && onReload(); if (r && r.id) onSelect(r.id) }).catch(() => {})
   const delDeck = () => postJSON('/api/streamdeck/deck/delete', { id: active }).then(() => onReload && onReload()).catch(() => {})
   const move = (dir) => { const arr = decks.slice(); const i = arr.findIndex((x) => x.id === active); const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return;[arr[i], arr[j]] = [arr[j], arr[i]]; setDecks(arr) }
+  // Drag&Drop-Sortierung: gezogenes Deck an die Position des Ziel-Decks schieben. Nur INNERHALB derselben
+  // Leiste (Deck↔Deck bzw. Ordner↔Ordner) — die Reihenfolge treibt 1:1 die Panel-Tableiste + den Sidescroll.
+  const reorder = (a, b) => {
+    if (!a || a === b) return
+    const arr = decks.slice()
+    const i = arr.findIndex((x) => x.id === a), j = arr.findIndex((x) => x.id === b)
+    if (i < 0 || j < 0 || !!arr[i].folder !== !!arr[j].folder) return
+    const [m] = arr.splice(i, 1); arr.splice(j, 0, m); setDecks(arr)
+  }
   const rename = (label) => setDecks(decks.map((x) => x.id === active ? { ...x, label } : x))
   const setIcon = (icon) => setDecks(decks.map((x) => x.id === active ? { ...x, icon } : x))
   const setFolder = (val) => postJSON(`/api/streamdeck/deck/${active}/folder`, { folder: val }).then(() => onReload && onReload()).catch(() => {})
@@ -387,7 +398,14 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
   const regular = decks.filter((d) => !d.folder)
   const folders = decks.filter((d) => d.folder)
   const Tab = (d) => (
-    <button key={d.id} class={'sd-deck-tab' + (d.id === active ? ' active' : '')} onClick={() => onSelect(d.id)}>
+    <button key={d.id} title="Ziehen zum Sortieren · Klick zum Bearbeiten"
+            class={'sd-deck-tab' + (d.id === active ? ' active' : '') + (dragId === d.id ? ' dragging' : '') + (overId === d.id && dragId && dragId !== d.id ? ' drag-over' : '')}
+            draggable onClick={() => onSelect(d.id)}
+            onDragStart={(e) => { setDragId(d.id); try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', d.id) } catch (_e) {} }}
+            onDragEnter={() => setOverId(d.id)}
+            onDragOver={(e) => { e.preventDefault(); try { e.dataTransfer.dropEffect = 'move' } catch (_e) {} }}
+            onDrop={(e) => { e.preventDefault(); reorder(dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain')), d.id); setDragId(''); setOverId('') }}
+            onDragEnd={() => { setDragId(''); setOverId('') }}>
       <span class="sd-deck-tab-icon">{d.icon || '🎛'}</span>
       <span class="sd-deck-tab-label">{d.label || d.id}</span>
     </button>
