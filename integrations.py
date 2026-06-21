@@ -36,6 +36,16 @@ BASE = {
                   "label": "🔊 Windows-Lautstärke-Fader generieren"},
 }
 
+# ── „Eigene Buttons" — frei definierte/handgemachte Buttons (keine externe Abhängigkeit). ──────
+# Sonderfall ``custom: True``: das Tab-Panel ist KEIN Häkchen-Generator, sondern ein Mini-Verwalter
+# (Liste der eigenen Buttons + „Neuer Button"). base=True → immer da, nicht abschaltbar.
+CUSTOM = {
+    "id": "custom", "emoji": "✏️", "label": "Eigene Buttons und Kategorien", "base": True, "custom": True,
+    "description": "Frei definierte Buttons (Programm starten, Tastenkürzel, URL, Ordner, Medien …) + "
+                   "eigene Kategorien — beliebig viele anlegen, jederzeit bearbeiten.",
+    "actions": [], "monitors": [],
+}
+
 # ── Generische Fremd-App-/Hardware-Integrationen (jeder Host kann sie haben) ───────────────────
 CORE_INTEGRATIONS = [
     {
@@ -89,8 +99,8 @@ CORE_INTEGRATIONS = [
 
 
 def all_integrations(extra=None):
-    """Vollständige Liste: Basis + generische Integrationen + host-injizierte (``extra``)."""
-    return [BASE] + list(CORE_INTEGRATIONS) + list(extra or [])
+    """Vollständige Liste: Basis + Eigene + generische Integrationen + host-injizierte (``extra``)."""
+    return [BASE, CUSTOM] + list(CORE_INTEGRATIONS) + list(extra or [])
 
 
 def cap_owners(integrations):

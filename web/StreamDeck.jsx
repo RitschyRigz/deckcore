@@ -494,6 +494,26 @@ function ItemInspector({ deck, item, onReload }) {
   )
 }
 
+// Geteilter Deck-Inspektor: Klick auf einen platzierten Button → die VOLLEN Funktions-Einstellungen
+// (derselbe FunctionEditor wie in der Button-Bibliothek) PLUS die deck-eigene Platzierung/Stil.
+// Wird vom Kategorie-Raster UND vom Frei-Editor genutzt (eine Wahrheit, kein Duplikat).
+function DeckItemInspector({ deck, item, btn, options, onReload, onClose }) {
+  if (!item) return <ItemInspector deck={deck} item={null} onReload={onReload} />
+  return (
+    <div class="sd-deck-inspect-panel">
+      <div class="sd-inspect-head">
+        <span class="sd-inspect-title">✏️ <b>{(btn || {}).label || item.button}</b> — Einstellungen</span>
+        <button class="btn ghost small" onClick={onClose}>✕ schließen</button>
+      </div>
+      {btn
+        ? <FunctionEditor key={item.button} button={btn} options={options} onSaved={onReload} />
+        : <p class="muted sd-help">Diese Funktion liegt nicht (mehr) in der Button-Bibliothek.</p>}
+      <h4 class="section-h sd-inspect-sub">📐 Platzierung auf diesem Deck</h4>
+      <ItemInspector deck={deck} item={item} onReload={onReload} />
+    </div>
+  )
+}
+
 const POOL_UNCAT = '__uncat__'   // interner Key für „Ohne Kategorie" (kann nie ein echter Kategoriename sein)
 
 // Geteilte Paletten-Auswahl (Decks-Tab): Pool-Buttons nach pool_cat gruppiert, klappbar, DEFAULT ZUGEKLAPPT.
@@ -538,7 +558,7 @@ function PalettePicker({ palette, poolCategories, hint, renderChip }) {
 // 🧩 Freier Drag-/Resize-Editor (gridstack) — Kachel-Positionen sind DATEN (Item x/y/w/h), kein Auto-Flow.
 // Spiegelt das Muster des Stream-Tab-Layout-Editors. ⚠ Position/Größe gelten NUR im Touch-Panel; das physische
 // Elgato-Plugin liest nur resolved[button] und rendert JEDEN Button 1×1.
-function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }) {
+function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, options }) {
   const elRef = useRef(null)
   const gridRef = useRef(null)
   const saveT = useRef(null)
@@ -548,9 +568,11 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }
   const cell = layout.button_size || 116
   const items = deck.items || []
   const inDeck = new Set(items.map((it) => it.button))
-  const palette = pool.filter((b) => !inDeck.has(b.id))
+  const palette = pool.filter((b) => !inDeck.has(b.id) && !b.hidden)
   const byId = {}; for (const b of pool) byId[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
   const itemURL = `/api/streamdeck/deck/${deck.id}/item`
+  const [sel, setSel] = useState('')
+  const selItem = sel ? items.find((it) => it.button === sel) : null
 
   // gridstack-Init: erst nach Mount (DOM-Items da). Remount via key, wenn sich die Item-MENGE ändert
   // (Positionen kommen aus den gs-Attributen). Drag/Resize → debounced Bulk-Save (set_deck_positions).
@@ -617,10 +639,13 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }
             if (Number.isInteger(it.y)) attrs['gs-y'] = it.y
             return (
               <div class="grid-stack-item" key={it.button} {...attrs}>
-                <div class="grid-stack-item-content">
+                <div class={'grid-stack-item-content' + (sel === it.button ? ' sel' : '')}
+                     onClick={() => setSel(sel === it.button ? '' : it.button)}>
                   <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key"
                            render={(byId[it.button] || {}).render} opts={(byId[it.button] || {}).opts} />
                   <span class="sd-tile-acts">
+                    <button class="sd-tile-act" title="Einstellungen öffnen"
+                            onClick={(e) => { e.stopPropagation(); setSel(it.button) }}>✏️</button>
                     <button class="sd-tile-act" title="vom Deck nehmen"
                             onClick={(e) => { e.stopPropagation(); removeItem(it.button) }}>✕</button>
                   </span>
@@ -630,6 +655,8 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }
           })}
         </div>
       </div>
+      <DeckItemInspector deck={deck} item={selItem} btn={byId[sel]} options={options}
+                         onReload={onReload} onClose={() => setSel('')} />
       <PalettePicker palette={palette} poolCategories={poolCategories}
         hint="🧩 Pool — Kategorie aufklappen, dann in den Canvas ziehen (oder klicken = landet automatisch):"
         renderChip={(b) => (
@@ -644,7 +671,7 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit }
   )
 }
 
-function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable }) {
+function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable, options }) {
   const [sel, setSel] = useState('')
   const drag = useRef(null)   // {id, from:'grid'|'palette'}
   const [hot, setHot] = useState('')   // Kategorie-Name unter dem Cursor (Drop-Highlight)
@@ -662,12 +689,12 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable 
   const toggleFree = () => postJSON(`/api/streamdeck/deck/${deck.id}/layout`, { ...layout, free: !free })
     .then(() => onReload && onReload()).catch(() => {})
   // Freie Anordnung (gridstack) ist ein eigener Editor → früh raus (alle Hooks oben liefen bereits).
-  if (free) return <FreeDeckGrid deck={deck} pool={pool} poolCategories={poolCategories} resolved={resolved} onReload={onReload} onExit={toggleFree} />
+  if (free) return <FreeDeckGrid deck={deck} pool={pool} poolCategories={poolCategories} resolved={resolved} onReload={onReload} onExit={toggleFree} options={options} />
   const cats = deck.categories || []
   const itemsById = {}; for (const it of deck.items || []) itemsById[it.button] = it
   const btnById = {}; for (const b of pool) btnById[b.id] = b   // Button-Def per id (render/opts für die Live-Vorschau)
   const inDeck = new Set((deck.items || []).map((it) => it.button))
-  const palette = pool.filter((b) => !inDeck.has(b.id))
+  const palette = pool.filter((b) => !inDeck.has(b.id) && !b.hidden)
   const groups = groupDeckItems(deck.items || [], cats, true)   // hidden mit anzeigen (grau)
 
   const reorderURL = `/api/streamdeck/deck/${deck.id}/reorder`
@@ -765,7 +792,7 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable 
         <span class="sd-inline">
           <button class="btn ghost small" onClick={toggleFree} title="Freie Drag-Platzierung (gridstack): Kacheln frei verschieben/vergrößern statt Kategorie-Raster">⊞ Frei anordnen</button>
           <InlineAdd label="➕ Kategorie" placeholder="Neue Deck-Kategorie" onAdd={addCat} />
-          <span class="muted" style="font-size:11px">· Buttons/Fader generierst du im <b>🧩 Button-Pool</b>-Tab (Presets, landen dort kategorisiert) und ziehst sie dann hierher.</span>
+          <span class="muted" style="font-size:11px">· Buttons/Fader generierst &amp; bearbeitest du im <b>🔌 Buttons &amp; Kategorien</b>-Tab; hier ziehst du sie ins Raster und klickst sie zum Feinjustieren an.</span>
         </span>
       </div>
 
@@ -831,7 +858,8 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable 
         })}
       </div>
 
-      <ItemInspector deck={deck} item={selItem} onReload={onReload} />
+      <DeckItemInspector deck={deck} item={selItem} btn={btnById[sel]} options={options}
+                         onReload={onReload} onClose={() => setSel('')} />
 
       <PalettePicker palette={palette} poolCategories={poolCategories}
         hint="🧩 Pool — Kategorie aufklappen, dann ziehen oder klicken zum Hinzufügen:"
@@ -885,7 +913,7 @@ function PoolList({ buttons, poolCategories, resolved, options, onReload }) {
         <InlineAdd label="➕ Kategorie" placeholder="Neue Pool-Kategorie" onAdd={addCat} />
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
-        <span class="muted">{buttons.length} Buttons im Pool · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks</b>-Tab. <b>Buttons generieren</b> (OBS-Szenen · Wave-Link-Fader · HWiNFO · OBSBOT · DisplayFusion · Windows-Lautstärke) jetzt im <b>🔌 Integrationen</b>-Tab.</span>
+        <span class="muted">{buttons.length} eigene Buttons · in <b>klappbaren Kategorien</b> gruppiert. Pro Button rechts die Kategorie wählen, zum Bearbeiten aufklappen. Platzierung aufs Deck per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab. Generierte Buttons (OBS · Wave Link · HWiNFO · …) liegen in ihren eigenen <b>Kategorien</b> oben.</span>
       </div>
       {adding && (
         <FunctionEditor button={blankButton()} options={options} isNew
@@ -946,12 +974,13 @@ function PoolCard({ b, vis, options, cats, allIds, onChanged }) {
   const aType = (b.action || {}).type
   const mType = (b.monitor || {}).type
   return (
-    <div class={'card content-card mode-static' + (open ? ' open' : '')}>
+    <div class={'card content-card mode-static' + (open ? ' open' : '') + (b.hidden ? ' is-hidden-btn' : '')}>
       <div class="sd-pool-head" style="display:flex;align-items:center;gap:6px;padding-right:8px">
         <button class="card-toggle" style="flex:1;min-width:0" onClick={() => setOpen(!open)}>
           <span class="caret">{open ? '▾' : '▸'}</span>
           <Swatch vis={vis} />
           <span class="card-title">{b.label || b.id}</span>
+          {b.hidden && <span class="sd-hidden-badge" title="ausgeblendet — über 🔌 Buttons &amp; Kategorien wieder anhaken">🚫 aus</span>}
           <span class="muted conn-id">⚡{ACTION_LABELS[aType] ? aType : 'none'} · 👁{mType}</span>
         </button>
         <select class="sd-pool-cat" value={b.pool_cat || ''} title="Pool-Kategorie (klappbare Gruppe im Pool)"
@@ -1238,7 +1267,7 @@ function ObsConn() {
 // (die Button-Typen verschwinden aus den Auswahllisten); bestehende Buttons laufen weiter.
 // Pro Integration optional ein „Generieren/Rescan"-Knopf (additiv+idempotent gegen den Live-Stand).
 // onReload lädt die Registry/Optionen neu → Gating + frisch generierte Buttons sofort sichtbar.
-function Integrations({ onReload }) {
+function Integrations({ onReload, buttons, poolCategories, resolved, options }) {
   const [items, setItems] = useState(null)
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState('')
@@ -1260,10 +1289,9 @@ function Integrations({ onReload }) {
       .then((d) => { setItems(d.integrations || []); onReload && onReload() })
       .catch((e) => setErr(String(e))).then(() => setBusy(''))
   }
-  if (err) return <p class="fatal">Integrationen nicht erreichbar: {err}</p>
-  if (!items) return <p class="muted">Lade Integrationen…</p>
-  const base = items.find((i) => i.base)
-  const list = items.filter((i) => !i.base).sort((a, b) => a.label.localeCompare(b.label))
+  if (err) return <p class="fatal">Kategorien nicht erreichbar: {err}</p>
+  if (!items) return <p class="muted">Lade Kategorien…</p>
+  const list = items.slice().sort((a, b) => (a.base ? -1 : b.base ? 1 : a.label.localeCompare(b.label)))
   const q = search.trim().toLowerCase()
   const filtered = q ? list.filter((i) => i.label.toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q)) : list
   const current = list.find((i) => i.id === sel)
@@ -1274,9 +1302,9 @@ function Integrations({ onReload }) {
   }
   return (
     <div class="card" style="max-width:1100px">
-      <h3 class="section-h" style="margin-top:0">🔌 Integrationen <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
+      <h3 class="section-h" style="margin-top:0">🔌 Kategorien <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
       <div class="conn-toolbar" style="margin-bottom:8px">
-        <span class="sd-int-search"><input value={search} placeholder="🔍 Integration suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
+        <span class="sd-int-search"><input value={search} placeholder="🔍 Kategorie suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
         <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Status prüfen'}</button>
         <span class="muted" style="font-size:12px">🟢 erreichbar · 🔴 aus · ⚪ nicht im Build</span>
       </div>
@@ -1288,19 +1316,19 @@ function Integrations({ onReload }) {
             <span class="sd-int-row-on">{it.enabled ? '● an' : '○ aus'}</span>
           </button>
         ))}
-        {!filtered.length && <span class="muted" style="padding:8px">Keine Integration gefunden.</span>}
+        {!filtered.length && <span class="muted" style="padding:8px">Keine Kategorie gefunden.</span>}
       </div>
       {current
         ? <IntegrationPanel key={current.id} it={current} status={statuses[current.id]} busy={busy === current.id}
-            onToggle={() => toggle(current)} onReload={onReload} />
-        : <p class="hint" style="margin-top:12px">↑ Wähle oben eine Integration, um Voraussetzungen zu prüfen + Buttons zu generieren.</p>}
-      {base && <div class="sd-int-base"><span>🧱 <b>Basis</b> — {base.description} <span class="muted">(immer aktiv)</span></span></div>}
+            onToggle={() => toggle(current)} onReload={onReload}
+            buttons={buttons} poolCategories={poolCategories} resolved={resolved} options={options} />
+        : <p class="hint" style="margin-top:12px">↑ Wähle oben eine Kategorie, um Voraussetzungen zu prüfen + Buttons zu generieren.</p>}
     </div>
   )
 }
 
 // Panel der gewählten Integration: Status + An/Aus + live ausgelesene Elemente zum Ankreuzen + Generieren.
-function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
+function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolCategories, resolved, options }) {
   const [el, setEl] = useState(null)
   const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
   const [toggles, setToggles] = useState({})
@@ -1311,7 +1339,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
   const [msg, setMsg] = useState(null)
   useEffect(() => {
     setEl(null); setMsg(null); setObsOpen(false)
-    if (!it.enabled) return
+    if (it.custom || !it.enabled) return
     getJSON('/api/integrations/' + it.id + '/elements').then((d) => {
       setEl(d)
       const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = ('present' in x) ? !!x.present : true }) })
@@ -1329,24 +1357,38 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload }) {
     setGenBusy(true); setMsg(null)
     const groups = {}; Object.keys(checked).forEach((gk) => { groups[gk] = Object.keys(checked[gk]).filter((id) => checked[gk][id]) })
     postJSON('/api/integrations/' + it.id + '/generate', { groups, toggles, options: opts, renders })
-      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert${r.removed ? ` · ${r.removed} entfernt` : ''} → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
+      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert${r.removed ? ` · ${r.removed} entfernt` : ''}${r.hidden ? ` · ${r.hidden} ausgeblendet` : ''} → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
   const st = status && status.state !== 'unknown' ? status : null
+  if (it.custom) return (
+    <div class="sd-int-panel">
+      <div class="sd-int-phead">
+        <span class="sd-int-title">{it.emoji} {it.label}</span>
+        <span style="flex:1" />
+        <span class="sd-int-status na" title="Grundfunktion — immer verfügbar">immer aktiv</span>
+      </div>
+      <div class="sd-int-desc">{it.description}</div>
+      <PoolList buttons={(buttons || []).filter((b) => !b.owner)} poolCategories={poolCategories || []}
+                resolved={resolved || {}} options={options || {}} onReload={onReload} />
+    </div>
+  )
   return (
     <div class="sd-int-panel">
       <div class="sd-int-phead">
         <span class="sd-int-title">{it.emoji} {it.label}</span>
         {st && <span class={'sd-int-status ' + st.state}>{st.state === 'ok' ? '🟢' : st.state === 'na' ? '⚪' : '🔴'} {st.detail}</span>}
         <span style="flex:1" />
-        <button class={'sd-int-toggle' + (it.enabled ? ' on' : '')} disabled={busy} onClick={onToggle}
-          title={it.enabled ? 'Aktiv — Button-Typen im Editor sichtbar' : 'Aus — Typen ausgeblendet (bestehende Buttons laufen weiter)'}>
-          {busy ? '…' : it.enabled ? '● An' : '○ Aus'}
-        </button>
+        {it.base
+          ? <span class="sd-int-status na" title="Grundfunktionen — immer verfügbar">immer aktiv</span>
+          : <button class={'sd-int-toggle' + (it.enabled ? ' on' : '')} disabled={busy} onClick={onToggle}
+              title={it.enabled ? 'Aktiv — Button-Typen im Editor sichtbar' : 'Aus — Typen ausgeblendet (bestehende Buttons laufen weiter)'}>
+              {busy ? '…' : it.enabled ? '● An' : '○ Aus'}
+            </button>}
       </div>
       <div class="sd-int-desc">{it.description}</div>
       {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
-      {!it.enabled && <p class="hint" style="margin:10px 0 0">Integration ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
+      {!it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
       {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
       {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
       {it.enabled && el && el.available && (
@@ -1403,7 +1445,7 @@ export function StreamDeck() {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
   const [resolved, setResolved] = useState({})
-  const [view, setView] = useState('decks')   // 'decks' | 'pool' | 'integrations'
+  const [view, setView] = useState('decks')   // 'decks' | 'buttons' | 'backup'
   const [activeDeck, setActiveDeck] = useState('')
   const esRef = useRef(null)
 
@@ -1433,17 +1475,17 @@ export function StreamDeck() {
   return (
     <div>
       <p class="hint">
-        <b>Pool</b> = die Buttons (Funktion + ID), einmal definiert. <b>Decks</b> = unabhängige Tablet-
-        Ansichten mit je eigenem Raster/Größe/Kategorien; Buttons ziehst du dort <b>direkt ins Raster</b>.
-        Derselbe Button darf auf mehreren Decks liegen. Das Elgato-Plugin nutzt nur den Pool. Live-Vorschau = jetzt.
+        <b>Buttons &amp; Kategorien</b> = alle Buttons (Funktion + ID), einmal definiert — von Hand oder über
+        die Kategorien angekreuzt. <b>Decks &amp; Layout</b> = unabhängige Tablet-Ansichten mit je eigenem
+        Raster/Größe/Kategorien; Buttons ziehst du dort <b>ins Raster</b> und klickst sie zum Bearbeiten an.
+        Derselbe Button darf auf mehreren Decks liegen. Das Elgato-Plugin nutzt nur die Button-Definitionen. Live-Vorschau = jetzt.
       </p>
 
       <RefreshRate reg={data} onSaved={load} />
 
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>
-        <button class={'sd-tab' + (view === 'pool' ? ' active' : '')} onClick={() => setView('pool')}>🧩 Button-Pool ({(data.buttons || []).length})</button>
-        <button class={'sd-tab' + (view === 'integrations' ? ' active' : '')} onClick={() => setView('integrations')}>🔌 Integrationen</button>
+        <button class={'sd-tab' + (view === 'buttons' ? ' active' : '')} onClick={() => setView('buttons')}>🔌 Buttons &amp; Kategorien ({(data.buttons || []).length})</button>
         <button class={'sd-tab' + (view === 'backup' ? ' active' : '')} onClick={() => setView('backup')}>💾 Backup</button>
       </div>
 
@@ -1455,15 +1497,14 @@ export function StreamDeck() {
             <div class="card" style="max-width:1100px">
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— Layout &amp; Buttons</span></h3>
               <DeckLayout deck={deck} onReload={load} />
-              <DeckGrid deck={deck} pool={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
+              <DeckGrid deck={deck} pool={data.buttons || []} options={options} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
                         dfAvailable={options.displayfusion_available} />
             </div>
           )}
         </>
-      ) : view === 'pool' ? (
-        <PoolList buttons={data.buttons || []} poolCategories={data.pool_categories || []} resolved={resolved} options={options} onReload={load} />
-      ) : view === 'integrations' ? (
-        <Integrations onReload={load} />
+      ) : view === 'buttons' ? (
+        <Integrations buttons={data.buttons || []} poolCategories={data.pool_categories || []}
+          resolved={resolved} options={options} onReload={load} />
       ) : (
         <BackupCard onReload={load} />
       )}

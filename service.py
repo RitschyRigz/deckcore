@@ -784,10 +784,10 @@ class DeckCoreService:
         pool_ids = {b.get("id") for b in self._buttons}
         for g in el.get("groups", []):
             for it in g.get("items", []):
-                bid = self._integration_bid(iid, g["key"], it["id"])
+                bid = it.get("bid") or self._integration_bid(iid, g["key"], it["id"])
                 if bid:
                     it["bid"] = bid
-                    it["present"] = bid in pool_ids
+                    it["present"] = (bid in pool_ids) and not self._btn_hidden(bid)
                     if it.get("present") and it.get("renders"):   # aktuelle Darstellung des vorhandenen Buttons vorwählen
                         cur = (next((b for b in self._buttons if b.get("id") == bid), {}) or {}).get("render")
                         it["render"] = cur if cur in ("graph", "gauge") else "value"
@@ -867,8 +867,15 @@ class DeckCoreService:
                             {"id": "presets", "label": "Positions-Presets"}, {"id": "center", "label": "Zentrieren"},
                             {"id": "wake", "label": "Wake/Sleep"}, {"id": "track", "label": "Tracking-Toggle"}]}]}
             if iid == "base":
-                return {"available": True, "groups": [{"key": "audio", "label": "Windows-Audio",
-                        "items": [{"id": "volume", "label": "Windows-Lautstärke-Fader"}]}]}
+                groups = [{"key": "audio", "label": "Windows-Audio",
+                           "items": [{"id": "volume", "label": "Windows-Lautstärke-Fader"}]}]
+                devs = (self.winaudio_devices() or {}).get("devices") or []
+                if devs:
+                    groups.append({"key": "devices",
+                                   "label": "Standard-Ausgabegerät — je Gerät ein Umschalt-Button",
+                                   "items": [{"id": str(d.get("id")), "label": str(d.get("name") or d.get("id"))}
+                                             for d in devs if d.get("id")]})
+                return {"available": True, "groups": groups}
         except Exception as e:  # noqa: BLE001
             return {"available": False, "reason": f"Auslese-Fehler: {e}"}
         return {"available": True, "groups": []}   # host-eigene (z.B. cockpit_*) — nichts generierbares
@@ -909,6 +916,55 @@ class DeckCoreService:
             return True
         return False
 
+    def _btn_hidden(self, bid) -> bool:
+        """True, wenn der Pool-Button als AUSGEBLENDET markiert ist (existiert weiter, ist nur aus
+        Palette/Vorschlägen genommen — bleibt platzierbar + auf platzierten Decks aktiv). Pool-Ebene,
+        getrennt vom Deck-Item-``hidden`` (das nur EIN Deck betrifft)."""
+        b = next((x for x in self._buttons if x.get("id") == bid), None)
+        return bool(b and b.get("hidden"))
+
+    def _pool_set_hidden(self, bid, hidden: bool = True) -> bool:
+        """Pool-Button aus-/einblenden statt löschen — er bleibt im Pool + auf platzierten Decks.
+        Rückgabe True, wenn sich der Zustand geändert hat. Speichert NICHT (Aufrufer bündelt)."""
+        for b in self._buttons:
+            if b.get("id") == bid:
+                if bool(b.get("hidden")) == bool(hidden):
+                    return False
+                if hidden:
+                    b["hidden"] = True
+                else:
+                    b.pop("hidden", None)
+                return True
+        return False
+
+    def _is_hide_group(self, iid: str, gk: str) -> bool:
+        """Gruppen, deren ABWÄHLEN den Button AUSBLENDET statt löscht — für Elemente, die man typ.
+        nur zeigen/verstecken will (Standard-Ausgabegeräte; Hüllen erweitern das für ihre Tools,
+        z.B. System-/Prozess-Buttons). Standard: nur die generischen Audio-Geräte."""
+        return iid == "base" and gk == "devices"
+
+    def _button_owner(self, bid: str) -> str:
+        """Welche Integration „besitzt" diesen Button (eigene vs. generierte Buttons trennen)?
+        "" = keiner → eigener/freier Button (lebt im „Eigene Buttons"-Verwalter). Rein anhand der
+        deterministischen Generator-IDs (keine Live-App-Abfrage). Hüllen erweitern für ihre
+        Host-Integrationen (Prozesse/Bots …) via super() + eigener Logik."""
+        s = str(bid or "")
+        if s.startswith(("wl_mix_", "wl_chan_", "wl_out_")) or s == "wl_couple_toggle":
+            return "wavelink"
+        if s.startswith("hw_"):
+            return "hwinfo"
+        if s.startswith(("scene_", "obssrc_")) or s in ("obs_stream", "obs_record"):
+            return "obs"
+        if s in ("pm_fps", "pm_frametime"):
+            return "presentmon"
+        if s.startswith("df_"):
+            return "displayfusion"
+        if s.startswith("obsbot_c"):
+            return "obsbot"
+        if s == "wa_master" or s.startswith("wa_dev_"):
+            return "base"
+        return ""
+
     def _integration_bid(self, iid: str, gk: str, item_id) -> str:
         """Deterministische Pool-Button-id eines generierbaren Elements — für present-Markierung +
         Sync-Remove. Gibt "" zurück, wenn das Element NICHT 1:1-synchronisierbar ist (obsbot/base =
@@ -932,6 +988,8 @@ class DeckCoreService:
             return "df_" + s
         if iid == "base" and gk == "audio" and str(item_id) == "volume":
             return "wa_master"
+        if iid == "base" and gk == "devices":
+            return "wa_dev_" + s
         return ""
 
     def integration_generate_selected(self, iid: str, sel: dict) -> dict:
@@ -944,7 +1002,7 @@ class DeckCoreService:
         groups = sel.get("groups") or {}
         options = sel.get("options") or {}
         toggles = sel.get("toggles") or {}
-        created = updated = removed = 0
+        created = updated = removed = hidden = 0
 
         def _u(fn, cat):
             nonlocal created, updated
@@ -1080,6 +1138,18 @@ class DeckCoreService:
                         "action": {"type": "winaudio", "wa_action": "toggle_mute"},
                         "monitor": {"type": "winaudio_volume"}, "states": [],
                         "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}, "Audio")
+                want_devs = set(str(x) for x in groups.get("devices", []))
+                if want_devs:
+                    for d in ((self.winaudio_devices() or {}).get("devices") or []):
+                        did = str(d.get("id") or "")
+                        if not did or did not in want_devs:
+                            continue
+                        nm = str(d.get("name") or did)
+                        _u({"id": "wa_dev_" + _slug(did), "label": nm,
+                            "action": {"type": "winaudio", "wa_action": "set_default", "device_name": nm},
+                            "monitor": {"type": "winaudio_default", "device_name": nm},
+                            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": nm, "color": "#1f9d55"}],
+                            "default": {"icon": "🔈", "title": nm, "color": "#2a2a2a"}}, "Audio-Geräte")
             else:
                 return {"ok": False, "reason": "Keine generierbaren Elemente"}
             # SYNC: 1:1-synchronisierbare Elemente, die NICHT (mehr) angehakt sind, aber als Button
@@ -1093,14 +1163,19 @@ class DeckCoreService:
                     want = set(str(x) for x in groups.get(g["key"], []))
                     for it in g.get("items", []):
                         bid = it.get("bid")
-                        if bid and str(it["id"]) not in want and bid in pool_ids and self._pool_remove(bid):
+                        if not bid or str(it["id"]) in want or bid not in pool_ids:
+                            continue
+                        if self._is_hide_group(iid, g["key"]):
+                            if self._pool_set_hidden(bid, True):   # abgewählt → ausblenden (nicht löschen)
+                                hidden += 1
+                        elif self._pool_remove(bid):
                             removed += 1
                 for tg in elx.get("toggles", []):
                     bid = tg.get("bid")
                     if bid and not toggles.get(tg["key"]) and bid in pool_ids and self._pool_remove(bid):
                         removed += 1
             self._save(); self._schedule_recompute(); self._publish_cfg()
-            return {"ok": True, "created": created, "updated": updated, "removed": removed}
+            return {"ok": True, "created": created, "updated": updated, "removed": removed, "hidden": hidden}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": str(e)}
 
@@ -2347,7 +2422,12 @@ class DeckCoreService:
         """Volle Registry inkl. Auswahl-Optionen für den Property-Inspector/Tab.
         ``buttons`` = globaler Funktions-Pool; ``decks`` = eigenständige Templates (jedes mit
         eigenem ``layout``/``categories``/``items``). Kein globales Top-Level-Layout mehr."""
-        return {"buttons": self.list_buttons(), "options": self.options(),
+        buttons = self.list_buttons()
+        for b in buttons:
+            o = self._button_owner(b.get("id"))
+            if o:
+                b["owner"] = o   # eigene vs. generierte Buttons trennen (nur Output, nicht persistiert)
+        return {"buttons": buttons, "options": self.options(),
                 "tick_seconds": round(self._tick, 2),
                 "tick_min": _TICK_MIN, "tick_max": _TICK_MAX,
                 "refresh_min": _REFRESH_MIN, "refresh_max": _REFRESH_MAX,
