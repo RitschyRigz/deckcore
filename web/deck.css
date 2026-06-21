@@ -217,6 +217,24 @@
 .t-clock-card .t-clock-analog { flex: 1 1 auto; min-height: 0; filter: drop-shadow(0 0 3px var(--acc)); }
 .t-clock-date { font-size: 8.5cqw; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; line-height: 1;
   color: var(--fg); opacity: .6; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* ── 🪪 Status-Karte (render=readout): Auto-Emoji + getönter Wert in dunkler Glow-Karte (gleiches Design wie Uhr/Flat) ── */
+.t-key.is-readout, .sd-prev-key.is-readout { padding: 0; }   /* Karte füllt die Kachel randlos */
+.t-readout { position: relative; box-sizing: border-box; width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3cqw;
+  padding: 8cqw 6cqw; border-radius: 16px; overflow: hidden; container-type: inline-size; }
+.t-readout.framed { background: linear-gradient(165deg, #171c26, #0c0f14);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
+.t-readout.framed::before, .t-readout.framed::after { content: ""; position: absolute;
+  width: 15cqw; height: 15cqw; min-width: 11px; min-height: 11px; max-width: 22px; max-height: 22px;
+  pointer-events: none; opacity: .85; }
+.t-readout.framed::before { top: 6px; left: 6px; border-top: 2px solid var(--acc); border-left: 2px solid var(--acc); border-radius: 6px 0 0 0; }
+.t-readout.framed::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc); border-right: 2px solid var(--acc); border-radius: 0 0 6px 0; }
+.t-readout-icon { font-size: 30cqw; line-height: 1; filter: drop-shadow(0 0 7px var(--acc)); }
+.t-readout-v { font-weight: 800; text-align: center; line-height: 1.12; color: var(--fg);
+  text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); width: 100%; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.t-readout-sub { font-size: 9cqw; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; line-height: 1;
+  color: var(--fg); opacity: .55; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .sd-gs .t-clock-analog { width: 100%; height: 100%; }
 .sd-gs .t-clock-digital { font-weight: 800; }
 .sd-gs .sd-label { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;

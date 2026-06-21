@@ -15,6 +15,27 @@ export const FONT_LABELS = { sans: 'Standard', serif: 'Serif', mono: 'Mono', con
 export const fontStack = (k) => WIDGET_FONTS[k] || WIDGET_FONTS.sans
 export const SIZE_LABELS = { auto: 'Auto', s: 'S', m: 'M', l: 'L', xl: 'XL' }
 
+// Auto-Emoji je Quelle: generischer, datengetriebener Klassifizierer (Stichwort→Emoji) für „Namens"-Werte
+// wie das aktive Audiogerät. KEIN Gerät hartkodiert — nur Gattungen (Kopfhörer/Boxen/HDMI/…), erweiterbar.
+// `kind` grenzt die Regeln ein; reihenfolge = Spezifität (erster Treffer gewinnt). Unbekanntes kind → kein
+// Auto-Symbol (lieber nichts als falsch geraten). Reine Darstellung — wird auf dem Rohwert ausgewertet.
+const ICON_RULES = {
+  audio: [
+    [/(kopfh|headph|headset|ohrh|earbud|earphone|beyerdyn|sennheiser|hyperx|cloud ?(ii|2|alpha|flight)|arctis|airpod|\bdt[ -]?\d|\bhd[ -]?\d|jabra|\bbose\b)/i, '🎧'],
+    [/(mikro|microph|\bmic\b|wave[ :]?(xlr|3|1|link)|go ?xlr|\byeti\b|nt-?usb|at ?20\d\d|scarlett|focusrite|\binterface\b|\bxlr\b|shure|rode\b)/i, '🎙️'],
+    [/(hdmi|\btv\b|fernseh|\bdisplay\b|\bmonitor\b|beamer|projector|nvidia|radeon|\blg\b|samsung|\bdell\b|\bacer\b|\bbenq\b|odyssey|gigabyte)/i, '📺'],
+    [/(lautsprech|\bspeaker|\bbox(en)?\b|edifier|logitech ?z|\bkrk\b|soundbar|\bhs\d|studio ?monitor|\bstereo\b|\b[257]\.1\b)/i, '🔊'],
+    [/(bluetooth|\bbt\b|wireless|funk|kabellos)/i, '📶'],
+    [/(voicemeeter|vb-?audio|\bvirtual\b|\bvac\b|\bcable\b|aggregat|stream ?mix|game ?capture)/i, '🎛️'],
+    [/(realtek|onboard|\bdigital\b|optical|s\/?pdif|\bline\b|high definition)/i, '🎚️'],
+  ],
+}
+export function autoIcon(value, kind) {
+  const s = String(value == null ? '' : value)
+  for (const [re, ic] of (ICON_RULES[kind] || [])) if (re.test(s)) return ic
+  return kind === 'audio' ? '🔈' : ''   // Audio: generischer Lautsprecher als Fallback; sonst kein Symbol
+}
+
 // Schriftgröße als Container-Query-Einheit (cqw = % der KachelBREITE) → skaliert automatisch mit der Kachel
 // (4 Felder breit = 4× so groß). Braucht container-type:inline-size auf der Kachel (siehe deck.css). kind
 // 'clock' rechnet enger (die Uhr hat mehr Zeichen). 'auto'/unbekannt = vernünftiger Default je Typ.
@@ -121,6 +142,31 @@ export function Gauge({ value, opts }) {
                                style={`filter:drop-shadow(0 0 6px ${col})`} />}
       </svg>
       <div class="t-gauge-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-gauge-u">{o.unit || ''}</span></div>
+    </div>
+  )
+}
+
+// 🪪 Status-Karte (render=readout): zeigt einen (Text-/Namens-)Wert schön im Deck-Look — dunkle Karte mit
+// Eck-Brackets + Glow, passendem Auto-Emoji je Quelle (oder eigenem Symbol) + getönter Schrift + optionalem
+// Unter-Titel (Label). Generisch & template-fähig: JEDER Namens-/Text-Monitor (Wave-Link-Hauptausgang,
+// Windows-Standardgerät, OBS-Szene …) kann sie nutzen — Aussehen kommt aus opts, nicht aus Sonderlogik.
+// Reine Panel-Darstellung — das physische Stream Deck rendert nur Symbol/Titel.
+export function Readout({ v, opts }) {
+  const o = opts || {}
+  const framed = o.frame !== false
+  const accent = o.color || '#8ec5ff'
+  const val = v || {}
+  const text = val.title || val.label || ''
+  // Auf dem ROHWERT klassifizieren (z.B. Gerätename), nicht auf dem ggf. formatierten Titel.
+  const raw = (val.value !== null && val.value !== undefined && val.value !== '') ? String(val.value) : text
+  const icon = o.noIcon ? '' : (val.icon || autoIcon(raw, o.kind))
+  // Unter-Titel nur, wenn das Label einen ZUSÄTZLICHEN Sinn trägt (≠ angezeigter Wert).
+  const sub = o.sub === false ? '' : (val.label && val.label !== text ? val.label : '')
+  return (
+    <div class={'t-readout' + (framed ? ' framed' : '')} style={`--acc:${accent}`}>
+      {icon ? <span class="t-readout-icon">{icon}</span> : null}
+      <span class="t-readout-v" style={`font-family:${fontStack(o.font)};font-size:${widgetFontSize(o, 'text')}`}>{text || '—'}</span>
+      {sub ? <span class="t-readout-sub">{sub}</span> : null}
     </div>
   )
 }

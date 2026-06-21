@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
-import { Clock, Gauge, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -682,7 +682,8 @@ export function TouchDeck() {
     const isGraph = render === 'graph'
     const isGauge = render === 'gauge'
     const isStat = render === 'stat'
-    const isClock = render === 'clock', isText = render === 'text', isWidget = isClock || isText
+    const isClock = render === 'clock', isText = render === 'text', isReadout = render === 'readout'
+    const isWidget = isClock || isText || isReadout
     const isFader = render === 'fader'
     const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Fader)
     const o = optsById[id] || {}
@@ -699,11 +700,12 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
               style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (v.color || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
+          : isReadout ? <Readout v={v} opts={o} />
           : isGraph ? (
             <>
               {v.title ? <span class="t-key-title">{v.title}</span> : null}

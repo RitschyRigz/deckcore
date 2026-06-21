@@ -169,7 +169,7 @@ def _clamp_pos(v):
     return 0 if n < 0 else (_POS_MAX if n > _POS_MAX else n)
 
 
-# Widget-Button-Darstellung (render=text|clock) — opts = Schrift/Farbe/Uhr-Modus + Größe, serverseitig auf
+# Widget-Button-Darstellung (render=text|clock|readout) — opts = Schrift/Farbe/Uhr-Modus/Auto-Emoji + Größe, serverseitig auf
 # erlaubte Werte begrenzt (_sanitize_opts). ⚠ reine Panel-Darstellung; das physische Plugin rendert resolved[button].
 _WIDGET_FONTS = ("sans", "serif", "mono", "condensed", "rounded")
 _CLOCK_MODES = ("digital", "analog")
@@ -204,7 +204,11 @@ def _sanitize_opts(o) -> dict:
     if "date" in o:
         out["date"] = bool(o.get("date"))              # Uhr: Datumszeile mit anzeigen
     if "frame" in o:
-        out["frame"] = bool(o.get("frame"))            # Uhr: Rahmen/Glow-Kachel (Default an) ein/aus
+        out["frame"] = bool(o.get("frame"))            # Uhr/Status-Karte: Rahmen/Glow-Kachel (Default an) ein/aus
+    if o.get("kind") in ("audio", "generic"):
+        out["kind"] = o["kind"]                         # Status-Karte: Quelle fürs Auto-Emoji (🎧/🔊/📺 …)
+    if "noIcon" in o:
+        out["noIcon"] = bool(o.get("noIcon"))          # Status-Karte: Auto-/Symbol ausblenden (nur Wert)
     for k in ("min", "max"):                          # Gauge-Wertebereich
         try:
             if o.get(k) is not None and o.get(k) != "":
@@ -2593,8 +2597,8 @@ class DeckCoreService:
                 self._pool_categories.append(pc)
         else:
             button.pop("pool_cat", None)
-        # Darstellung (render: graph|gauge|stat|text|clock|fader; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "gauge", "stat", "text", "clock", "fader"):
+        # Darstellung (render: graph|gauge|stat|text|clock|fader|readout; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
+        if button.get("render") not in ("graph", "gauge", "stat", "text", "clock", "fader", "readout"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))

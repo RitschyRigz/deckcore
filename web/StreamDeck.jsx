@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
-import { Clock, Gauge, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -76,7 +76,7 @@ const MONITOR_INFO = {
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
   winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
   winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
-  wavelink_main_output: { text: 'Zeigt den aktiven Wave-Link-Monitor-Hauptausgang. Einfach „{value}" in den Titel setzen → der Button zeigt live den GERÄTE-NAMEN (keine Status-Regel, kein Gerät-Wählen nötig). Tipp: als „🔢 Stat" eine schöne große Anzeige.', values: null, bool: false },
+  wavelink_main_output: { text: 'Zeigt den aktiven Wave-Link-Monitor-Hauptausgang. Einfach „{value}" in den Titel setzen → der Button zeigt live den GERÄTE-NAMEN (keine Status-Regel, kein Gerät-Wählen nötig). Tipp: Darstellung „🪪 Status-Karte" → Rahmen + Glow + automatisch passendes Emoji je Quelle (🎧 Kopfhörer · 🔊 Boxen · 📺 HDMI/TV).', values: null, bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -224,6 +224,9 @@ function LiveKey({ v, eff, base, render, opts }) {
         <span class="t-label-text" style={`font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'};font-size:${widgetFontSize(o, 'text')}`}>{v.title || v.label || 'Text'}</span>
       </div>
     )
+  }
+  if (render === 'readout') {
+    return <div class={keyClass(eff, base) + ' t-widget is-readout cqsize'} style="background:transparent"><Readout v={v} opts={o} /></div>
   }
   if (render === 'gauge') {
     return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
@@ -1120,6 +1123,7 @@ function TitleInput({ value, onInput, cls, style, placeholder }) {
 function WidgetFields({ render, opts, def, onOpts, onDefault }) {
   const o = opts || {}
   const isClock = render === 'clock'
+  const isReadout = render === 'readout'
   const digital = !isClock || (o.mode || 'digital') === 'digital'
   const setO = (p) => onOpts({ ...o, ...p })
   return (
@@ -1129,6 +1133,20 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
           <span class="muted conn-label">Text</span>
           <TitleInput cls="reward-input" placeholder="Überschrift / Text" value={(def || {}).title || ''}
                       onInput={(v) => onDefault({ title: v })} />
+        </>
+      )}
+      {isReadout && (
+        <>
+          <span class="muted conn-label">Symbol</span>
+          <input class="so-delay" style="width:54px" placeholder="auto" value={(def || {}).icon || ''}
+                 title="Eigenes Emoji — leer = automatisch je Quelle (🎧 Kopfhörer · 🔊 Boxen · 📺 HDMI/TV · 🎙️ Mikro …)"
+                 onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
+          <label>Quelle
+            <select class="so-delay" value={o.kind || 'generic'} onChange={(e) => setO({ kind: e.currentTarget.value })}>
+              <option value="audio">🔊 Audiogerät</option>
+              <option value="generic">— neutral</option>
+            </select>
+          </label>
         </>
       )}
       {isClock && (
@@ -1146,14 +1164,14 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
           </select>
         </label>
       )}
-      <label>Farbe
+      <label>{isReadout ? 'Akzent' : 'Farbe'}
         <input type="color" class="so-delay" style="width:46px;height:30px;padding:2px"
-               value={o.color || (isClock ? '#8ec5ff' : '#ffffff')} onChange={(e) => setO({ color: e.currentTarget.value })} />
+               value={o.color || (isClock || isReadout ? '#8ec5ff' : '#ffffff')} onChange={(e) => setO({ color: e.currentTarget.value })} />
       </label>
       {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.seconds !== false} onChange={(e) => setO({ seconds: e.currentTarget.checked })} /> Sekunden</label>}
       {isClock && digital && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.format24 !== false} onChange={(e) => setO({ format24: e.currentTarget.checked })} /> 24-Std</label>}
       {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!o.date} onChange={(e) => setO({ date: e.currentTarget.checked })} /> Datum</label>}
-      {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.frame !== false} onChange={(e) => setO({ frame: e.currentTarget.checked })} /> Rahmen</label>}
+      {(isClock || isReadout) && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.frame !== false} onChange={(e) => setO({ frame: e.currentTarget.checked })} /> Rahmen</label>}
     </div>
   )
 }
@@ -2316,7 +2334,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
   const info = MONITOR_INFO[mType] || {}
   const knownValues = info.values || null
   const stateless = mType === 'none'
-  const isWidget = render === 'text' || render === 'clock'
+  const isWidget = render === 'text' || render === 'clock' || render === 'readout'
   const isGauge = render === 'gauge'
   // Render-Wechsel: beim Sprung auf „Gauge" sinnvolle Grenzen SICHTBAR vorbefüllen (sonst leere Felder →
   // implizit 0..100, der Nutzer sieht nichts zum Anpassen). Einheit aus dem Titel-Template („{value} °C").
@@ -2328,6 +2346,11 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
       const o = opts || {}
       const m = String((def || {}).title || '').match(/\{value\}\s*([°%]?[\w/]*)/)
       onOpts({ ...o, min: 0, max: 100, unit: o.unit || (m && m[1]) || undefined })
+    }
+    // Status-Karte: Quelle für das Auto-Emoji aus dem Monitor-Typ vorbelegen (Audio-Monitore → 🎧/🔊/…),
+    // sonst „neutral" (kein geratenes Symbol). Sichtbar im Editor, vom Nutzer überschreibbar.
+    if (r === 'readout' && (opts || {}).kind == null) {
+      onOpts({ ...(opts || {}), kind: /wavelink|winaudio|audio/.test(mType) ? 'audio' : 'generic' })
     }
   }
   const add = () => onStates([...(states || []), { when: { op: knownValues ? 'eq' : 'any' }, title: '', icon: '', color: '#2a2a2a' }])
@@ -2347,6 +2370,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="fader">🎚 Fader (Wave Link / Windows-Lautstärke)</option>
           <option value="gauge">🎯 Gauge (Glow-Bogen)</option>
           <option value="stat">🔢 Stat (große Glow-Zahl)</option>
+          <option value="readout">🪪 Status-Karte (Rahmen + Auto-Emoji)</option>
         </select>
         <span class="muted conn-label" style="margin-left:8px">Größe</span>
         <select class="so-delay" value={(opts || {}).size || 'auto'} title="Schriftgröße von Titel/Text/Uhr — skaliert mit der Kachelbreite"
