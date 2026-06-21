@@ -481,7 +481,9 @@ export function TouchDeck() {
   })
   const [deckFlash, setDeckFlash] = useState('')     // kurz eingeblendeter Deck-Name beim Vollbild-Wisch
   const [slideDir, setSlideDir] = useState(0)        // Slide-Animation beim Side-Scroll: +1 nächstes / -1 voriges / 0 keine
-  const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"
+  const [pull, setPull] = useState(0)                // Pull-to-Refresh: aktuelle Zugdistanz (px) für den Indikator
+  const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"/Pull
+  const pullRef = useRef(0)                            // live Zugdistanz (Entscheidung beim Loslassen, lag-frei)
   const flashT = useRef(null)
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
@@ -577,20 +579,37 @@ export function TouchDeck() {
   const goBack = () => { setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
   const closeOverlay = () => setOverlay(null)
 
-  // Wisch von oben nach unten (aus dem oberen Bildschirmrand) beendet das Vollbild. Verbraucht das
-  // Event NIE — normale Deck-Tipps/Scrolls bleiben unberührt.
-  const onTouchStart = (e) => { const t = e.touches && e.touches[0]; swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null }
+  // Cache-umgehender Hard-Reload (frische index.html → frisches Bundle; Tablet muss die App nicht mehr
+  // schließen/öffnen). Cache-Bust per Query-Param + replace (keine History-Einträge).
+  const hardReload = () => {
+    try { const u = new URL(location.href); u.searchParams.set('_r', String(Date.now())); location.replace(u.toString()) }
+    catch (_) { location.reload() }
+  }
+  // EINE Top-Pull-Geste (Entscheidung beim Loslassen → kein Konflikt): kurz ziehen = Vollbild verlassen
+  // (nur im Vollbild), WEIT ziehen = Pull-to-Refresh (neu laden). Greift nur am Deck-Anfang (scrollTop≈0),
+  // normales Scrollen/Tippen bleibt unberührt. Plus: horizontaler Wisch = Deck wechseln (nur Vollbild).
+  const PULL_EXIT = 75, PULL_REFRESH = 150
+  const onTouchStart = (e) => {
+    const t = e.touches && e.touches[0]
+    swipeRef.current = t ? { x: t.clientX, y: t.clientY, top: ((e.currentTarget && e.currentTarget.scrollTop) || 0) <= 2 } : null
+    pullRef.current = 0
+  }
   const onTouchMove = (e) => {
-    if (!fullscreen || !swipeRef.current) return
+    const s = swipeRef.current; if (!s) return
     const t = e.touches && e.touches[0]; if (!t) return
-    const s = swipeRef.current, dy = t.clientY - s.y, dx = t.clientX - s.x
-    const vh = (typeof window !== 'undefined' ? window.innerHeight : 800)
-    if (s.y < vh * 0.12 && dy > 70 && dy > Math.abs(dx)) { setFullscreen(false); swipeRef.current = null; return }
-    // Horizontaler Wisch (klar seitlich, lang) im Vollbild auf Top-Level → Deck wechseln. Links=nächstes,
-    // rechts=voriges. Eine Geste = ein Wechsel (swipeRef nullen). Tippen/Scrollen bleiben unberührt.
-    if (!navStack.length && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null
+    const dy = t.clientY - s.y, dx = t.clientX - s.x
+    // Horizontaler Wisch (klar seitlich) im Vollbild auf Top-Level → Deck wechseln (eine Geste = ein Wechsel).
+    if (fullscreen && !navStack.length && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null; pullRef.current = 0; setPull(0); return
     }
+    // Vertikaler Pull von oben → Indikator wachsen lassen (Aktion erst beim Loslassen).
+    if (s.top && dy > 8 && dy > Math.abs(dx) * 1.5) { pullRef.current = dy; setPull(dy) }
+    else if (pullRef.current) { pullRef.current = 0; setPull(0) }
+  }
+  const onTouchEnd = () => {
+    const p = pullRef.current; pullRef.current = 0; swipeRef.current = null; setPull(0)
+    if (p > PULL_REFRESH) { hardReload(); return }
+    if (fullscreen && p > PULL_EXIT) setFullscreen(false)
   }
   // ⛶ Vollbild-Knopf (rechts in der Deck-Leiste). Im Vollbild selbst ausgeblendet → Rückkehr per Wisch.
   const FsBtn = () => (
@@ -710,7 +729,15 @@ export function TouchDeck() {
   }
 
   return (
-    <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}>
+    <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
+         onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
+      {pull > 0 && (
+        <div class={'t-ptr' + (pull > 150 ? ' armed' : '')} style={`height:${Math.min(pull, 80)}px`}>
+          {pull > 150 ? '↻ Loslassen zum Neuladen'
+            : (fullscreen && pull > 75 ? '⤓ Loslassen: Vollbild aus'
+            : '↓ Weiter ziehen zum Neuladen')}
+        </div>
+      )}
       {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
       {navStack.length > 0 ? (
         <div class="t-nav">
