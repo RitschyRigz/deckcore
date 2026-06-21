@@ -221,48 +221,78 @@ class _Com:
             p = p[:-4]
         return (p[:1].upper() + p[1:]) if p else "App"
 
+    def _iter_render_sessions(self):
+        """Yield ``(key, proc, display, ISimpleAudioVolume|None, IAudioMeterInformation|None)`` über ALLE
+        aktiven Render-Geräte — NICHT nur das Standardgerät. ⚠ Wichtig: ``AudioUtilities.GetAllSessions()``
+        listet ausschließlich Sessions des Standard-Ausgabegeräts; Apps, die auf ein anderes Gerät routen
+        (Voicemeeter / Wave Link / Elgato Virtual Audio), wären sonst unsichtbar (z.B. Chrome auf „only for me").
+        Sessions ohne Prozess (System-Sounds) werden übersprungen."""
+        import comtypes
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import (IMMDeviceEnumerator, EDataFlow, IAudioSessionManager2,
+                                 IAudioSessionControl2, ISimpleAudioVolume, IAudioMeterInformation)
+        from pycaw.constants import CLSID_MMDeviceEnumerator
+        import psutil
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            enum = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator,
+                                             comtypes.CLSCTX_INPROC_SERVER)
+            coll = enum.EnumAudioEndpoints(EDataFlow.eRender.value, 1)   # 1 = DEVICE_STATE_ACTIVE
+            for i in range(coll.GetCount()):
+                try:
+                    dev = coll.Item(i)   # IMMDeviceCollection nutzt Item(i) (kein GetAt)
+                    mgr2 = dev.Activate(IAudioSessionManager2._iid_, CLSCTX_ALL, None).QueryInterface(IAudioSessionManager2)
+                    se = mgr2.GetSessionEnumerator()
+                except Exception:  # noqa: BLE001
+                    continue
+                for j in range(se.GetCount()):
+                    try:
+                        ctl2 = se.GetSession(j).QueryInterface(IAudioSessionControl2)
+                        pid = ctl2.GetProcessId()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if not pid:
+                        continue
+                    try:
+                        proc = psutil.Process(pid).name() or ""
+                    except Exception:  # noqa: BLE001
+                        proc = ""
+                    if not proc:
+                        continue
+                    vol = meter = disp = None
+                    try: vol = ctl2.QueryInterface(ISimpleAudioVolume)
+                    except Exception: pass  # noqa: BLE001,E722
+                    try: meter = ctl2.QueryInterface(IAudioMeterInformation)
+                    except Exception: pass  # noqa: BLE001,E722
+                    try: disp = ctl2.GetDisplayName()
+                    except Exception: pass  # noqa: BLE001,E722
+                    yield proc.lower(), proc, disp, vol, meter
+
     def collect_sessions(self, procs, want_list):
-        """EIN ``GetAllSessions()`` → optional die App-LISTE bauen (``want_list``) UND die Interface-
-        Caches der gewünschten ``procs`` (lowercase) auffrischen (= folgt neuen/geschlossenen Sessions).
-        Sessions OHNE Prozess (System-Sounds) werden übersprungen."""
+        """Sessions über ALLE aktiven Render-Geräte einsammeln → optional die App-LISTE bauen
+        (``want_list``) UND die Interface-Caches der gewünschten ``procs`` (lowercase) auffrischen.
+        Pro Programm geräteübergreifend aggregiert (eine App = ein Fader, auch wenn sie auf mehreren
+        Geräten/Routings tönt): Volume/Mute auf ALLE Sessions, Peak = Maximum."""
         try:
-            from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                sessions = AudioUtilities.GetAllSessions()
+            rows = list(self._iter_render_sessions())
         except Exception:  # noqa: BLE001
             if want_list:
                 self._sessions = []
             return
         by_proc = {}   # key(lower) -> {vols, meters, name, proc}
         order = []
-        for s in sessions:
-            try:
-                p = s.Process
-                proc = (p.name() if p else "") or ""
-            except Exception:  # noqa: BLE001
-                proc = ""
-            if not proc:
-                continue
-            key = proc.lower()
+        for key, proc, disp, vol, meter in rows:
             ent = by_proc.get(key)
             if ent is None:
                 ent = by_proc[key] = {"vols": [], "meters": [], "name": None, "proc": proc}
                 order.append(key)
             if ent["name"] is None:
-                try:
-                    ent["name"] = self._nice_name(proc, s.DisplayName)
-                except Exception:  # noqa: BLE001
-                    ent["name"] = self._nice_name(proc, "")
-            if key in procs:   # Interfaces nur für gewatchte Apps holen (billig halten)
-                try:
-                    ent["vols"].append(s.SimpleAudioVolume)
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    ent["meters"].append(s._ctl.QueryInterface(IAudioMeterInformation))
-                except Exception:  # noqa: BLE001
-                    pass
+                ent["name"] = self._nice_name(proc, disp)
+            if key in procs:   # Interfaces nur für gewatchte Apps halten (über ALLE Geräte)
+                if vol is not None:
+                    ent["vols"].append(vol)
+                if meter is not None:
+                    ent["meters"].append(meter)
         if want_list:
             self._sessions = [{"id": "app:" + by_proc[k]["proc"], "name": by_proc[k]["name"],
                                "proc": by_proc[k]["proc"]} for k in order]
