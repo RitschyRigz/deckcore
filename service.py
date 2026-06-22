@@ -282,6 +282,27 @@ def _wl_couple_def() -> dict:
             "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"}}
 
 
+def _obs_scene_def(bid: str, name: str, active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
+    """OBS-Szenen-Wechsel-Button (Aktiv-Highlight via obs_scene-Monitor). Wird von populate_obs_scenes
+    UND generate_obs_scene_buttons genutzt → EINE Wahrheit. ``bid`` bestimmt der Aufrufer (Slug-
+    Kollisions-Logik); ``pool_cat``/Deck-Platzierung setzt ebenfalls der Aufrufer."""
+    return {"id": bid, "label": name, "_scene": name,
+            "action": {"type": "obs", "obs_action": "scene", "scene": name},
+            "monitor": {"type": "obs_scene"},
+            "states": [{"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": active_color}],
+            "default": {"icon": "🎬", "title": name, "color": idle_color}}
+
+
+def _winaudio_master_def(bid: str) -> dict:
+    """Windows-Lautstärke-Fader (Ziehen=Lautstärke, Tippen=Mute, Live-VU). WELCHES Gerät der Fader
+    regelt, wählt man danach an der Aktion. Wird von populate_winaudio_volume UND dem Integrationen-Tab
+    genutzt; ``pool_cat``/Deck-Platzierung setzt der Aufrufer."""
+    return {"id": bid, "label": "Windows-Lautstärke", "render": "fader",
+            "action": {"type": "winaudio", "wa_action": "toggle_mute"},
+            "monitor": {"type": "winaudio_volume"},
+            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -1227,10 +1248,7 @@ class DeckCoreService:
                             removed += 1
             elif iid == "audio":
                 if "volume" in groups.get("audio", []):
-                    _u({"id": "wa_master", "label": "Windows-Lautstärke", "render": "fader",
-                        "action": {"type": "winaudio", "wa_action": "toggle_mute"},
-                        "monitor": {"type": "winaudio_volume"}, "states": [],
-                        "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}, "Audio")
+                    _u(_winaudio_master_def("wa_master"), "Audio")
                 want_apps = set(str(x) for x in groups.get("apps", []))
                 if want_apps:
                     for a in ((self.audio_sessions() or {}).get("sessions") or []):
@@ -2148,15 +2166,7 @@ class DeckCoreService:
                 base = bid; n = 2
                 while bid in used:
                     bid = f"{base}_{n}"; n += 1
-            fn = {
-                "id": bid, "label": name, "_scene": name,
-                "action": {"type": "obs", "obs_action": "scene", "scene": name},
-                "monitor": {"type": "obs_scene"},
-                "states": [
-                    {"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": active_color},
-                ],
-                "default": {"icon": "🎬", "title": name, "color": idle_color},
-            }
+            fn = _obs_scene_def(bid, name, active_color, idle_color)
             existing_fn = pool_by_id.get(bid)
             if existing_fn is not None:
                 fn = _regen_preserve(existing_fn, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
@@ -2285,12 +2295,8 @@ class DeckCoreService:
         while bid in existing:
             bid = f"wa_vol_{n}"; n += 1
         POOL_CAT = "Audio"
-        fn = {
-            "id": bid, "label": "Windows-Lautstärke", "render": "fader", "pool_cat": POOL_CAT,
-            "action": {"type": "winaudio", "wa_action": "toggle_mute"},   # Tippen = Mute (auch Hardware)
-            "monitor": {"type": "winaudio_volume"},                       # Reglerstand (Gerät = aus der Aktion)
-            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"},
-        }
+        fn = _winaudio_master_def(bid)
+        fn["pool_cat"] = POOL_CAT
         self._buttons.append(fn)
         self._removed.discard(bid)
         if POOL_CAT not in self._pool_categories:
@@ -2321,11 +2327,8 @@ class DeckCoreService:
                 base = bid; n = 2
                 while bid in used:
                     bid = f"{base}_{n}"; n += 1
-            fn = {"id": bid, "label": name, "_scene": name, "pool_cat": "OBS-Szenen",
-                  "action": {"type": "obs", "obs_action": "scene", "scene": name},
-                  "monitor": {"type": "obs_scene"},
-                  "states": [{"when": {"op": "eq", "value": name}, "icon": "📺", "title": name, "color": "#1f9d55"}],
-                  "default": {"icon": "🎬", "title": name, "color": "#2a2a2a"}}
+            fn = _obs_scene_def(bid, name)
+            fn["pool_cat"] = "OBS-Szenen"
             ex = pool_by_id.get(bid)
             if ex is not None:
                 fn = _regen_preserve(ex, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
