@@ -1025,22 +1025,29 @@ class DeckCoreService:
                 if not s.get("available"):
                     return {"available": False, "reason": _HWINFO_SETUP_HINT}
                 RND = [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"], ["gauge", "Gauge"]]
-                items = [{"id": str(x.get("key")), "label": "%s (%s%s)" % (x.get("label"), x.get("value"), x.get("unit") or ""),
+                raw = [x for x in (s.get("sensors") or []) if x.get("key")]
+                _many = len(raw) > _HW_AUTO_CAP   # sehr viele Sensoren → nur „primäre" vorauswählen (sonst „alles" = Chaos)
+                # Nach Familie gruppieren (GPU/CPU/Wasser/RAM/Sensoren) → bei vielen Sensoren navigierbar
+                # statt einer 300er-Liste. Gruppen-KEYS sind für hwinfo egal (alle Gruppen = Sensoren →
+                # _integration_bid/generate behandeln sie einheitlich); Reihenfolge stabil, leere Familien weg.
+                FAM_ORDER = ["🟢 GPU", "🟡 CPU", "🔵 Wasserkühlung", "🧠 RAM & Board", "📊 Sensoren"]
+                buckets = {}
+                for x in raw:
+                    label = str(x.get("label") or x.get("key"))
+                    unit = str(x.get("unit") or "")
+                    it = {"id": str(x.get("key")), "label": "%s (%s%s)" % (label, x.get("value"), unit),
                           "render": "auto", "renders": RND}
-                         for x in (s.get("sensors") or []) if x.get("key")]
-                _many = len(items) > _HW_AUTO_CAP   # sehr viele Sensoren → nur „primäre" vorauswählen (sonst „alles" = Chaos)
-                if _many:
-                    _by = {str(x.get("key")): x for x in (s.get("sensors") or [])}
-                    for it in items:
-                        x = _by.get(it["id"], {})
-                        it["recommend"] = _hwinfo_essential(str(x.get("label") or it["id"]), str(x.get("unit") or ""))
+                    if _many:
+                        it["recommend"] = _hwinfo_essential(label, unit)
+                    buckets.setdefault(_smart_classify(label, unit)["cat"], []).append(it)
+                ordered = [c for c in FAM_ORDER if c in buckets] + [c for c in buckets if c not in FAM_ORDER]
+                groups = [{"key": "fam_" + _slug(cat), "label": cat, "items": buckets[cat]} for cat in ordered]
                 _srcname = {"shm": "Shared Memory", "registry": "Registry/Gadget"}.get(str(s.get("source") or ""), "")
                 note = ("💡 Gelesen werden die in HWiNFO freigegebenen Sensoren"
                         + (" (Quelle: %s)" % _srcname if _srcname else "") + ". Mehr/weniger Sensoren: " + _HWINFO_ENABLE_STEPS)
                 if _many:
                     note += " ⚠ Sehr viele erkannt — vorausgewählt sind nur die empfohlenen; hake bei Bedarf weitere an."
-                return {"available": True, "note": note,
-                        "groups": [{"key": "sensors", "label": "Sensoren — Darstellung je Sensor wählbar", "items": items}]}
+                return {"available": True, "note": note, "groups": groups}
             if iid == "obs":
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
@@ -1182,7 +1189,7 @@ class DeckCoreService:
         if iid == "wavelink":
             pref = {"mixes": "wl_mix_", "channels": "wl_chan_", "outputs": "wl_out_"}.get(gk)
             return (pref + s) if pref else ""
-        if iid == "hwinfo" and gk == "sensors":
+        if iid == "hwinfo":   # alle HWiNFO-Gruppen sind Sensoren (nach Familie gruppiert) → einheitlich hw_<slug>
             return "hw_" + s
         if iid == "obs":
             if gk == "scenes":
@@ -1256,7 +1263,9 @@ class DeckCoreService:
                     return {"ok": False, "reason": "hwinfo_unavailable"}
                 renders = sel.get("renders") or {}   # {sensor_key: 'auto'|'value'|'graph'|'gauge'}
                 by = {str(s.get("key")): s for s in (data.get("sensors") or []) if s.get("key")}
-                for key in groups.get("sensors", []):
+                # Sensoren kommen jetzt nach Familie gruppiert (fam_*) — alle Gruppen einsammeln
+                # (rückwärtskompatibel zur alten Einzel-Gruppe „sensors").
+                for key in [k for ks in groups.values() for k in (ks or [])]:
                     s = by.get(str(key))
                     if not s:
                         continue
