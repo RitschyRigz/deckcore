@@ -1587,7 +1587,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
     if (it.custom || !it.enabled) return
     getJSON('/api/integrations/' + it.id + '/elements').then((d) => {
       setEl(d)
-      const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = ('present' in x) ? !!x.present : true }) })
+      const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = ('present' in x) ? !!x.present : ('recommend' in x ? !!x.recommend : true) }) })
       setChecked(c)
       const o = {}; (d.options || []).forEach((op) => { o[op.key] = op.default }); setOpts(o)
       const t = {}; (d.toggles || []).forEach((tg) => { t[tg.key] = ('present' in tg) ? !!tg.present : true }); setToggles(t)

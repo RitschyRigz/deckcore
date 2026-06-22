@@ -480,8 +480,12 @@ def _smart_classify(name: str, unit: str) -> dict:
     elif is_water: color, cat = _SMART["water"], "🔵 Wasserkühlung"
     elif is_ram or is_board: color, cat = _SMART["ram"], "🧠 RAM & Board"
     else: color, cat = _SMART["ram"], "📊 Sensoren"
-    if u in ("°c", "c", "grad") or u.startswith("°"):     # Temperatur → Graph (Verlauf zählt)
-        rng = (25, 90) if is_gpu else (20, 95) if is_cpu else (20, 55) if is_water else (20, 90)
+    if u.startswith("°") or u in ("c", "grad", "celsius", "f", "fahrenheit"):   # Temperatur → Graph (Verlauf zählt)
+        is_f = ("f" in u)   # °F / F / Fahrenheit → andere Skala (sonst wirkte 90 „kalt")
+        if is_f:
+            rng = (77, 194) if is_gpu else (68, 203) if is_cpu else (68, 131) if is_water else (68, 194)
+        else:
+            rng = (25, 90) if is_gpu else (20, 95) if is_cpu else (20, 55) if is_water else (20, 90)
         return {"render": "graph", "color": color, "cat": cat, "opts": {"min": rng[0], "max": rng[1], "crit": True}}
     if u == "%":                                          # Last → Gauge (Momentanwert/sprunghaft)
         return {"render": "gauge", "color": color, "cat": cat, "opts": {"min": 0, "max": 100, "unit": "%", "crit": True, "color": color}}
@@ -495,7 +499,50 @@ def _smart_classify(name: str, unit: str) -> dict:
         return {"render": "stat", "color": _SMART["power"], "cat": cat, "opts": None}
     if u in ("l/h", "lph", "l/min", "gpm"):               # Durchfluss → Graph, blau, nicht kritisch
         return {"render": "graph", "color": _SMART["water"], "cat": "🔵 Wasserkühlung", "opts": {"min": 0, "max": 300, "crit": False}}
-    return {"render": "stat", "color": color, "cat": cat, "opts": None}   # Rest (MB/GB/MHz/A…) → Stat-Zahl
+    if u in ("a", "amp", "ampere", "ma"):                 # Strom → Stat, GELB
+        return {"render": "stat", "color": _SMART["power"], "cat": cat, "opts": None}
+    if u in ("mhz", "ghz", "khz"):                        # Takt → Graph (Verlauf); KEIN fester Max (variiert je HW)
+        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
+    if u in ("mb/s", "gb/s", "kb/s", "mbit/s", "mbps", "gt/s", "b/s"):   # Datenrate (Netz/Disk) → Graph
+        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
+    if u in ("mb", "gb", "kb", "tb", "mib", "gib"):       # Daten/Belegung → Graph bei „used/belegt", sonst Stat
+        if has("used", "belegt", "usage", "auslast", "commit", "alloc"):
+            return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
+        return {"render": "stat", "color": color, "cat": cat, "opts": None}
+    if u in ("ms", "fps"):                                # Zeit/FPS → Graph (Verlauf)
+        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
+    return {"render": "stat", "color": color, "cat": cat, "opts": None}   # Rest → Stat-Zahl
+
+
+# HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → der Auto-Import kuratiert ab hier.
+_HW_AUTO_CAP = 50
+_HWINFO_ENABLE_STEPS = (
+    "HWiNFO → Einstellungen → Shared Memory Support einschalten (liest ALLE Sensoren auf einmal; "
+    "läuft HWiNFO als Administrator, muss die App ebenfalls erhöht laufen) — ODER pro gewünschtem "
+    "Sensor in HWiNFO das Registry-/Gadget-Symbol aktivieren (kein Admin nötig). Danach hier erneut öffnen.")
+_HWINFO_SETUP_HINT = ("HWiNFO nicht erreichbar oder keine Sensoren freigegeben. So aktivierst du sie: "
+                      + _HWINFO_ENABLE_STEPS)
+
+
+def _hwinfo_essential(name: str, unit: str) -> bool:
+    """Generische Heuristik (KEIN Hardware-Name): ist das ein „primärer" Sensor fürs Auto-Starter-Deck?
+    Primär = Haupt-Kennzahl (Temp/Last/Takt/Leistung/Belegung/Lüfter/Durchfluss) UND keine Pro-Instanz-/
+    Detail-Variante (Core #5, Thread 7, VRM-Phase, „Distance to TjMax", Throttling/Residency). Wird NUR
+    bei sehr vielen Sensoren genutzt; kleine (vom User kuratierte) Listen werden nie gefiltert."""
+    n = (name or "").lower()
+    u = (unit or "").lower().strip()
+    if "#" in n:
+        return False
+    if any(k in n for k in ("thread", "phase", "distance to", "tjmax", "throttl", "residency")):
+        return False
+    if any(k in n for k in ("core ", "kern ", "p-core", "e-core", "ccd")) and any(c.isdigit() for c in n):
+        return False
+    if u.startswith("°") or u in ("c", "f", "grad", "celsius", "fahrenheit", "%", "w", "watt",
+                                  "rpm", "u/min", "mhz", "ghz", "l/h", "lph"):
+        return True
+    if u in ("mb", "gb", "gib", "mib") and any(k in n for k in ("used", "belegt", "usage", "commit")):
+        return True
+    return False
 
 
 # Default-Buttons sind HÜLLEN-Sache: die Hülle übergibt ihre eigenen über
@@ -974,12 +1021,24 @@ class DeckCoreService:
             if iid == "hwinfo":
                 s = self.hwinfo_sensors() or {}
                 if not s.get("available"):
-                    return {"available": False, "reason": "HWiNFO nicht erreichbar / keine Sensoren freigegeben"}
+                    return {"available": False, "reason": _HWINFO_SETUP_HINT}
                 RND = [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"], ["gauge", "Gauge"]]
                 items = [{"id": str(x.get("key")), "label": "%s (%s%s)" % (x.get("label"), x.get("value"), x.get("unit") or ""),
                           "render": "auto", "renders": RND}
                          for x in (s.get("sensors") or []) if x.get("key")]
-                return {"available": True, "groups": [{"key": "sensors", "label": "Sensoren — Darstellung je Sensor wählbar", "items": items}]}
+                _many = len(items) > _HW_AUTO_CAP   # sehr viele Sensoren → nur „primäre" vorauswählen (sonst „alles" = Chaos)
+                if _many:
+                    _by = {str(x.get("key")): x for x in (s.get("sensors") or [])}
+                    for it in items:
+                        x = _by.get(it["id"], {})
+                        it["recommend"] = _hwinfo_essential(str(x.get("label") or it["id"]), str(x.get("unit") or ""))
+                _srcname = {"shm": "Shared Memory", "registry": "Registry/Gadget"}.get(str(s.get("source") or ""), "")
+                note = ("💡 Gelesen werden die in HWiNFO freigegebenen Sensoren"
+                        + (" (Quelle: %s)" % _srcname if _srcname else "") + ". Mehr/weniger Sensoren: " + _HWINFO_ENABLE_STEPS)
+                if _many:
+                    note += " ⚠ Sehr viele erkannt — vorausgewählt sind nur die empfohlenen; hake bei Bedarf weitere an."
+                return {"available": True, "note": note,
+                        "groups": [{"key": "sensors", "label": "Sensoren — Darstellung je Sensor wählbar", "items": items}]}
             if iid == "obs":
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
@@ -2412,6 +2471,14 @@ class DeckCoreService:
             return {"ok": False, "reason": "no_sensors"}
         as_graph = (str(render).strip().lower() == "graph")
         smart = (str(render).strip().lower() == "auto")   # Smart-Import: pro Sensor automatisch klassifizieren
+        # ⚠ HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → ein Button JE Sensor wäre
+        # Chaos. Ab _HW_AUTO_CAP nur die „primären" (generische Heuristik) ins Auto-Deck; der Rest bleibt
+        # im Integrationen-Tab einzeln anhakbar. Kleine (vom User kuratierte) Listen bleiben unverändert.
+        available_sensors = len(sensors)
+        curated = available_sensors > _HW_AUTO_CAP
+        if curated:
+            ess = [s for s in sensors if _hwinfo_essential(str(s.get("label") or ""), str(s.get("unit") or ""))]
+            sensors = (ess or sensors)[:_HW_AUTO_CAP]
         cats_used: list[str] = []
         if not smart and "HWiNFO" not in self._pool_categories:
             self._pool_categories.append("HWiNFO")
@@ -2467,7 +2534,8 @@ class DeckCoreService:
                 if (cat == "⚡ Performance" or cat in cats_used) and cat not in self._pool_categories:
                     self._pool_categories.append(cat)
         self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "created": created, "updated": updated, "total": created + updated, "render": render}
+        return {"ok": True, "created": created, "updated": updated, "total": created + updated,
+                "render": render, "curated": curated, "available_sensors": available_sensors}
 
     def generate_obsbot_buttons(self, cameras: int = 2, only_funcs=None) -> dict:
         """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
