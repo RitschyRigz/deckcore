@@ -1,11 +1,12 @@
 """
 HWiNFO-Sensoren auslesen — Datenquelle für den generischen deckcore-Monitor ``hwinfo``.
 
-Zwei read-only-Quellen, in dieser Reihenfolge versucht (beide lazy, beide graceful):
-  1. **Shared Memory** ``Global\\HWiNFO_SENS_SM2`` — ALLE Sensoren. Lesbar nur, wenn die lesende
+Zwei read-only-Quellen (beide lazy, graceful). Reihenfolge: Registry ZUERST (die bewusste
+User-Kuration soll gewinnen), Shared Memory nur als Fallback, wenn nichts markiert ist:
+  • **Shared Memory** (nur Fallback)``Global\\HWiNFO_SENS_SM2`` — ALLE Sensoren. Lesbar nur, wenn die lesende
      App auf gleicher/höherer Integritätsstufe wie HWiNFO läuft (HWiNFO als Admin → die App muss
      ebenfalls erhöht sein, sonst „Zugriff verweigert"). HWiNFO-Einstellung: „Shared Memory Support".
-  2. **Registry** ``HKCU\\SOFTWARE\\HWiNFO64\\VSB`` — nur die vom User markierten Sensoren, dafür
+  • **Registry** (bevorzugt — User-Kuration)``HKCU\\SOFTWARE\\HWiNFO64\\VSB`` — nur die vom User markierten Sensoren, dafür
      OHNE Elevation lesbar. HWiNFO: „Settings → … periodically write values to Registry" (Gadget/VSB).
 
 Ist keine Quelle verfügbar → leere Sensorliste / ``value()`` = None (die Kachel zeigt ihren Default).
@@ -39,9 +40,12 @@ class HwinfoReader:
         now = time.monotonic()
         if self._ts and (now - self._ts) < _CACHE_TTL:
             return
-        data, order, src = _read_shm()
+        # Registry/Gadget ZUERST: die vom User bewusst markierte Auswahl (seine Kuration soll gewinnen)
+        # + läuft gratis ohne Admin/Pro. Shared Memory NUR als Fallback (wenn nichts markiert ist; zeigt
+        # dann alle Sensoren, braucht aber HWiNFO-Pro/Admin-Gleichstand).
+        data, order, src = _read_registry()
         if not data:
-            data, order, src = _read_registry()
+            data, order, src = _read_shm()
         self._cache, self._order, self._source = data, order, src
         self._ts = now
 
