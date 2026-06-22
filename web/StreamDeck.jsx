@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS, TILE_SKINS } from './deckstyle.js'
 import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
+
+// Per-Taste-Stil-Auswahl: die geteilten Stile + vorangestellt „(Standard / global)" (= erbt den globalen
+// Default aus den Theme-Einstellungen). '' = erben.
+const TILE_SKIN_OPTS = [['', '(Standard / global)'], ...TILE_SKINS]
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -336,8 +340,9 @@ function LiveKey({ v, eff, base, render, opts }) {
     return <div class={keyClass(eff, base) + ' is-stat cqsize'} style="background:var(--bg)"><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
   }
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
+  const skin = o.skin || (typeof document !== 'undefined' && document.body.dataset.tilestyle) || 'brackets'   // Kachel-Stil (WYSIWYG wie Panel)
   return (
-    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat' : '')}
+    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat s-' + skin : '')}
          style={isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (resolveColor(v.color) || '#222'))}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
         : <IconView icon={v.icon} cls="sd-prev-icon" fallback={<span class="sd-prev-icon">•</span>} />}
@@ -2729,6 +2734,16 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 onChange={(e) => onOpts({ ...(opts || {}), size: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
           {Object.keys(SIZE_LABELS).map((k) => <option value={k}>{SIZE_LABELS[k]}</option>)}
         </select>
+        {(!render || render === 'value') && (
+          <>
+            <span class="muted conn-label" style="margin-left:8px">Stil</span>
+            <select class="so-delay" value={(opts || {}).skin || ''}
+                    title="Rahmen-/Glow-Stil dieser Kachel (leer = globaler Standard aus den Theme-Einstellungen)"
+                    onChange={(e) => onOpts({ ...(opts || {}), skin: e.currentTarget.value || undefined })}>
+              {TILE_SKIN_OPTS.map(([v, l]) => <option value={v}>{l}</option>)}
+            </select>
+          </>
+        )}
       </div>
       {isWidget ? (
         <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} />

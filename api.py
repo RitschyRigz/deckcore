@@ -159,6 +159,11 @@ def build_streamdeck_router(
         """Deck ↔ Ordner umschalten (Ordner = nicht in der Panel-Tableiste)."""
         return JSONResponse(get_service(request).set_deck_folder(deck_id, bool((body or {}).get("folder"))))
 
+    @r.post("/api/streamdeck/deck/{deck_id}/theme")
+    def streamdeck_deck_theme(deck_id: str, request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Deck-Theme-Override setzen/entfernen ({name, vars} oder leer = folgt dem globalen Theme)."""
+        return JSONResponse(get_service(request).set_deck_theme(deck_id, (body or {}).get("theme")))
+
     @r.post("/api/streamdeck/deck/populate_obs_scenes")
     def streamdeck_deck_populate_scenes(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Pro OBS-Szene einen Szenen-Wechsel-Button im Ziel-Deck (idempotent). Szenenquelle =

@@ -27,6 +27,20 @@ export function resolveColor(c) {
   return isThemeColor(c) ? `var(--${c})` : (c || '')
 }
 
+// Kachel-Stile (Verzierung einer flachen Taste) — [Wert, Label]. EINE Wahrheit für den Button-Editor
+// (per Taste) UND die Theming-Seite (globaler Default). Muss zu deck.css `.s-*` + service `_TILE_SKINS` passen.
+export const TILE_SKINS = [
+  ['brackets', 'Eck-Brackets'], ['neon', 'Neon-Rahmen'], ['double', 'Doppellinie'], ['inset', 'Innen-Glow'],
+  ['underline', 'Unterstrich'], ['dashed', 'Gestrichelt'], ['gradient', 'Verlaufs-Füllung'], ['scan', 'Scanlines'],
+  ['cut', 'Schnittecke'], ['ring', 'Icon-Ring'], ['topbar', 'Kopfleiste'], ['plate', 'Tasten-Platte'],
+  ['cornerglow', 'Eck-Leuchten'], ['plain', 'Schlicht'],
+]
+// Druck-/Touch-Bestätigungs-Modi (global) — [Wert, Label]. Muss zu deck.css `body[data-press="…"]` passen.
+export const PRESS_MODES = [
+  ['ring', 'Ring (Rahmen)'], ['innerglow', 'Innen-Glow'], ['backlight', 'Hintergrundlicht'],
+  ['pop', 'Nur Pop'], ['lift', 'Anheben'],
+]
+
 export function resolveStyle(style, lay) {
   const s = style || {}
   const onoff = (v, d) => (v === 'on' ? true : v === 'off' ? false : d)

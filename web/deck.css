@@ -342,7 +342,20 @@
 /* Große/breite Kachel (Panel-Span; NUR Web-Panel — physisch bleibt der Button 1×1). Hebt den Quadrat-Cap
    auf und füllt die gespannten Zellen (grid-column/grid-row: span kommt inline aus dem Item w/h). */
 .t-key.spanned { max-width: none; width: 100%; height: 100%; aspect-ratio: auto; }
-.t-key:active, .t-key.pressed { transform: scale(.93); box-shadow: 0 0 0 3px var(--accent2); }
+/* ── Druck-/Touch-Bestätigung (global wählbar via body[data-press], Farbe via --press) ──
+   Pop (Skalieren) ist immer dabei; der visuelle Effekt wechselt je Modus. Default = Ring in --press
+   (Fallback Akzent2) → unverändert ggü. früher. Modi: ring · innerglow · backlight · pop · lift. */
+.t-key:active, .t-key.pressed { transform: scale(.93); }
+body:not([data-press]) .t-key.pressed, body:not([data-press]) .t-key:active,
+body[data-press="ring"] .t-key.pressed, body[data-press="ring"] .t-key:active {
+  box-shadow: 0 0 0 3px var(--press, var(--accent2)); }
+body[data-press="innerglow"] .t-key.pressed, body[data-press="innerglow"] .t-key:active {
+  box-shadow: inset 0 0 22px var(--press, var(--accent2)), inset 0 0 0 1px var(--press, var(--accent2)); }
+body[data-press="backlight"] .t-key.pressed, body[data-press="backlight"] .t-key:active {
+  box-shadow: inset 0 0 0 99px color-mix(in srgb, var(--press, var(--accent2)) 34%, transparent), 0 0 18px var(--press, var(--accent2)); }
+body[data-press="pop"] .t-key.pressed, body[data-press="pop"] .t-key:active { transform: scale(.88); }
+body[data-press="lift"] .t-key.pressed, body[data-press="lift"] .t-key:active {
+  transform: scale(1.07); box-shadow: 0 7px 20px var(--press, var(--accent2)); }
 .t-key-img { width: 64%; height: 64%; object-fit: contain; }
 /* Bild-Buttons (fertige State-PNGs mit gebackenem Text) füllen die Kachel komplett →
    dunkel & lesbar wie im echten Deck; separates Label entfällt (ist im PNG drin). */
@@ -358,32 +371,65 @@
 .t-key-title { font-size: calc(13px * var(--sd-font)); font-weight: 800; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
 .t-key-label { font-size: calc(11px * var(--sd-font)); font-weight: 600; opacity: .85; text-shadow: 0 1px 2px rgba(0,0,0,.6);
   text-align: center; line-height: 1.1; }
-/* ── Flache Buttons (kein Bild): dunkle Kachel + Akzent-Glow (--acc kommt vom Button) — wie Fader/OBS-Buttons ── */
-.t-key.t-flat { background: linear-gradient(165deg, #171c26, #0c0f14); }
-.t-key.t-flat::before, .t-key.t-flat::after { content: ""; position: absolute; width: 16%; height: 16%;
-  min-width: 13px; min-height: 13px; max-width: 22px; max-height: 22px; pointer-events: none; opacity: .8; }
-.t-key.t-flat::before { top: 7px; left: 7px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
-.t-key.t-flat::after { bottom: 7px; right: 7px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
-.t-key.t-flat .t-key-icon { filter: drop-shadow(0 0 7px var(--acc)); }
-.t-key.t-flat .t-key-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
-.t-key.t-flat .t-key-label { text-transform: uppercase; letter-spacing: .05em; font-weight: 800; opacity: .95;
-  color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Editor-Vorschau (sd-prev-key) bekommt dasselbe Flat-Design wie das Panel — echtes WYSIWYG. */
-.sd-prev-key.t-flat { background: linear-gradient(165deg, #171c26, #0c0f14); }
-.sd-prev-key.t-flat::before, .sd-prev-key.t-flat::after { content: ""; position: absolute; width: 16%; height: 16%;
-  min-width: 11px; min-height: 11px; max-width: 20px; max-height: 20px; pointer-events: none; opacity: .8; }
-.sd-prev-key.t-flat::before { top: 6px; left: 6px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
-.sd-prev-key.t-flat::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
-.sd-prev-key.t-flat .sd-prev-icon { filter: drop-shadow(0 0 7px var(--acc)); }
-.sd-prev-key.t-flat .sd-prev-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
-.sd-prev-key.t-flat .sd-prev-label { text-transform: uppercase; letter-spacing: .05em; font-weight: 800; opacity: .95;
-  color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── Flache Buttons (kein Bild): dunkle Kachel + Akzent-Glow. --acc kommt vom Button/Theme. Die VERZIERUNG
+   (Rahmen/Glow/Muster) liegt in den wählbaren Kachel-Stilen .s-* (pro Taste opts.skin ODER globaler Default).
+   Gilt identisch fürs Panel (.t-key) UND die Editor-Vorschau (.sd-prev-key) = echtes WYSIWYG. ── */
+.t-key.t-flat, .sd-prev-key.t-flat { background: linear-gradient(165deg, #171c26, #0c0f14); }
+.t-key.t-flat .t-key-icon, .sd-prev-key.t-flat .sd-prev-icon { filter: drop-shadow(0 0 7px var(--acc)); }
+.t-key.t-flat .t-key-title, .sd-prev-key.t-flat .sd-prev-title { text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); }
+.t-key.t-flat .t-key-label, .sd-prev-key.t-flat .sd-prev-label { text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 800; opacity: .95; color: var(--acc); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ══════ Kachel-Stile (.s-*) — die wählbare Verzierung. Reine Panel-Schicht (physisch bleibt 1×1). ══════ */
+/* 1 Eck-Brackets (Default) */
+.s-brackets::before, .s-brackets::after { content: ""; position: absolute; width: 16%; height: 16%;
+  min-width: 11px; min-height: 11px; max-width: 22px; max-height: 22px; pointer-events: none; opacity: .85; }
+.s-brackets::before { top: 7px; left: 7px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
+.s-brackets::after { bottom: 7px; right: 7px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
+/* 2 Neon-Rahmen */
+.s-neon { border: 2px solid var(--acc, var(--accent2)); box-shadow: 0 0 12px var(--acc), inset 0 0 8px color-mix(in srgb, var(--acc) 28%, transparent); }
+/* 3 Doppellinie */
+.s-double { border: 1px solid var(--acc, var(--accent2)); }
+.s-double::after { content: ""; position: absolute; inset: 5px; border: 1px solid color-mix(in srgb, var(--acc) 55%, transparent); border-radius: 11px; pointer-events: none; }
+/* 4 Innen-Glow */
+.s-inset { box-shadow: inset 0 0 18px color-mix(in srgb, var(--acc) 45%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--acc) 35%, transparent); }
+/* 5 Unterstrich */
+.s-underline::after { content: ""; position: absolute; left: 14%; right: 14%; bottom: 8%; height: 3px; border-radius: 3px; background: var(--acc); box-shadow: 0 0 10px var(--acc); pointer-events: none; }
+/* 6 Gestrichelt */
+.s-dashed { border: 2px dashed color-mix(in srgb, var(--acc) 78%, transparent); }
+/* 7 Verlaufs-Füllung */
+.s-gradient { background: linear-gradient(160deg, color-mix(in srgb, var(--acc) 28%, #10131a), #0c0f14); border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent); }
+/* 8 Scanlines */
+.s-scan { border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent); }
+.s-scan::before { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, color-mix(in srgb, var(--acc) 9%, transparent) 3px 4px); }
+/* 9 Schnittecke */
+.s-cut { clip-path: polygon(15% 0, 100% 0, 100% 100%, 0 100%, 0 15%); }
+.s-cut::before { content: ""; position: absolute; inset: 0; pointer-events: none; clip-path: polygon(15% 0, 100% 0, 100% 100%, 0 100%, 0 15%); box-shadow: inset 0 0 0 2px var(--acc); }
+/* 10 Icon-Ring */
+.s-ring { border: 1px solid color-mix(in srgb, var(--acc) 28%, transparent); }
+.s-ring .t-key-icon, .s-ring .sd-prev-icon { width: 1.55em; height: 1.55em; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 2px solid var(--acc);
+  box-shadow: 0 0 12px var(--acc), inset 0 0 8px color-mix(in srgb, var(--acc) 25%, transparent); }
+/* 11 Kopfleiste */
+.s-topbar { border: 1px solid color-mix(in srgb, var(--acc) 22%, transparent); }
+.s-topbar::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px; background: var(--acc); box-shadow: 0 0 10px var(--acc); pointer-events: none; }
+/* 12 Tasten-Platte */
+.s-plate { background: linear-gradient(180deg, color-mix(in srgb, var(--acc) 22%, #1a1f29), #0d1016);
+  border: 1px solid color-mix(in srgb, var(--acc) 48%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--acc) 30%, transparent), 0 2px 6px rgba(0,0,0,.5); }
+/* 13 Eck-Leuchten */
+.s-cornerglow { border: 1px solid color-mix(in srgb, var(--acc) 25%, transparent); }
+.s-cornerglow::before { content: ""; position: absolute; top: -32%; right: -32%; width: 80%; height: 80%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--acc) 48%, transparent), transparent 68%); }
+/* 14 Schlicht (nur die dunkle Kachel + Glow-Icon, keine Verzierung) — .s-plain braucht keine eigene Regel. */
 /* Stil-Optionen PRO BUTTON (button.style; Layout = Default) */
 .t-key.lbl-top .t-key-label { order: -2; }
 .t-key.lbl-top .t-key-title { order: -1; }
 .t-key.lbl-off .t-key-label { display: none; }
 .t-key.title-off .t-key-title { display: none; }
-.t-key.noframe { background: transparent !important; border: 0; box-shadow: none; padding: 2px; }
+.t-key.noframe { background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 2px; }
+.t-key.noframe::before, .t-key.noframe::after { display: none !important; }   /* rahmenlos = auch keine Stil-Verzierung */
 .t-key.noframe:active, .t-key.noframe.pressed { box-shadow: none; transform: scale(.9); }
 .t-key.noframe .t-key-icon { font-size: calc(56px * var(--sd-font)); }
 .t-key.noframe .t-key-img { width: 88%; height: 88%; }
@@ -394,7 +440,7 @@
    gezeichnet → liegt ÜBER dem Inhalt und ist damit KONSISTENT auf ALLEN Ordnern sichtbar — Emoji UND
    Bild-/PNG-Icons (ein inset-shadow würde vom Vollbild-Bild verdeckt). Klar abgesetzt von der blauen
    Druck-Animation (--accent2). Farbe via --folder (eine Stelle zum Nachjustieren). */
-.t-key.is-folder { outline: 2px solid var(--folder, #c8a44e); outline-offset: -3px; }
+.t-key.is-folder { outline: var(--folder-w, 2px) solid var(--folder, #c8a44e); outline-offset: -3px; }
 .t-folder-badge { position: absolute; top: 4px; right: 6px; z-index: 2; font-size: 13px; line-height: 1;
   color: #fff; opacity: .9; text-shadow: 0 1px 2px rgba(0,0,0,.6); pointer-events: none; }
 

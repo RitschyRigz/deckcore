@@ -4,6 +4,11 @@ import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
+
+// Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
+// ganze Panel um (Deck-Identität, z.B. rot=Dual / blau=Solo); verlässt man es, wird die globale Basis
+// wiederhergestellt. Muss zur Hülle (theme.js) + service (_THEME_VAR_KEYS) passen.
+const THEME_VAR_KEYS = ['--bg', '--bg2', '--bg3', '--line', '--fg', '--muted', '--accent', '--accent2', '--ok', '--warn', '--err', '--live']
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -578,6 +583,7 @@ export function TouchDeck() {
   const flashT = useRef(null)
   const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
+  const baseThemeRef = useRef(null)                   // globale Theme-Basis (für Deck-Theme-Override: Rückkehr)
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
     const dks = d.decks || []
@@ -659,6 +665,33 @@ export function TouchDeck() {
     try { localStorage.setItem('sd.fullscreen', fullscreen ? '1' : '0') } catch {}
   }, [fullscreen])
   useEffect(() => () => { try { document.body.classList.remove('dc-deck-fs') } catch {} }, [])
+
+  // Deck-Theme-Override: die globale Theme-Basis EINMAL beim Mount erfassen (die Hülle hat das globale Theme
+  // schon auf :root angewandt). Beim Unmount wiederherstellen, damit die Klasse/Vars nie hängenbleiben.
+  useEffect(() => {
+    try {
+      const cs = getComputedStyle(document.documentElement)
+      const base = {}
+      for (const k of THEME_VAR_KEYS) base[k] = (cs.getPropertyValue(k) || '').trim()
+      baseThemeRef.current = base
+    } catch {}
+    return () => {
+      const base = baseThemeRef.current; if (!base) return
+      try { const root = document.documentElement; for (const k of THEME_VAR_KEYS) if (base[k]) root.style.setProperty(k, base[k]) } catch {}
+    }
+  }, [])
+  // Aktives TOP-LEVEL-Deck (Tab) hat ein eigenes Theme → dessen Farben auf :root; sonst die globale Basis
+  // zurück. Folgt dem Tab, NICHT dem Ordner-Drilldown (ein Ordner gehört zur Identität seines Decks).
+  useEffect(() => {
+    const base = baseThemeRef.current; if (!base) return
+    const topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
+    const dk = decks.find((d) => d.id === topId) || {}
+    const tv = (dk.theme && dk.theme.vars) || null
+    try {
+      const root = document.documentElement
+      for (const k of THEME_VAR_KEYS) root.style.setProperty(k, (tv && tv[k]) || base[k] || '')
+    } catch {}
+  }, [deck, defaultDeck, decks])
   useEffect(() => {
     if (!fullscreen) return
     const onKey = (e) => { if (e.key === 'Escape') setFullscreen(false) }
@@ -757,6 +790,8 @@ export function TouchDeck() {
   const gridStyle = `grid-template-columns:${gridCols};gap:${layout.gap || 12}px`
   const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}`
   const showCatTitles = layout.show_category_titles !== false
+  // Globaler Kachel-Stil-Default (von der Hülle gesetzt: body.dataset.tilestyle). Pro Taste via opts.skin überschreibbar.
+  const defSkin = (typeof document !== 'undefined' && (document.body.dataset.tilestyle || '')) || 'brackets'
 
   const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
@@ -789,6 +824,7 @@ export function TouchDeck() {
     const isFader = render === 'fader'
     const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Fader)
     const o = optsById[id] || {}
+    const skin = o.skin || defSkin   // Kachel-Stil: Tasten-Override (opts.skin) vor globalem Default
     const statSty = isStat ? statStyle(v, o) : ''
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
@@ -804,7 +840,7 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat s-' + skin : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
               style={(isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (resolveColor(v.color) || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />

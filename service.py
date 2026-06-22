@@ -176,6 +176,13 @@ def _clamp_pos(v):
 # erlaubte Werte begrenzt (_sanitize_opts). ⚠ reine Panel-Darstellung; das physische Plugin rendert resolved[button].
 _WIDGET_FONTS = ("sans", "serif", "mono", "condensed", "rounded")
 _CLOCK_MODES = ("digital", "analog")
+# Kachel-Stile (Verzierung einer flachen Taste) — Whitelist fuer opts.skin; muss zu deck.css .s-* passen.
+_TILE_SKINS = ("brackets", "neon", "double", "inset", "underline", "dashed", "gradient",
+               "scan", "cut", "ring", "topbar", "plate", "cornerglow", "plain")
+# Theme-CSS-Variablen, die ein Deck-Theme-Override setzen darf (Farben). Muss zur Huelle (theme.js) +
+# TouchDeck (THEME_VAR_KEYS) passen. Werte werden gegen _is_hex_color geprueft (import-sicher).
+_THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
+                   "--accent", "--accent2", "--ok", "--warn", "--err", "--live")
 
 
 def _is_hex_color(c) -> bool:
@@ -212,6 +219,8 @@ def _sanitize_opts(o) -> dict:
         out["kind"] = o["kind"]                         # Status-Karte: Quelle fürs Auto-Emoji (🎧/🔊/📺 …)
     if "noIcon" in o:
         out["noIcon"] = bool(o.get("noIcon"))          # Status-Karte: Auto-/Symbol ausblenden (nur Wert)
+    if o.get("skin") in _TILE_SKINS:
+        out["skin"] = o["skin"]                         # Kachel-Stil (Rahmen/Glow/Muster) je Taste; leer = globaler Default
     for k in ("min", "max"):                          # Gauge-Wertebereich
         try:
             if o.get(k) is not None and o.get(k) != "":
@@ -1953,6 +1962,13 @@ class DeckCoreService:
                     out[k] = v
             if d.get("mixer_icon_only"):           # nur App-Symbol statt Titel
                 out["mixer_icon_only"] = True
+        # Deck-Theme-Override (Farben) erhalten — die Huelle setzt es, das Panel faerbt sich auf diesem Deck
+        # damit komplett um (Deck-Identitaet, z.B. rot=Dual / blau=Solo). Nur bekannte CSS-Vars + Hex (import-sicher).
+        tv = d.get("theme")
+        if isinstance(tv, dict) and isinstance(tv.get("vars"), dict):
+            v = {k: tv["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(tv["vars"].get(k))}
+            if v:
+                out["theme"] = {"name": str(tv.get("name") or "")[:40], "vars": v}
         return out
 
     def _sanitize_decks(self, decks, valid_ids: set) -> list[dict]:
@@ -2166,6 +2182,24 @@ class DeckCoreService:
         deck["folder"] = bool(folder)
         self._save(); self._publish_cfg()
         return {"ok": True, "id": deck_id, "folder": deck["folder"]}
+
+    def set_deck_theme(self, deck_id: str, theme) -> dict:
+        """Deck-Theme-Override setzen/entfernen. ``theme`` = {name, vars:{--bg…:#hex}} oder None/leer.
+        Das Panel faerbt sich auf diesem Deck komplett um (Deck-Identitaet, z.B. rot=Dual / blau=Solo);
+        andere Decks folgen weiter dem globalen Theme. Nur bekannte CSS-Vars + Hex (import-sicher)."""
+        deck = self._deck(deck_id)
+        if not deck:
+            return {"ok": False, "reason": "unknown_deck"}
+        if isinstance(theme, dict) and isinstance(theme.get("vars"), dict):
+            v = {k: theme["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(theme["vars"].get(k))}
+            if v:
+                deck["theme"] = {"name": str(theme.get("name") or "")[:40], "vars": v}
+            else:
+                deck.pop("theme", None)
+        else:
+            deck.pop("theme", None)        # None/leer = Override entfernen → folgt dem globalen Theme
+        self._save(); self._publish_cfg()
+        return {"ok": True, "id": deck_id, "theme": deck.get("theme")}
 
     # ── Pro Deck: Layout / Kategorien / Items (Platzierung) ──────────────
     def set_deck_layout(self, deck_id: str, patch: dict) -> dict:
