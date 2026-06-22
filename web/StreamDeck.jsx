@@ -66,6 +66,7 @@ const MONITOR_LABELS = {
   wavelink_main_output: 'Wave-Link Monitor-Hauptausgang (Gerätename)',
   obsbot_cam: 'OBSBOT-Kamera-Status (bereit / schläft / aus) — Kamera wählbar',
   obsbot_track: 'OBSBOT-Tracking (an / aus / schläft) — Kamera wählbar',
+  weather: 'Wetter am Standort (Open-Meteo) — als „🪪 Status-Karte"',
 }
 const MONITOR_INFO = {
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
@@ -92,6 +93,7 @@ const MONITOR_INFO = {
   obsbot_cam: { text: 'OBSBOT-Kamera-Status: on (bereit) · sleep (Privacy) · off (App/OSC nicht erreichbar). Nutze „= gleich" + Wert für die Farbe. Kamera unten wählen.', values: ['on', 'sleep', 'off'], bool: false },
   obsbot_track: { text: 'OBSBOT-Tracking: trackon · trackoff · sleep · off. Nutze „= gleich" + Wert. Kamera unten wählen. Hinweis: OBSBOT meldet keinen echten Tracking-Zustand zurück — der Status spiegelt, was zuletzt übers Deck gesetzt wurde.', values: ['trackon', 'trackoff', 'sleep', 'off'], bool: false },
   manual_count: { text: 'Zählt, wie oft das Manual-Event ausgelöst wurde. Setze {value} in den Titel (z. B. „Tode: {value}").', values: null, bool: false },
+  weather: { text: 'Aktuelles Wetter „⛅ 18° Zürich" (Open-Meteo, gratis/ohne Key). Standort automatisch per IP oder manuell in der „🌤 Wetter"-Kategorie. Am schönsten als „Darstellung → 🪪 Status-Karte"; {value} = der Wetter-Text.', values: null, bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -1569,6 +1571,43 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
 // Steuerung des interaktiven Audio-Mixer-Decks (nur in der „🔊 Windows Audio"-Kategorie): Toggle legt
 // ein Live-Deck an/entfernt es; darunter eine Ausblend-Liste (abwählen = Programm dauerhaft aus dem
 // Mixer nehmen). Das Deck selbst rendert das Panel live (deck.auto==='audio_mixer').
+// 🌤 Wetter-Steuerung (nur in der „Wetter"-Kategorie): zeigt aktuelles Wetter + Standort und lässt den
+// Standort manuell setzen (Stadt → Geocoding) oder auf Auto (IP) zurückstellen. Quelle Open-Meteo (key-frei).
+function WeatherControl({ onReload }) {
+  const [st, setSt] = useState(null)
+  const [city, setCity] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const load = () => getJSON('/api/weather/status').then(setSt).catch(() => setSt({ available: false, reason: 'nicht erreichbar' }))
+  useEffect(() => { load() }, [])
+  const setLoc = (body, label) => {
+    setBusy(true); setMsg(null)
+    postJSON('/api/weather/config', body)
+      .then((r) => { setMsg(r.ok ? { ok: true, t: '✓ ' + label } : { ok: false, t: r.reason || 'Fehler' }); load(); onReload && onReload() })
+      .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setBusy(false))
+  }
+  return (
+    <div style="margin-top:12px">
+      <div class={'sd-int-status ' + (st && st.available ? 'ok' : 'na')} style="margin-bottom:8px">
+        {st && st.available
+          ? `${st.emoji || '🌤'} ${st.temp != null ? Math.round(st.temp) + '°' : ''} · ${st.place || ''}`
+          : '⏳ ' + ((st && st.reason) || 'lade Wetter…')}
+      </div>
+      <div class="reward-row">
+        <input class="reward-input" placeholder="Stadt (z. B. Zürich) — leer = Auto per IP"
+               value={city} onInput={(e) => setCity(e.currentTarget.value)} />
+        <button class="btn small" disabled={busy}
+                onClick={() => city.trim() ? setLoc({ city: city.trim() }, city.trim()) : setLoc({ auto: true }, 'Auto-Standort')}>
+          {busy ? '…' : 'Setzen'}
+        </button>
+        <button class="btn ghost small" disabled={busy} onClick={() => { setCity(''); setLoc({ auto: true }, 'Auto-Standort') }}>📍 Auto</button>
+      </div>
+      {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Quelle: Open-Meteo (gratis, ohne Key). Standort automatisch per IP oder oben manuell — ~20 min gecacht. Kachel-Look: „🪪 Status-Karte".</p>
+    </div>
+  )
+}
+
 function AudioMixerControl({ onReload }) {
   const [st, setSt] = useState(null)        // {enabled, hidden:[procname]}
   const [apps, setApps] = useState([])
@@ -1698,10 +1737,11 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
       {!it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
       {it.id === 'audio' && <AudioMixerControl onReload={onReload} />}
+      {it.id === 'weather' && <WeatherControl onReload={onReload} />}
       {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
       {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
       {it.enabled && el && el.available && el.note && <p class="hint" style="margin:10px 0 0">{el.note}</p>}
-      {it.enabled && el && el.available && (
+      {it.enabled && el && el.available && it.id !== 'weather' && (
         <>
           {it.id === 'audio' && <div class="sd-int-grp-h" style="margin-top:16px;border-top:0.5px solid var(--line);padding-top:12px"><span>📌 Feste Fader-Buttons erstellen <span class="muted">— landen im Pool, auf jedes Deck ziehbar (grau, wenn App aus)</span></span></div>}
           {(el.groups || []).map((g) => (

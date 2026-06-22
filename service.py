@@ -98,6 +98,7 @@ from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, 
 from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
 from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
 from .obsbot import ObsBotOSC   # OBSBOT-Kamerasteuerung via lokales OSC/UDP (Tiny/Meet/Tail; send-only)
+from .weather import WeatherSource   # Wetter (Open-Meteo + IP-Auto-Standort, gratis/key-frei, gecacht, opt-in)
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
 from . import integrations as _integrations   # deklarative Integrations-Registry (Basis + Fremd-App; host-erweiterbar)
@@ -732,6 +733,7 @@ class DeckCoreService:
         self._obs = ObsDirect(obs_host, obs_port, obs_password)
         self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
         self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
+        self._weather = WeatherSource(config_path=str(self._runtime / "weather.json"))   # Wetter (lazy, gecacht, opt-in)
         self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
         self._obsbot = ObsBotOSC(obsbot_host, obsbot_port)   # OBSBOT-Kamerasteuerung (OSC/UDP, send-only, lazy Socket)
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
@@ -805,6 +807,7 @@ class DeckCoreService:
         M("obs_scene", self._mon_obs_scene)
         M("obs_source_visible", self._mon_obs_source_visible)
         M("hwinfo", self._mon_hwinfo)
+        M("weather", self._mon_weather)
         M("fps", self._mon_fps)
         M("frametime", self._mon_frametime)
         M("wavelink_meter", self._mon_wavelink_meter)
@@ -1444,9 +1447,11 @@ class DeckCoreService:
                 el = {"available": False}
             count = sum(len(g.get("items") or []) for g in (el.get("groups") or []))
             st = str((statuses.get(iid) or {}).get("state") or "unknown")
+            avail = bool(el.get("available")) and count > 0 and st != "off"
+            if iid == "weather":   # Monitor-only + holt selbst Daten → immer anbietbar (Kachel ist graceful)
+                avail, count = True, max(count, 1)
             out.append({"id": iid, "emoji": it.get("emoji"), "label": it.get("label"),
-                        "available": bool(el.get("available")) and count > 0 and st != "off",
-                        "count": count, "state": st, "reason": el.get("reason") or ""})
+                        "available": avail, "count": count, "state": st, "reason": el.get("reason") or ""})
         return {"integrations": out}
 
     def quickstart_apply(self, ids) -> dict:
@@ -1516,6 +1521,10 @@ class DeckCoreService:
         _tile({"id": "start_clock", "label": "Uhr", "render": "clock",
                "action": {"type": "none"}, "monitor": {"type": "none"}, "states": [], "default": {}},
               "Widgets", w=2, h=2)
+        if "weather" in want:   # Wetter-Kachel (opt-in; holt Daten aus dem Netz, ~20 min gecacht)
+            _tile({"id": "start_weather", "label": "Wetter", "render": "readout",
+                   "action": {"type": "none"}, "monitor": {"type": "weather"}, "states": [],
+                   "default": {"icon": "🌤", "title": "{value}", "color": "#2f3037"}}, "Wetter", w=2)
         if "obs" in want:   # erkannte Integration: Live/Aufnahme (kuratiert, nicht „alles")
             for cid, ic, lbl in (("stream", "🔴", "Live"), ("record", "⏺", "Aufnahme")):
                 _tile({"id": "obs_" + cid, "label": lbl,
@@ -3473,7 +3482,7 @@ class DeckCoreService:
                          "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime",
+                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
@@ -3681,6 +3690,18 @@ class DeckCoreService:
         # HWiNFO-Sensorwert (per Label-Key). Der Reader cached ALLE Sensoren ~1s → pro Button billig;
         # der Wert landet via {value} im Titel, States können nach Schwellwert einfärben (gt/lt).
         return self._hwinfo.value(mon.get("sensor", ""))
+
+    def _mon_weather(self, mon: dict, btn: dict) -> Any:
+        # Wetter am (Auto-/manuellen) Standort als „⛅ 18°"-String (gecacht ~20 min, graceful → None).
+        return self._weather.display()
+
+    def weather_status(self, probe: bool = False) -> dict:
+        """Aktuelles Wetter + Standort für die UI (gecacht ~20 min)."""
+        return self._weather.status(probe=probe)
+
+    def set_weather_config(self, *, lat=None, lon=None, place: str = "", city: str = "", auto: bool = False) -> dict:
+        """Standort setzen: ``auto`` (IP), ``city`` (Geocoding) oder ``lat``/``lon`` direkt."""
+        return self._weather.configure(lat=lat, lon=lon, place=place, city=city, auto=auto)
 
     def _mon_fps(self, mon: dict, btn: dict) -> Any:
         # FPS des Vordergrund-Spiels (PresentMon). Für Graph-Kacheln liest das Frontend zusätzlich

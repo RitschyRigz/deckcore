@@ -270,6 +270,19 @@ def build_streamdeck_router(
         """HWiNFO-Sensorliste fürs Editor-Dropdown (leer, wenn HWiNFO/Quelle nicht verfügbar)."""
         return JSONResponse(get_service(request).hwinfo_sensors())
 
+    @r.get("/api/weather/status")
+    def weather_status(request: Request) -> JSONResponse:
+        """Aktuelles Wetter + Standort (gecacht; Open-Meteo + IP-Auto-Standort, key-frei)."""
+        return JSONResponse(get_service(request).weather_status())
+
+    @r.post("/api/weather/config")
+    def weather_config(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Standort setzen. body = {auto:true} | {city:"…"} | {lat:..,lon:..,place:"…"}."""
+        b = body or {}
+        return JSONResponse(get_service(request).set_weather_config(
+            lat=b.get("lat"), lon=b.get("lon"), place=b.get("place", ""),
+            city=b.get("city", ""), auto=bool(b.get("auto"))))
+
     @r.get("/api/frametime/status")
     def frametime_status(request: Request) -> JSONResponse:
         """PresentMon-FPS/Frametime-Status (available/presenting/reason) — startet den Sampler lazy."""

@@ -96,6 +96,14 @@ CORE_INTEGRATIONS = [
                       "label": "📊 HWiNFO-Sensor-Buttons generieren", "opt": "hwinfo_render"},
     },
     {
+        "id": "weather", "emoji": "🌤", "label": "Wetter",
+        "description": "Aktuelles Wetter am Standort (Open-Meteo, gratis/ohne Key). Standort automatisch "
+                       "per IP — oder manuell (Stadt/Koordinaten). Theme-gefärbte Kachel. ⚠ holt Daten "
+                       "aus dem Internet (opt-in, ~20 min gecacht).",
+        "actions": [], "monitors": ["weather"],
+        "requires": "Internet-Zugang (Standort automatisch per IP oder manuell setzbar).",
+    },
+    {
         "id": "presentmon", "emoji": "🎯", "label": "PresentMon",
         "description": "FPS / Frametime des Vordergrund-Spiels (herstellerneutral, ohne Injection).",
         "actions": [], "monitors": ["fps", "frametime"],
