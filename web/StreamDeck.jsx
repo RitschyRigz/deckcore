@@ -289,14 +289,15 @@ function BackupCard({ onReload }) {
     const f = e.currentTarget.files && e.currentTarget.files[0]
     e.currentTarget.value = ''
     if (!f) return
-    if (!confirm('Backup einspielen? Die aktuelle Config wird überschrieben (vorher automatisch gesichert).')) return
+    if (!confirm('Backup einspielen? Die aktuelle Config wird überschrieben (vorher automatisch gesichert).\n\n⚠ Spiele nur Backups ein, denen du vertraust — sie können Buttons enthalten, die beim Drücken Programme starten oder URLs aufrufen.')) return
     setBusy(true); setMsg(null)
     try {
       const fd = new FormData(); fd.append('file', f)
       const r = await fetch('/api/streamdeck/import', { method: 'POST', body: fd })
       if (!r.ok) throw new Error((await r.text()) || r.status)
       const d = await r.json()
-      setMsg(`✅ ${d.buttons} Buttons · ${d.decks} Decks · ${d.icons || 0} Icons zurückgespielt`)
+      setMsg(`✅ ${d.buttons} Buttons · ${d.decks} Decks · ${d.icons || 0} Icons zurückgespielt`
+        + (d.executable ? ` · ⚠ ${d.executable} Buttons starten Programme/URLs — vor dem Drücken prüfen` : ''))
       onReload && onReload(); loadSnaps()
     } catch (er) { setMsg('Fehler: ' + er) }
     setBusy(false)

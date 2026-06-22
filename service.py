@@ -244,6 +244,17 @@ def _regen_preserve(existing: dict, fresh: dict) -> dict:
     return out
 
 
+# Buttons mit AUSFÜHRENDER Aktion (Programm/Script starten · URL · Tastenmakro · Prozess/Ordner). Für den
+# Import-Sicherheits-Hinweis: ein FREMDES Backup kann solche Buttons enthalten — sie laufen zwar erst beim
+# DRÜCKEN (nie beim Import), aber der Nutzer soll vorab gewarnt sein, sie vor dem Drücken zu prüfen.
+_EXEC_ACTIONS = {"launch", "open_folder", "http", "hotkey", "process_action", "run_script", "events_action"}
+
+
+def _count_executable(buttons) -> int:
+    return sum(1 for b in (buttons or [])
+               if isinstance(b, dict) and str((b.get("action") or {}).get("type") or "") in _EXEC_ACTIONS)
+
+
 # ── Wave-Link-Button-Factory: EINE Wahrheit fürs Aussehen generierter WL-Buttons ──────
 # Sowohl die „1-Klick"-Generatoren (populate_wavelink) ALS AUCH der Integrationen-Tab
 # (integration_generate_selected) bauen exakt dieselben Wave-Link-Buttons. Diese reinen Helfer
@@ -1720,6 +1731,7 @@ class DeckCoreService:
                         (d / safe).write_bytes(z.read(nm)); n_ic += 1
         res = self.import_state(cfg)
         res["icons"] = n_ic
+        res["executable"] = _count_executable(cfg.get("buttons") or [])   # für den Import-Sicherheits-Hinweis
         return res
 
     def list_backups(self) -> list:
