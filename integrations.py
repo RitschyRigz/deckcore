@@ -90,7 +90,8 @@ CORE_INTEGRATIONS = [
         "id": "hwinfo", "emoji": "🌡", "label": "HWiNFO",
         "description": "Hardware-Sensoren (Temperaturen, Takt, Auslastung) als Wert/Graph/Gauge.",
         "actions": [], "monitors": ["hwinfo"],
-        "requires": "HWiNFO läuft mit Shared-Memory- oder Registry-Export aktiviert.",
+        "requires": "HWiNFO läuft mit Registry-/Gadget-Export (kostenlos, kein Admin) — oder optional "
+                    "Shared Memory (HWiNFO-Pro).",
         "generator": {"endpoint": "/api/streamdeck/generate/hwinfo",
                       "label": "📊 HWiNFO-Sensor-Buttons generieren", "opt": "hwinfo_render"},
     },
