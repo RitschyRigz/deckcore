@@ -3,6 +3,7 @@ import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS, TILE_SKINS } from './deckstyle.js'
 import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
+import { THEME_PRESETS, THEME_VARS } from './themes.js'
 
 // Per-Taste-Stil-Auswahl: die geteilten Stile + vorangestellt „(Standard / global)" (= erbt den globalen
 // Default aus den Theme-Einstellungen). '' = erben.
@@ -555,6 +556,51 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
                 title="Dieses Deck mit allen DisplayFusion-Profil-Buttons füllen (additiv)">{popBusy === 'df' ? '…' : '🖥 DisplayFusion'}</button>}
         {popMsg && <span class={'msg small ' + (popMsg.ok ? 'ok' : 'err')}>{popMsg.t}</span>}
       </div>
+    </div>
+  )
+}
+
+// Per-Deck-Theme-Override: einem Deck ein eigenes komplettes Theme geben (Preset ODER frei angepasste Farben).
+// Beim Aktivieren des Decks färbt sich das GANZE Panel um (z.B. rot=Dual / blau=Solo). „(Globales Theme)" =
+// folgt dem Standard. Im GETEILTEN Editor → Cockpit UND RigzDeck bekommen es. Schreibt deck.theme via Route.
+function DeckThemeEditor({ deck, onReload }) {
+  const [open, setOpen] = useState(false)
+  const cur = (deck && deck.theme) || null
+  const presetId = cur ? ((THEME_PRESETS.find((p) => p.name === cur.name) || {}).id || '__custom') : ''
+  const save = (theme) => postJSON('/api/streamdeck/deck/' + encodeURIComponent(deck.id) + '/theme', { theme })
+    .then(() => onReload && onReload()).catch(() => {})
+  const pick = (id) => {
+    if (!id) { save(null); return }                                  // (Globales Theme) → Override entfernen
+    const p = THEME_PRESETS.find((x) => x.id === id)
+    if (p) save({ name: p.name, vars: { ...p.vars } })
+  }
+  const editVar = (k, val) => save({ name: 'Eigenes', vars: { ...cur.vars, [k]: val } })
+  return (
+    <div class="sd-deck-theme">
+      <div class="reward-row sd-state" style="flex-wrap:wrap">
+        <span class="muted conn-label">🎨 Deck-Theme</span>
+        <select class="so-delay" value={presetId}
+                onChange={(e) => { const v = e.currentTarget.value; if (v !== '__custom') pick(v) }}>
+          <option value="">(Globales Theme)</option>
+          {THEME_PRESETS.map((p) => <option value={p.id}>{p.name}</option>)}
+          {presetId === '__custom' && <option value="__custom">Eigenes</option>}
+        </select>
+        {cur && <span class="sd-deck-theme-sw" style={`background:${cur.vars['--accent'] || '#888'}`} title={cur.name} />}
+        {cur && <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Farben schließen' : '🎨 Farben anpassen'}</button>}
+        {cur && <button class="btn ghost small danger" onClick={() => { save(null); setOpen(false) }}>auf global</button>}
+      </div>
+      {cur && open && (
+        <div class="sd-dt-grid">
+          {THEME_VARS.map((v) => (
+            <label class="sd-dt-row" key={v.key} title={v.key}>
+              <input type="color" value={cur.vars[v.key] || '#000000'} onInput={(e) => editVar(v.key, e.currentTarget.value)} />
+              <span>{v.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      <p class="muted sd-help">Eigenes Theme für dieses Deck → beim Öffnen färbt sich das <b>ganze Panel</b> um
+        (z.B. <b>rot = Dual-Stream</b>). Das globale Theme bleibt für alle anderen Decks. Auf jedem Gerät gleich.</p>
     </div>
   )
 }
@@ -1944,6 +1990,7 @@ export function StreamDeck() {
             <div class="card" style="max-width:1100px">
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— {deck.auto === 'audio_mixer' ? 'Interaktiv (Live-Audio)' : 'Layout & Buttons'}</span></h3>
               <DeckLayout deck={deck} onReload={load} />
+              <DeckThemeEditor deck={deck} onReload={load} />
               {deck.auto === 'audio_mixer'
                 ? <p class="hint" style="margin-top:10px">🔊 <b>Interaktives Audio-Mixer-Deck.</b> Zeigt automatisch die Windows-Hauptlautstärke + einen Fader für jedes Programm, das gerade Ton ausgibt — wird <b>nicht</b> manuell mit Buttons gefüllt (deshalb kein Raster). Programme dauerhaft ausblenden: Tab <b>🔌 Buttons &amp; Kategorien → 🔊 Windows Audio</b>. Größe/Spalten oben frei einstellbar.</p>
                 : <DeckGrid deck={deck} pool={data.buttons || []} options={options} poolCategories={data.pool_categories || []} resolved={resolved} onReload={load}
