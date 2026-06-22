@@ -314,6 +314,16 @@ def _winaudio_master_def(bid: str) -> dict:
             "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}
 
 
+def _winaudio_device_def(dev_id: str, name: str) -> dict:
+    """Standard-Ausgabegerät-Umschalt-Button (set_default; grün, wenn dieses Gerät aktiv ist). EINE
+    Wahrheit für den Integrationen-Tab UND den Schnellstart-Ausgabegerät-Ordner."""
+    return {"id": "wa_dev_" + _slug(dev_id), "label": name,
+            "action": {"type": "winaudio", "wa_action": "set_default", "device_name": name},
+            "monitor": {"type": "winaudio_default", "device_name": name},
+            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
+            "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"}}
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -527,6 +537,7 @@ def _smart_classify(name: str, unit: str) -> dict:
 
 # HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → der Auto-Import kuratiert ab hier.
 _HW_AUTO_CAP = 50
+_DESKTOP_CAP = 24   # max. Desktop-Programme im „🖥 Desktop"-Ordner (Schnellstart), sonst zu voll
 _HWINFO_ENABLE_STEPS = (
     "Empfohlen (kostenlos, ohne Admin/Pro): im HWiNFO-SENSOREN-Fenster (nicht das Hauptfenster) auf "
     "Einstellungen → Reiter 'HWiNFO Gadget' → unten 'Aktivieren der Berichterstellung im Gadget' anhaken; "
@@ -1372,11 +1383,7 @@ class DeckCoreService:
                         if not did or did not in want_devs:
                             continue
                         nm = str(d.get("name") or did)
-                        _u({"id": "wa_dev_" + _slug(did), "label": nm,
-                            "action": {"type": "winaudio", "wa_action": "set_default", "device_name": nm},
-                            "monitor": {"type": "winaudio_default", "device_name": nm},
-                            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": nm, "color": "#1f9d55"}],
-                            "default": {"icon": "🔈", "title": nm, "color": "#2a2a2a"}}, "Audio-Geräte")
+                        _u(_winaudio_device_def(did, nm), "Audio-Geräte")
             elif iid == "folders":
                 # Jeder angekreuzte Ordner → ein open_deck-Button (id folder_<slug>). Standard-Look =
                 # Ordner-Symbol; via „🎨 Aussehen einfügen" frei überschreibbar. Abwählen entfernt ihn (Sync unten).
@@ -1443,64 +1450,160 @@ class DeckCoreService:
         return {"integrations": out}
 
     def quickstart_apply(self, ids) -> dict:
-        """Schritt 2: für die gewählten Integrationen die EMPFOHLENEN Buttons anlegen (reine
-        Wiederverwendung von ``integration_generate_selected`` — KEIN Sonderweg) und auf ein eigenes
-        „✨ Schnellstart"-Deck legen, nach Kategorie gruppiert. Alles bleibt frei editierbar.
-        Idempotent: erneuter Lauf legt nichts doppelt an/aufs Deck."""
-        wanted = [str(x) for x in (ids or []) if str(x)]
-        if not wanted:
-            return {"ok": False, "reason": "nichts ausgewählt"}
-        before = {b.get("id") for b in self._buttons}
-        results = []
-        for iid in wanted:
-            try:
-                el = self.integration_elements(iid)
-            except Exception as e:  # noqa: BLE001
-                results.append({"id": iid, "ok": False, "reason": str(e)}); continue
-            if not el.get("available"):
-                results.append({"id": iid, "ok": False, "reason": el.get("reason") or "nicht verfügbar"}); continue
-            sel = {"groups": {}, "toggles": {}, "options": {}, "renders": {}}
-            for g in el.get("groups", []):
-                # „recommend" (bei HWiNFO ab vielen Sensoren gesetzt) steuert die Vorauswahl; sonst alles.
-                sel["groups"][g["key"]] = [str(x["id"]) for x in g.get("items", []) if x.get("recommend", True)]
-                for x in g.get("items", []):
-                    if x.get("renders"):
-                        sel["renders"][str(x["id"])] = x.get("render") or "auto"
-            for tg in el.get("toggles", []):
-                sel["toggles"][tg["key"]] = False   # Verhaltens-Schalter (z.B. Kopplung) NICHT automatisch an
-            for op in el.get("options", []):
-                sel["options"][op["key"]] = op.get("default")
-            results.append({"id": iid, **(self.integration_generate_selected(iid, sel) or {})})
-        # Neu entstandene Buttons auf ein eigenes „Schnellstart"-Deck legen (nach Pool-Kategorie gruppiert).
-        new_buttons = [b for b in self._buttons if b.get("id") not in before]
-        placed, deck_id = 0, ""
-        if new_buttons:
-            deck_id = self._quickstart_deck()
-            deck = self._deck(deck_id)
-            if deck is not None:
-                have = {it["button"] for it in deck["items"]}
-                for b in new_buttons:
-                    cat = str(b.get("pool_cat") or "")
-                    if cat and cat not in deck["categories"]:
-                        deck["categories"].append(cat)
-                    if b["id"] not in have:
-                        deck["items"].append({"button": b["id"], "category": cat, "style": {}, "hidden": False})
-                        placed += 1
-                self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "deck": deck_id, "placed": placed,
-                "created": sum(int(r.get("created") or 0) for r in results), "results": results}
+        """Baut das kuratierte „✨ Start"-Deck — der erste Eindruck. IMMER-DA-Kern (kein Setup nötig):
+        Desktop-Ordner (Windows) + Uhr, und — wenn Windows-Audio gewählt — Master-Lautstärke (2 hoch) +
+        Ausgabegerät-Radial-Ordner + interaktiver App-Mixer. Dazu Highlights der ERKANNTEN Integrationen
+        (OBS Live/Aufnahme · FPS). Reine Wiederverwendung vorhandener Generatoren/Ordner; danach alles
+        frei editierbar. Frei-Layout, sauber gepackt. Idempotent (verschiebt/dupliziert nichts)."""
+        want = set(str(x) for x in (ids or []))
+        deck_id = self._start_deck()
+        deck = self._deck(deck_id)
+        if deck is None:
+            return {"ok": False, "reason": "Start-Deck nicht anlegbar"}
+        deck["layout"] = self._sanitize_layout({"free": True, "cols": 6}, deck["layout"])
+        occ = set()
+        for it in deck["items"]:   # bestehende Positionen reservieren (Idempotenz: nichts verschieben)
+            if isinstance(it.get("x"), int) and isinstance(it.get("y"), int):
+                for dx in range(max(1, int(it.get("w") or 1))):
+                    for dy in range(max(1, int(it.get("h") or 1))):
+                        occ.add((it["x"] + dx, it["y"] + dy))
 
-    def _quickstart_deck(self) -> str:
-        """Das „✨ Schnellstart"-Deck finden oder anlegen (eigenes Deck — stört bestehende nicht)."""
-        lbl = "✨ Schnellstart"
+        def _pack(w, h):
+            y = 0
+            while True:
+                for x in range(6 - w + 1):
+                    if all((x + dx, y + dy) not in occ for dx in range(w) for dy in range(h)):
+                        for dx in range(w):
+                            for dy in range(h):
+                                occ.add((x + dx, y + dy))
+                        return x, y
+                y += 1
+        placed = []
+
+        def _tile(fn, pool_cat, w=1, h=1):
+            self._pool_upsert(fn, pool_cat)
+            bid = fn["id"]
+            if any(i["button"] == bid for i in deck["items"]):
+                return   # schon platziert → nicht verschieben (idempotent)
+            x, y = _pack(w, h)
+            it = {"button": bid, "category": "", "style": {}, "hidden": False, "x": x, "y": y}
+            if w > 1:
+                it["w"] = w
+            if h > 1:
+                it["h"] = h
+            deck["items"].append(it)
+            placed.append(bid)
+
+        if "audio" in want:   # Audio-Kern (Master-Fader 2 hoch · Ausgabegerät-Radial · App-Mixer)
+            _tile(_winaudio_master_def("wa_master"), "Audio", h=2)
+            odf = self._outdev_folder()
+            if odf:
+                _tile({"id": "start_outdev", "label": "Ausgabegerät",
+                       "action": {"type": "open_deck", "deck": odf, "mode": "radial"},
+                       "monitor": {"type": "none"}, "states": [],
+                       "default": {"icon": "🔊", "title": "Ausgabegerät", "color": "#2f3037"}}, "Audio")
+            self.set_audio_mixer(True)   # interaktives Live-Mixer-Deck (App-Lautstärke) — Ordner öffnet es
+            _tile({"id": "start_mixer", "label": "App-Mixer",
+                   "action": {"type": "open_deck", "deck": "audio_mixer", "mode": "replace"},
+                   "monitor": {"type": "none"}, "states": [],
+                   "default": {"icon": "🎚", "title": "App-Mixer", "color": "#2f3037"}}, "Audio")
+        dt = self.populate_desktop()   # Desktop-Ordner (Windows-universal) — immer, kein Setup
+        if dt.get("ok"):
+            _tile({"id": "start_desktop", "label": "Desktop",
+                   "action": {"type": "open_deck", "deck": dt["deck"], "mode": "replace"},
+                   "monitor": {"type": "none"}, "states": [],
+                   "default": {"icon": "🖥", "title": "Desktop", "color": "#2f3037"}}, "Programme")
+        _tile({"id": "start_clock", "label": "Uhr", "render": "clock",
+               "action": {"type": "none"}, "monitor": {"type": "none"}, "states": [], "default": {}},
+              "Widgets", w=2, h=2)
+        if "obs" in want:   # erkannte Integration: Live/Aufnahme (kuratiert, nicht „alles")
+            for cid, ic, lbl in (("stream", "🔴", "Live"), ("record", "⏺", "Aufnahme")):
+                _tile({"id": "obs_" + cid, "label": lbl,
+                       "action": {"type": "obs", "obs_action": cid, "mode": "toggle"},
+                       "monitor": {"type": "none"}, "states": [],
+                       "default": {"icon": ic, "title": lbl, "color": "#b04545"}}, "OBS-Steuerung")
+        if "presentmon" in want:   # erkannte Integration: FPS-Graph
+            _tile({"id": "pm_fps", "label": "FPS", "render": "graph",
+                   "action": {"type": "none"}, "monitor": {"type": "fps"}, "states": [],
+                   "default": {"icon": "🎯", "title": "{value}", "color": "#222"}}, "⚡ Performance", w=2)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "placed": len(placed)}
+
+    def _start_deck(self) -> str:
+        """Das „✨ Start"-Deck finden oder anlegen (normales Deck in der Tableiste — der erste Eindruck)."""
+        return self._named_deck("✨ Start", "✨", folder=False)
+
+    def _named_deck(self, label: str, icon: str, folder: bool) -> str:
+        """Ein Deck per Label finden oder anlegen. Rückgabe id ("" bei Fehlschlag)."""
         for d in self._decks:
-            if d.get("label") == lbl:
+            if d.get("label") == label:
                 return d["id"]
-        self.add_deck(lbl, "✨")
+        self.add_deck(label, icon, folder=folder)
         for d in self._decks:
-            if d.get("label") == lbl:
+            if d.get("label") == label:
                 return d["id"]
         return ""
+
+    def _named_folder(self, label: str, icon: str = "📁") -> str:
+        """Ein Ordner-Deck (folder=True, nicht in der Tableiste) per Label finden oder anlegen."""
+        return self._named_deck(label, icon, folder=True)
+
+    def _outdev_folder(self) -> str:
+        """„🔊 Ausgabegerät"-Ordner: je Windows-Ausgabegerät ein set_default-Button (aktives grün) fürs
+        Radial-Menü. Rückgabe deck-id ("" wenn keine Geräte). Nutzt die geteilte _winaudio_device_def."""
+        devs = (self.winaudio_devices() or {}).get("devices") or []
+        if not devs:
+            return ""
+        deck_id = self._named_folder("🔊 Ausgabegerät", "🔊")
+        deck = self._deck(deck_id)
+        for d in devs:
+            did = str(d.get("id") or "")
+            if not did:
+                continue
+            fn = _winaudio_device_def(did, str(d.get("name") or did))
+            self._pool_upsert(fn, "Audio-Geräte")
+            if deck and not any(it["button"] == fn["id"] for it in deck["items"]):
+                deck["items"].append({"button": fn["id"], "category": "", "style": {}, "hidden": False})
+        return deck_id
+
+    def populate_desktop(self) -> dict:
+        """„🖥 Desktop"-Ordner: scannt den Windows-Desktop (User + Public) nach Verknüpfungen/Programmen
+        und legt pro Eintrag einen launch-Button in einen Ordner. Zero-config, Windows-universal (jeder hat
+        einen Desktop) — der „Hook" + Beispiel-Ordner. Idempotent; bei sehr vielen Einträgen gedeckelt."""
+        import os
+        if os.name != "nt":
+            return {"ok": False, "reason": "nur Windows"}
+        EXT = {".lnk": "🔗", ".url": "🌐", ".exe": "🚀", ".bat": "⚙", ".cmd": "⚙"}
+        seen, items = set(), []
+        for base_dir in (os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
+                         os.path.join(os.environ.get("PUBLIC", ""), "Desktop")):
+            if not base_dir or not os.path.isdir(base_dir):
+                continue
+            try:
+                names = sorted(os.listdir(base_dir))
+            except OSError:
+                continue
+            for nm in names:
+                stem, ext = os.path.splitext(nm)
+                if ext.lower() not in EXT or stem.lower() in seen:
+                    continue
+                seen.add(stem.lower())
+                items.append((stem, os.path.join(base_dir, nm), EXT[ext.lower()]))
+        if not items:
+            return {"ok": False, "reason": "keine Desktop-Programme gefunden"}
+        items = items[:_DESKTOP_CAP]
+        deck_id = self._named_folder("🖥 Desktop", "🖥")
+        deck = self._deck(deck_id)
+        for stem, path, icon in items:
+            bid = "desktop_" + _slug(stem)
+            self._pool_upsert({"id": bid, "label": stem,
+                               "action": {"type": "launch", "path": path},
+                               "monitor": {"type": "none"}, "states": [],
+                               "default": {"icon": icon, "title": stem, "color": "#2f3037"}}, "🖥 Desktop")
+            if deck and not any(it["button"] == bid for it in deck["items"]):
+                deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False})
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "count": len(items)}
 
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
