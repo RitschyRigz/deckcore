@@ -244,6 +244,44 @@ def _regen_preserve(existing: dict, fresh: dict) -> dict:
     return out
 
 
+# ── Wave-Link-Button-Factory: EINE Wahrheit fürs Aussehen generierter WL-Buttons ──────
+# Sowohl die „1-Klick"-Generatoren (populate_wavelink) ALS AUCH der Integrationen-Tab
+# (integration_generate_selected) bauen exakt dieselben Wave-Link-Buttons. Diese reinen Helfer
+# liefern die Button-FUNKTION (id/label/render/action/monitor/states/default); Platzierung
+# (Deck-Item) + pool_cat setzt der Aufrufer. So kann das Aussehen nicht zwischen den beiden Wegen
+# driften (sonst sähe „🎚 Wave-Link-Fader generieren" anders aus als das Anhaken im Tab). Die
+# Farb-/Symbol-Konvention bleibt unverändert (grün=aktiv · grau=inaktiv).
+def _wl_mix_def(mix_id: str, name: str) -> dict:
+    return {"id": "wl_mix_" + _slug(mix_id), "label": name, "render": "fader",
+            "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mix_id},
+            "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mix_id},
+            "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"}}
+
+
+def _wl_chan_def(chan_id: str, name: str) -> dict:
+    return {"id": "wl_chan_" + _slug(chan_id), "label": name, "render": "fader",
+            "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": chan_id},
+            "monitor": {"type": "wavelink_level", "target_type": "channel", "id": chan_id},
+            "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"}}
+
+
+def _wl_out_def(dev_id: str, name: str) -> dict:
+    return {"id": "wl_out_" + _slug(dev_id), "label": name,
+            "action": {"type": "wavelink", "wl_action": "main_output",
+                       "output_device_id": dev_id, "output_id": dev_id},
+            "monitor": {"type": "wavelink_main_output", "output_device_id": dev_id},
+            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
+            "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"}}
+
+
+def _wl_couple_def() -> dict:
+    return {"id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
+            "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
+            "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
+            "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
+            "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"}}
+
+
 def _clamp_num(v, lo, hi, fallback):
     try:
         return max(lo, min(hi, type(fallback)(v)))
@@ -1091,35 +1129,21 @@ class DeckCoreService:
                     if not m:
                         continue
                     nm = str(m.get("name") or mid)
-                    _u({"id": "wl_mix_" + _slug(mid), "label": nm, "render": "fader",
-                        "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
-                        "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
-                        "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"}}, "Wave Link")
+                    _u(_wl_mix_def(mid, nm), "Wave Link")
                 for cid in groups.get("channels", []):
                     c = chans.get(str(cid))
                     if not c:
                         continue
                     nm = str(c.get("name") or cid)
-                    _u({"id": "wl_chan_" + _slug(cid), "label": nm, "render": "fader",
-                        "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
-                        "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
-                        "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"}}, "Wave Link")
+                    _u(_wl_chan_def(cid, nm), "Wave Link")
                 for did in groups.get("outputs", []):
                     d = outs.get(str(did))
                     if not d:
                         continue
                     nm = str(d.get("name") or did)
-                    _u({"id": "wl_out_" + _slug(did), "label": nm,
-                        "action": {"type": "wavelink", "wl_action": "main_output", "output_device_id": did, "output_id": did},
-                        "monitor": {"type": "wavelink_main_output", "output_device_id": did},
-                        "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": nm, "color": "#1f9d55"}],
-                        "default": {"icon": "🔈", "title": nm, "color": "#2a2a2a"}}, "Wave Link")
+                    _u(_wl_out_def(did, nm), "Wave Link")
                 if toggles.get("couple"):
-                    _u({"id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
-                        "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
-                        "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
-                        "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
-                        "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"}}, "Wave Link")
+                    _u(_wl_couple_def(), "Wave Link")
             elif iid == "hwinfo":
                 data = self._hwinfo.sensors() or {}
                 if not data.get("available"):
@@ -2210,13 +2234,7 @@ class DeckCoreService:
         # Kopplungs-Toggle „Wave Link folgt Windows-Standardgerät" — reiner Flag-Schalter; die Coupling-
         # Schleife in service.start() überwacht genau dieses Flag. Wird beim Sync gleich mit angelegt, damit
         # die Kopplung discoverable ist (kein „magischer" Flag-Name mehr von Hand nötig).
-        _upsert({
-            "id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
-            "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
-            "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
-            "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
-            "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"},
-        })
+        _upsert(_wl_couple_def())
         _place("wl_couple_toggle", cats["out"], {"label": "off"})
 
         # Ausgabegeräte → Main-Output-Wähler (normaler Button; grün, wenn aktiver Monitor-Hauptausgang).
@@ -2226,14 +2244,7 @@ class DeckCoreService:
                 continue
             name = str(d.get("name") or did)
             bid = "wl_out_" + _slug(did)
-            _upsert({
-                "id": bid, "label": name,
-                "action": {"type": "wavelink", "wl_action": "main_output",
-                           "output_device_id": did, "output_id": did},
-                "monitor": {"type": "wavelink_main_output", "output_device_id": did},
-                "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
-                "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"},
-            })
+            _upsert(_wl_out_def(did, name))
             _place(bid, cats["out"], {"label": "off"})
 
         # Mixes → vertikaler Fader.
@@ -2242,12 +2253,7 @@ class DeckCoreService:
             if not mid:
                 continue
             name = str(m.get("name") or mid)
-            _upsert({
-                "id": "wl_mix_" + _slug(mid), "label": name, "render": "fader",
-                "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mid},
-                "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mid},
-                "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"},
-            })
+            _upsert(_wl_mix_def(mid, name))
             _place("wl_mix_" + _slug(mid), cats["mix"], {}, h=2)
 
         # Channels → vertikaler Fader (Master-Level).
@@ -2256,12 +2262,7 @@ class DeckCoreService:
             if not cid:
                 continue
             name = str(c.get("name") or cid)
-            _upsert({
-                "id": "wl_chan_" + _slug(cid), "label": name, "render": "fader",
-                "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": cid},
-                "monitor": {"type": "wavelink_level", "target_type": "channel", "id": cid},
-                "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"},
-            })
+            _upsert(_wl_chan_def(cid, name))
             _place("wl_chan_" + _slug(cid), cats["chan"], {}, h=2)
 
         if POOL_CAT not in self._pool_categories:
