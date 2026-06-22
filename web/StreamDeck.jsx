@@ -60,6 +60,12 @@ const MONITOR_LABELS = {
   winaudio_default: 'Ist dieses Gerät das Windows-Standard-Ausgabegerät? (an/aus)',
   winaudio_volume: 'Windows-Lautstärke (0..100) — Master-Regler + VU',
   app_volume: 'App-Lautstärke (0..100) — pro Programm, Fader + VU',
+  wavelink_meter: 'Wave-Link-Pegel (VU) eines Mix/Channels — Live-Ausschlag',
+  wavelink_level: 'Wave-Link-Lautstärke (0..100) eines Mix/Channels — Fader + VU',
+  wavelink_mute: 'Wave-Link: ist ein Mix/Channel stumm? (an/aus)',
+  wavelink_main_output: 'Wave-Link Monitor-Hauptausgang (Gerätename)',
+  obsbot_cam: 'OBSBOT-Kamera-Status (bereit / schläft / aus) — Kamera wählbar',
+  obsbot_track: 'OBSBOT-Tracking (an / aus / schläft) — Kamera wählbar',
 }
 const MONITOR_INFO = {
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
@@ -80,6 +86,12 @@ const MONITOR_INFO = {
   winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
   app_volume: { text: 'Liefert die Lautstärke (0..100) EINES Programms (App-Mixer, wie der Windows-Lautstärkemixer). Das Programm wählst du an der Aktion „🎵 App-Lautstärke". Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
   wavelink_main_output: { text: 'Zeigt den aktiven Wave-Link-Monitor-Hauptausgang. Einfach „{value}" in den Titel setzen → der Button zeigt live den GERÄTE-NAMEN (keine Status-Regel, kein Gerät-Wählen nötig). Tipp: Darstellung „🪪 Status-Karte" → Rahmen + Glow + automatisch passendes Emoji je Quelle (🎧 Kopfhörer · 🔊 Boxen · 📺 HDMI/TV).', values: null, bool: false },
+  wavelink_meter: { text: 'Live-Pegel (VU) eines Wave-Link-Mix/Channels. Wird beim „🎚 Wave-Link-Fader generieren" automatisch gesetzt; am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU).', values: null, bool: false },
+  wavelink_level: { text: 'Lautstärke (0..100) eines Wave-Link-Mix/Channels. Quelle setzt/umhängst du am bequemsten über den 🎚-Quellen-Picker an der Fader-Kachel oder den „🎚 Wave-Link-Fader"-Generator. {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
+  wavelink_mute: { text: 'Liefert AN, wenn der Wave-Link-Mix/Channel stumm ist. Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
+  obsbot_cam: { text: 'OBSBOT-Kamera-Status: on (bereit) · sleep (Privacy) · off (App/OSC nicht erreichbar). Nutze „= gleich" + Wert für die Farbe. Kamera unten wählen.', values: ['on', 'sleep', 'off'], bool: false },
+  obsbot_track: { text: 'OBSBOT-Tracking: trackon · trackoff · sleep · off. Nutze „= gleich" + Wert. Kamera unten wählen. Hinweis: OBSBOT meldet keinen echten Tracking-Zustand zurück — der Status spiegelt, was zuletzt übers Deck gesetzt wurde.', values: ['trackon', 'trackoff', 'sleep', 'off'], bool: false },
+  manual_count: { text: 'Zählt, wie oft das Manual-Event ausgelöst wurde. Setze {value} in den Titel (z. B. „Tode: {value}").', values: null, bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -2425,6 +2437,24 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
         <p class="muted sd-help">Reglerstand (0..100) für die Fader-Kachel + {'{value}'}-Titel. Das <b>Gerät</b> wählst du
           oben bei der <b>Aktion</b> (🔊 Windows-Audio → Lautstärke-Regler) — leer = Windows-Hauptlautstärke. Darstellung
           oben als <b>🎚 Fader</b>.</p>
+      )}
+      {(t === 'obsbot_cam' || t === 'obsbot_track') && (
+        <div class="reward-row">
+          <span class="muted conn-label">Kamera</span>
+          <select class="reward-input" value={monitor.device == null ? '' : String(monitor.device)}
+                  onChange={(e) => onChange({ device: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })}>
+            <option value="">aktive Kamera</option>
+            <option value="0">Kamera 1</option>
+            <option value="1">Kamera 2</option>
+            <option value="2">Kamera 3</option>
+            <option value="3">Kamera 4</option>
+          </select>
+        </div>
+      )}
+      {(t === 'wavelink_level' || t === 'wavelink_meter' || t === 'wavelink_mute') && (
+        <p class="muted sd-help">Die Quelle (Mix/Channel) setzt du am einfachsten über den <b>🎚 Quellen-Picker</b> an der
+          Fader-Kachel oder den Generator <b>„🎚 Wave-Link-Fader"</b> — beides verdrahtet Aktion + Überwachung passend.
+          Am schönsten als <b>Darstellung → 🎚 Fader</b>.</p>
       )}
     </div>
   )
