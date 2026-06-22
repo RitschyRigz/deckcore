@@ -525,6 +525,15 @@ def build_streamdeck_router(
             raise HTTPException(status_code=404, detail="kein Icon")
         return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
+    @r.get("/api/streamdeck/file_icon")
+    def streamdeck_file_icon(request: Request) -> Response:
+        """Echtes Icon (PNG) einer Datei (.lnk/.exe …) — für die Desktop-Ordner-Buttons. ``?path=``.
+        404, wenn kein Icon (Frontend fällt auf das Typ-Emoji zurück)."""
+        png = get_service(request).file_icon(request.query_params.get("path") or "")
+        if not png:
+            raise HTTPException(status_code=404, detail="kein Icon")
+        return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=86400"})
+
     @r.post("/api/streamdeck/preset")
     def streamdeck_preset(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Editor-Vorlage für eine Aktion: {monitor, states, default} (+ render?) — füllt Symbol +

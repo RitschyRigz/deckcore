@@ -290,6 +290,14 @@ function downsample(arr, target) {
   return out
 }
 
+// Button-Icon mit Fallback: zeigt das Bild (z. B. echtes Programm-Icon vom Desktop-Ordner); schlägt das
+// Laden fehl (404 — kein extrahierbares Icon), fällt es sauber aufs Emoji zurück statt ein kaputtes Bild.
+function KeyImg({ image, icon }) {
+  const [err, setErr] = useState(false)
+  if (err || !image) return <span class="t-key-icon">{icon || '•'}</span>
+  return <img class="t-key-img" src={image} alt="" onError={() => setErr(true)} />
+}
+
 function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
@@ -509,8 +517,7 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
                     class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')}
                     style={`--rx:${rx}px;--ry:${ry}px;--i:${i};background:${v.color || '#222'}`}
                     onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
-              {v.image ? <img class="t-key-img" src={v.image} alt="" />
-                : <span class="t-key-icon">{v.icon || '•'}</span>}
+              <KeyImg image={v.image} icon={v.icon} />
               <span class="t-key-label">{v.label || id}</span>
               {folder && <span class="t-folder-badge">⋯</span>}
             </button>
@@ -808,8 +815,7 @@ export function TouchDeck() {
             <span class="t-stat-v" style={statSty}>{v.title || (v.value != null ? String(v.value) : '—')}</span>
           ) : (
             <>
-              {v.image ? <img class="t-key-img" src={v.image} alt="" />
-                : <span class="t-key-icon">{v.icon || '•'}</span>}
+              <KeyImg image={v.image} icon={v.icon} />
               {v.title ? <span class="t-key-title" style={o.size ? `font-size:${widgetFontSize(o, 'text')}` : ''}>{v.title}</span> : null}
             </>
           )}

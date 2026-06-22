@@ -1603,12 +1603,25 @@ class DeckCoreService:
         items = items[:_DESKTOP_CAP]
         deck_id = self._named_folder("🖥 Desktop", "🖥")
         deck = self._deck(deck_id)
+        import urllib.parse
+        if "🖥 Desktop" not in self._pool_categories:
+            self._pool_categories.append("🖥 Desktop")
+        by_id = {b.get("id"): i for i, b in enumerate(self._buttons)}
         for stem, path, icon in items:
             bid = "desktop_" + _slug(stem)
-            self._pool_upsert({"id": bid, "label": stem,
-                               "action": {"type": "launch", "path": path},
-                               "monitor": {"type": "none"}, "states": [],
-                               "default": {"icon": icon, "title": stem, "color": "#2f3037"}}, "🖥 Desktop")
+            # ECHTES Programm-Icon (aus .lnk/.exe, lazy via /api/streamdeck/file_icon, browser-gecacht) als
+            # Bild; das Typ-Emoji bleibt Fallback. Auto-Liste → FORCE-Replace (KEIN _regen_preserve), damit
+            # der Icon-Fix beim erneuten „Anwenden" auch bestehende Desktop-Buttons aktualisiert.
+            fn = {"id": bid, "label": stem, "pool_cat": "🖥 Desktop",
+                  "action": {"type": "launch", "path": path},
+                  "monitor": {"type": "none"}, "states": [],
+                  "default": {"icon": icon, "title": stem, "color": "#2f3037",
+                              "image": "/api/streamdeck/file_icon?path=" + urllib.parse.quote(path)}}
+            if bid in by_id:
+                self._buttons[by_id[bid]] = fn
+            else:
+                self._buttons.append(fn)
+            self._removed.discard(bid)
             if deck and not any(it["button"] == bid for it in deck["items"]):
                 deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False})
         self._save(); self._schedule_recompute(); self._publish_cfg()
@@ -3036,6 +3049,13 @@ class DeckCoreService:
         if union.get("wavelink"):
             out["wavelink"] = {"meters": self.wavelink_meters(), "state": self.wavelink_snapshot()}
         return out
+
+    def file_icon(self, path: str):
+        """PNG-Bytes des Icons einer beliebigen Datei (.lnk/.exe …) — für die Desktop-Ordner-Buttons.
+        Einmalig extrahiert + gecacht (``_extract_icon_png``). None, wenn kein Icon → Frontend fällt auf
+        das Typ-Emoji zurück."""
+        p = (path or "").strip()
+        return _extract_icon_png(p) if p else None
 
     def app_icon(self, proc: str):
         """PNG-Bytes des App-Icons (aus der laufenden ``.exe`` des Prozesses) — für die Fader-Kacheln.
