@@ -535,3 +535,58 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 /* „Nur Symbol"-Modus: App-Icon statt Titel oben im Fader. */
 .t-fader-name-img { height: 26cqw; max-height: 34px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--acc)); }
 .t-fader-name-emo { font-size: 20cqw; line-height: 1.1; }
+
+/* ===== 🎨 SVG-Glyph-Symbole (icon = "g:name") ===== */
+/* Ein Glyph füllt 1em und zeichnet mit currentColor → skaliert exakt wie ein Emoji im selben Slot und
+   nimmt die Textfarbe der Kachel an. Damit folgt jedes Bibliotheks-Symbol automatisch Akzent/Theme. */
+.dc-glyph { width: 1em; height: 1em; display: inline-block; vertical-align: middle; flex: none; }
+/* Flache Tasten (dunkler Grund): Glyph leuchtet im Akzent (--acc) statt neutralem Weiß → wirkt gewollt
+   und folgt der Button-/Theme-Farbe. Gefüllte Tasten lassen es weiß (Kontrast auf der Farbfläche). */
+.t-flat .dc-glyph, .sd-prev-key.t-flat .dc-glyph { color: var(--acc, var(--accent2)); }
+/* Fader-Symbolslot + Status-Karte: Glyph im jeweiligen Akzent. */
+.t-fader-glyph { color: var(--acc, var(--accent2)); }
+.t-readout-glyph { color: var(--acc); display: inline-flex; filter: drop-shadow(0 0 7px var(--acc)); }
+.t-readout-glyph .dc-glyph { width: 1em; height: 1em; }
+
+/* ── Symbol-Feld im Editor: Bibliotheks-Symbol (Glyph) + Emoji-Direkteingabe ── */
+.sd-iconfield { display: inline-flex; align-items: center; gap: 4px; }
+.sd-iconfield-btn { width: 30px; height: 28px; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; background: var(--bg3); border: 1px solid var(--line); border-radius: 7px;
+  cursor: pointer; color: var(--accent2); padding: 0; }
+.sd-iconfield-btn:hover { border-color: var(--accent); }
+.sd-iconfield-btn .dc-glyph { font-size: 18px; }
+.sd-iconfield-emo { font-size: 15px; line-height: 1; color: var(--fg); opacity: .9; }
+.sd-iconfield-in { width: 42px; }
+
+/* ── Farb-Feld: eigener Picker + Theme-Farb-Swatches (Akzent/Live/…) ── */
+.sd-colorfield { display: inline-flex; align-items: center; gap: 5px; }
+.sd-colorfield.is-theme .sd-color { opacity: .45; }
+.sd-theme-sws { display: inline-flex; gap: 3px; align-items: center; }
+.sd-theme-sw { width: 16px; height: 16px; flex: none; border-radius: 5px; border: 1px solid rgba(255,255,255,.28);
+  cursor: pointer; padding: 0; transition: transform .1s; }
+.sd-theme-sw:hover { transform: scale(1.18); }
+.sd-theme-sw.sel { outline: 2px solid var(--fg); outline-offset: 1px; }
+
+/* ── Glyph-Picker (Modal): Suche + Kategorien + Symbol-Raster ── */
+.sd-glyph-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.55);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); display: flex; align-items: center;
+  justify-content: center; padding: 20px; }
+.sd-glyph-modal { width: min(720px, 96vw); max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.sd-glyph-head { display: flex; gap: 8px; align-items: center; padding: 12px; border-bottom: 1px solid var(--line); }
+.sd-glyph-search { flex: 1; min-width: 0; background: var(--bg3); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 12px; font: inherit; }
+.sd-glyph-body { overflow-y: auto; padding: 4px 12px 12px; }
+.sd-glyph-cat { margin-top: 10px; }
+.sd-glyph-cat-h { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .04em; margin: 0 0 8px; position: sticky; top: 0; background: var(--bg2); padding: 6px 0 4px; z-index: 1; }
+.sd-glyph-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; }
+.sd-glyph-cell { aspect-ratio: 1/1; display: flex; align-items: center; justify-content: center; color: var(--fg);
+  background: var(--bg3); border: 1px solid var(--line); border-radius: 9px; cursor: pointer; padding: 0;
+  transition: border-color .1s, color .1s, transform .1s, background .1s; }
+.sd-glyph-cell:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+.sd-glyph-cell.sel { border-color: var(--accent); color: var(--accent); background: rgba(138,92,255,.14); }
+.sd-glyph-cell .dc-glyph { font-size: 24px; }
+.sd-glyph-empty { color: var(--muted); text-align: center; padding: 26px; }
+.sd-glyph-foot { font-size: 11.5px; line-height: 1.4; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); }

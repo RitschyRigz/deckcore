@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS } from './deckstyle.js'
 import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -209,19 +210,102 @@ function IconPicker({ value, onChange }) {
   )
 }
 
+// ── 🎨 Symbol-Bibliothek (Glyph-Picker) ──────────────────────────────────────
+// Durchsuchbares Modal mit kuratierten SVG-Symbolen (Kategorien). Klick = setzt `g:<name>` ins
+// Symbol-Feld. Die Symbole zeichnen mit currentColor → sie folgen der Akzent-/Theme-Farbe der Taste.
+function GlyphPicker({ value, onPick, onClose }) {
+  const [q, setQ] = useState('')
+  const ql = q.trim().toLowerCase()
+  const match = (name) => !ql || name.toLowerCase().includes(ql) || (GLYPH_KW[name] || '').indexOf(ql) >= 0
+  const cur = isGlyph(value) ? glyphName(value) : ''
+  const any = GLYPH_CATS.some((c) => c.names.some(match))
+  return (
+    <div class="sd-glyph-backdrop" onClick={onClose}>
+      <div class="sd-glyph-modal" onClick={(e) => e.stopPropagation()}>
+        <div class="sd-glyph-head">
+          <input class="sd-glyph-search" autofocus placeholder="🔍 Symbol suchen (z. B. mikrofon, play, herz, ordner …)"
+                 value={q} onInput={(e) => setQ(e.currentTarget.value)}
+                 onKeyDown={(e) => { if (e.key === 'Escape') onClose() }} />
+          <button class="btn ghost small" title="Symbol entfernen" onClick={() => onPick('')}>Kein Symbol</button>
+          <button class="btn ghost small" onClick={onClose}>✕</button>
+        </div>
+        <div class="sd-glyph-body">
+          {GLYPH_CATS.map((cat) => {
+            const names = cat.names.filter(match)
+            if (!names.length) return null
+            return (
+              <div class="sd-glyph-cat" key={cat.label}>
+                <div class="sd-glyph-cat-h">{cat.label}</div>
+                <div class="sd-glyph-grid">
+                  {names.map((nm) => (
+                    <button key={nm} type="button" class={'sd-glyph-cell' + (nm === cur ? ' sel' : '')}
+                            title={nm} onClick={() => onPick(glyphValue(nm))}><Glyph name={nm} /></button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+          {!any && <div class="sd-glyph-empty">Kein Symbol gefunden — versuch einen anderen Begriff.</div>}
+        </div>
+        <p class="sd-glyph-foot muted">Symbole zeichnen in der Akzent-/Theme-Farbe der Taste und passen sich
+          jedem Theme an. Du kannst auch ein Emoji direkt ins Feld tippen.</p>
+      </div>
+    </div>
+  )
+}
+
+// ── Symbol-Feld: Bibliotheks-Symbol (Glyph) ODER Emoji-Direkteingabe ──────────
+// Ersetzt das nackte Icon-Textfeld. Zeigt das aktuelle Symbol als Vorschau (Glyph leuchtet im
+// Akzent), öffnet per Klick die Bibliothek, und lässt daneben weiterhin ein Emoji eintippen.
+function IconField({ value, onChange, placeholder }) {
+  const [pick, setPick] = useState(false)
+  const glyph = isGlyph(value) && hasGlyph(glyphName(value))
+  return (
+    <span class="sd-iconfield">
+      <button type="button" class={'sd-iconfield-btn' + (glyph ? ' has-glyph' : '')}
+              title="Symbol-Bibliothek öffnen" onClick={() => setPick(true)}>
+        {glyph ? <Glyph name={glyphName(value)} /> : <span class="sd-iconfield-emo">{value || '🎨'}</span>}
+      </button>
+      <input class="so-delay sd-iconfield-in" placeholder={placeholder || 'Emoji'}
+             value={isGlyph(value) ? '' : (value || '')} title="Emoji direkt eingeben"
+             onInput={(e) => onChange(e.currentTarget.value)} />
+      {pick && <GlyphPicker value={value} onPick={(v) => { onChange(v); setPick(false) }} onClose={() => setPick(false)} />}
+    </span>
+  )
+}
+
+// ── Farb-Feld: eigener Color-Picker + Theme-Farb-Swatches (Akzent/Live/…) ─────
+// Eine Theme-Farbe (Schlüsselwort) lässt die Taste dem Theme folgen; eine eigene Hex ist fix.
+function ColorField({ value, onChange }) {
+  const theme = isThemeColor(value)
+  return (
+    <span class={'sd-colorfield' + (theme ? ' is-theme' : '')}>
+      <input type="color" class="sd-color" value={theme ? '#2a2a2a' : (value || '#2a2a2a')}
+             title="Eigene Farbe" onInput={(e) => onChange(e.currentTarget.value)} />
+      <span class="sd-theme-sws">
+        {Object.keys(THEME_COLORS).map((k) => (
+          <button key={k} type="button" class={'sd-theme-sw tc-' + k + (value === k ? ' sel' : '')}
+                  style={`background:var(--${k})`} title={'Theme-Farbe: ' + THEME_COLORS[k]}
+                  onClick={() => onChange(k)} />
+        ))}
+      </span>
+    </span>
+  )
+}
+
 // ── Live-Vorschau einer Taste (physischer Look) ──────────────────────────────
 function Swatch({ vis }) {
   const v = vis || { color: '#222', icon: '', title: '…' }
   if (v.image) {
     return (
-      <div class="sd-key" style={`background:${v.color};padding:0;overflow:hidden`}>
+      <div class="sd-key" style={`background:${resolveColor(v.color) || '#222'};padding:0;overflow:hidden`}>
         <img src={v.image} alt="" style="width:100%;height:100%;object-fit:cover;display:block" />
       </div>
     )
   }
   return (
-    <div class="sd-key" style={`background:${v.color}`}>
-      {v.icon && <span class="sd-key-icon">{v.icon}</span>}
+    <div class="sd-key" style={`background:${resolveColor(v.color) || '#222'}`}>
+      <IconView icon={v.icon} cls="sd-key-icon" />
       <span class="sd-key-title">{v.title}</span>
     </div>
   )
@@ -254,9 +338,9 @@ function LiveKey({ v, eff, base, render, opts }) {
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat' : '')}
-         style={isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (v.color || '#222'))}>
+         style={isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (resolveColor(v.color) || '#222'))}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
-        : <span class="sd-prev-icon">{v.icon || '•'}</span>}
+        : <IconView icon={v.icon} cls="sd-prev-icon" fallback={<span class="sd-prev-icon">•</span>} />}
       {v.title ? <span class="sd-prev-title">{v.title}</span> : null}
       <span class="sd-prev-label">{v.label || ''}</span>
     </div>
@@ -1174,9 +1258,7 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
       {isReadout && (
         <>
           <span class="muted conn-label">Symbol</span>
-          <input class="so-delay" style="width:54px" placeholder="auto" value={(def || {}).icon || ''}
-                 title="Eigenes Emoji — leer = automatisch je Quelle (🎧 Kopfhörer · 🔊 Boxen · 📺 HDMI/TV · 🎙️ Mikro …)"
-                 onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
+          <IconField value={(def || {}).icon || ''} placeholder="auto" onChange={(icon) => onDefault({ icon })} />
           <label>Quelle
             <select class="so-delay" value={o.kind || 'generic'} onChange={(e) => setO({ kind: e.currentTarget.value })}>
               <option value="audio">🔊 Audiogerät</option>
@@ -2588,13 +2670,11 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
                onInput={(e) => onChange({ ...st, when: { ...st.when, value: e.currentTarget.value } })} />
       ))}
       <span class="muted sd-when">zeige</span>
-      <input class="so-delay" style="width:44px" placeholder="Icon" value={st.icon || ''}
-             onInput={(e) => onChange({ ...st, icon: e.currentTarget.value })} />
+      <IconField value={st.icon || ''} onChange={(icon) => onChange({ ...st, icon })} />
       <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={st.title || ''}
                   onInput={(v) => onChange({ ...st, title: v })} />
       <IconPicker value={st.image} onChange={(url) => onChange({ ...st, image: url })} />
-      <input type="color" class="sd-color" value={st.color || '#2a2a2a'}
-             onInput={(e) => onChange({ ...st, color: e.currentTarget.value })} />
+      <ColorField value={st.color} onChange={(color) => onChange({ ...st, color })} />
       <Swatch vis={{ color: st.color, icon: st.icon, title: st.title, image: st.image }} />
       <button class="btn ghost small danger" onClick={onDelete}>✕</button>
     </div>
@@ -2691,13 +2771,11 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           {!stateless && <button class="btn ghost small" onClick={add}>➕ Status-Regel</button>}
           <div class="reward-row sd-state" style="margin-top:8px">
             <span class="muted conn-label">Standard</span>
-            <input class="so-delay" style="width:44px" placeholder="Icon" value={def.icon || ''}
-                   onInput={(e) => onDefault({ icon: e.currentTarget.value })} />
+            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} />
             <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
                         onInput={(v) => onDefault({ title: v })} />
             <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
-            <input type="color" class="sd-color" value={def.color || '#2a2a2a'}
-                   onInput={(e) => onDefault({ color: e.currentTarget.value })} />
+            <ColorField value={def.color} onChange={(color) => onDefault({ color })} />
             <Swatch vis={{ color: def.color, icon: def.icon, title: def.title, image: def.image }} />
           </div>
         </>

@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
-import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
+import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
+import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -290,12 +291,15 @@ function downsample(arr, target) {
   return out
 }
 
-// Button-Icon mit Fallback: zeigt das Bild (z. B. echtes Programm-Icon vom Desktop-Ordner); schlägt das
-// Laden fehl (404 — kein extrahierbares Icon), fällt es sauber aufs Emoji zurück statt ein kaputtes Bild.
+// Button-Symbol mit Fallback-Kette: Bild (z. B. echtes Programm-Icon vom Desktop-Ordner) → SVG-Glyph
+// (g:name, zeichnet mit currentColor → folgt der Kachelfarbe) → Emoji-Text → '•'. Schlägt ein Bild fehl
+// (404 — kein extrahierbares Icon), fällt es sauber auf das Glyph/Emoji zurück statt ein kaputtes Bild.
 function KeyImg({ image, icon }) {
   const [err, setErr] = useState(false)
-  if (err || !image) return <span class="t-key-icon">{icon || '•'}</span>
-  return <img class="t-key-img" src={image} alt="" onError={() => setErr(true)} />
+  if (!err && image) return <img class="t-key-img" src={image} alt="" onError={() => setErr(true)} />
+  if (isGlyph(icon) && hasGlyph(glyphName(icon)))
+    return <span class="t-key-icon t-key-glyph"><Glyph name={glyphName(icon)} /></span>
+  return <span class="t-key-icon">{(isGlyph(icon) ? glyphName(icon) : icon) || '•'}</span>
 }
 
 function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly }) {
@@ -428,7 +432,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       <div class="t-fader-name" title={name}>
         {iconOnly
           ? (imgSrc ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={hideImg} />
-             : <span class="t-fader-name-emo">{v.icon || name}</span>)
+             : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
+               ? <span class="t-fader-name-emo t-fader-glyph"><Glyph name={glyphName(v.icon)} /></span>
+               : <span class="t-fader-name-emo">{(isGlyph(v.icon) ? glyphName(v.icon) : v.icon) || name}</span>)
           : name}
       </div>
       <div class="t-fader-body">
@@ -441,7 +447,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {!iconOnly && (imgSrc
         ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={hideImg} /></div>
-        : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}
+        : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
+          ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={glyphName(v.icon)} /></div>
+          : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}
     </div>
   )
 }
@@ -515,7 +523,7 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
           return (
             <button key={id}
                     class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')}
-                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};background:${v.color || '#222'}`}
+                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};background:${resolveColor(v.color) || '#222'}`}
                     onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
               <KeyImg image={v.image} icon={v.icon} />
               <span class="t-key-label">{v.label || id}</span>
@@ -797,7 +805,7 @@ export function TouchDeck() {
     return (
       <button key={id}
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${v.color || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (v.color || '#222'))))) + place}
+              style={(isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (resolveColor(v.color) || '#222'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>

@@ -10,6 +10,23 @@ export const DECK_LAYOUT_DEF = {
 }
 export const UNCAT = 'Ohne Kategorie'
 
+// ── Theme-gebundene Farben ───────────────────────────────────────────────────
+// Eine Button-Farbe ist normalerweise eine feste Hex (#8a5cff). Sie kann aber stattdessen auf eine
+// THEME-Variable zeigen — gespeichert als reines Schlüsselwort ('accent', 'live', …, KEIN '#'). Dann
+// färbt sich die Kachel automatisch mit jedem Theme/Theme-Edit um ("alles passt sich der Farbe an").
+// resolveColor() macht aus dem Schlüsselwort die CSS-Variable; jede Hex bleibt unverändert.
+export const THEME_COLORS = {
+  accent: 'Akzent', accent2: 'Akzent 2', ok: 'Grün / OK', warn: 'Warnung', err: 'Fehler', live: 'Live',
+}
+export function isThemeColor(c) {
+  return typeof c === 'string' && Object.prototype.hasOwnProperty.call(THEME_COLORS, c)
+}
+// Farbwert für einen CSS-`style`-String: Theme-Schlüsselwort → `var(--x)`, sonst die rohe Farbe (Hex)
+// unverändert. Leer/undefined → '' (Aufrufer setzt seinen eigenen Fallback, z.B. '#222').
+export function resolveColor(c) {
+  return isThemeColor(c) ? `var(--${c})` : (c || '')
+}
+
 export function resolveStyle(style, lay) {
   const s = style || {}
   const onoff = (v, d) => (v === 'on' ? true : v === 'off' ? false : d)

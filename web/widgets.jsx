@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks'
+import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 
 // Geteilte Widget-Bausteine für Frei-Kacheln (Text/Label + Uhr). Genutzt von Panel (TouchDeck) UND
 // Editor (StreamDeck). ⚠ Reine Panel-Darstellung — physisches Stream Deck rendert sie nie (kein Pool-Button).
@@ -160,11 +161,16 @@ export function Readout({ v, opts }) {
   // Auf dem ROHWERT klassifizieren (z.B. Gerätename), nicht auf dem ggf. formatierten Titel.
   const raw = (val.value !== null && val.value !== undefined && val.value !== '') ? String(val.value) : text
   const icon = o.noIcon ? '' : (val.icon || autoIcon(raw, o.kind))
+  // Symbol kann ein Bibliotheks-Glyph (g:name, zeichnet im Akzent) oder ein Emoji sein.
+  const iconEl = !icon ? null
+    : (isGlyph(icon) && hasGlyph(glyphName(icon)))
+      ? <span class="t-readout-icon t-readout-glyph"><Glyph name={glyphName(icon)} /></span>
+      : <span class="t-readout-icon">{isGlyph(icon) ? glyphName(icon) : icon}</span>
   // Unter-Titel nur, wenn das Label einen ZUSÄTZLICHEN Sinn trägt (≠ angezeigter Wert).
   const sub = o.sub === false ? '' : (val.label && val.label !== text ? val.label : '')
   return (
     <div class={'t-readout' + (framed ? ' framed' : '')} style={`--acc:${accent}`}>
-      {icon ? <span class="t-readout-icon">{icon}</span> : null}
+      {iconEl}
       <span class="t-readout-v" style={`font-family:${fontStack(o.font)};font-size:${widgetFontSize(o, 'text')}`}>{text || '—'}</span>
       {sub ? <span class="t-readout-sub">{sub}</span> : null}
     </div>
