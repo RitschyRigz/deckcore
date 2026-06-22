@@ -183,6 +183,31 @@ _TILE_SKINS = ("brackets", "neon", "double", "inset", "underline", "dashed", "gr
 # TouchDeck (THEME_VAR_KEYS) passen. Werte werden gegen _is_hex_color geprueft (import-sicher).
 _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
                    "--accent", "--accent2", "--ok", "--warn", "--err", "--live")
+# Globaler „Look" (Deck-Verzierung) — generische deckcore-Einstellung, von BEIDEN Huellen (Cockpit + RigzDeck)
+# im geteilten Editor gesetzt. Druck-Modi/Farb-Schluesselwoerter muessen zu deck.css passen.
+_PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
+_LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live")
+_LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
+                 "folder": True, "folderColor": "#c8a44e"}
+
+
+def _sanitize_look(o) -> dict:
+    """Globale Look-Einstellung saeubern (Whitelist + Hex/Schluesselwort-Farben = import-sicher)."""
+    o = o if isinstance(o, dict) else {}
+    out = dict(_LOOK_DEFAULT)
+    if o.get("tile") in _TILE_SKINS:
+        out["tile"] = o["tile"]
+    if o.get("press") in _PRESS_MODES:
+        out["press"] = o["press"]
+    pc = o.get("pressColor")
+    if pc in _LOOK_COLOR_KW or _is_hex_color(pc):
+        out["pressColor"] = pc
+    if "folder" in o:
+        out["folder"] = bool(o.get("folder"))
+    fc = o.get("folderColor")
+    if fc in _LOOK_COLOR_KW or _is_hex_color(fc):
+        out["folderColor"] = fc
+    return out
 
 
 def _is_hex_color(c) -> bool:
@@ -727,6 +752,7 @@ class DeckCoreService:
         self._pool_categories: list[str] = []   # rein ORGANISATORISCH: klappbare Gruppen des Pools im Editor (≠ Deck-Item-categories)
         self._removed: set[str] = set()   # bewusst gelöschte Default-Button-IDs → NIE re-seeden
         self._decks: list[dict] = []   # Deck-TEMPLATES [{id,label,icon,layout,categories,items}] (Default-Deck garantiert in _load)
+        self._look: dict = dict(_LOOK_DEFAULT)     # globaler Deck-„Look" (Kachel-Stil-Default/Druck/Ordner)
         self._tick = float(_TICK_SEC)              # globale Aktualisierungs-Rate (einstellbar)
         self._snap_t = -1e9                        # monotonic des letzten Auto-Snapshots (Backup-Drossel)
         self._resolved: dict[str, dict] = {}      # id → {label,title,icon,image,color}
@@ -1662,6 +1688,7 @@ class DeckCoreService:
                         _seen: set = set()
                         self._pool_categories = [s for s in (str(x).strip() for x in raw["pool_categories"])
                                                  if s and not (s in _seen or _seen.add(s))]
+                    self._look = _sanitize_look(raw.get("look"))   # globaler Deck-Look (Stil/Druck/Ordner)
                     # Legacy-Top-Level (v1): EIN globales Layout + EINE globale Kategorie-Liste.
                     if isinstance(raw.get("layout"), dict):
                         legacy_layout = raw["layout"]
@@ -1788,7 +1815,7 @@ class DeckCoreService:
             self._runtime.mkdir(parents=True, exist_ok=True)
             payload = json.dumps({"buttons": self._buttons, "tick_seconds": round(self._tick, 2),
                                   "decks": self._decks, "pool_categories": self._pool_categories,
-                                  "removed": sorted(self._removed)},
+                                  "removed": sorted(self._removed), "look": self._look},
                                  ensure_ascii=False, indent=2)
             self._file.write_text(payload, encoding="utf-8")
             self._snapshot(payload)
@@ -1817,7 +1844,7 @@ class DeckCoreService:
         return json.loads(json.dumps({
             "buttons": self._buttons, "tick_seconds": round(self._tick, 2),
             "decks": self._decks, "pool_categories": self._pool_categories,
-            "removed": sorted(self._removed)}))
+            "removed": sorted(self._removed), "look": self._look}))
 
     def import_state(self, data: dict) -> dict:
         """Config aus einem Backup ZURÜCKSPIELEN (überschreibt Buttons/Decks/Pool-Kategorien/Tick). Sichert vorher den alten Stand."""
@@ -1829,6 +1856,7 @@ class DeckCoreService:
         self._decks = json.loads(json.dumps(data.get("decks") or []))
         self._pool_categories = [s for s in (str(x).strip() for x in (data.get("pool_categories") or [])) if s]
         self._removed = {str(x) for x in (data.get("removed") or [])}
+        self._look = _sanitize_look(data.get("look"))
         self._tick = _clamp_tick(data.get("tick_seconds", self._tick), self._tick)
         self._save()
         self._load()          # normalisieren: Default-Deck garantieren, Decks sanitizen, Defaults additiv seeden
@@ -2200,6 +2228,16 @@ class DeckCoreService:
             deck.pop("theme", None)        # None/leer = Override entfernen → folgt dem globalen Theme
         self._save(); self._publish_cfg()
         return {"ok": True, "id": deck_id, "theme": deck.get("theme")}
+
+    def look(self) -> dict:
+        """Globaler Deck-Look (Kachel-Stil-Default / Druck-Bestaetigung / Ordner-Rahmen)."""
+        return dict(self._look)
+
+    def set_look(self, patch) -> dict:
+        """Globalen Deck-Look setzen (Teil-Patch). Generische deckcore-Einstellung → Cockpit + RigzDeck."""
+        self._look = _sanitize_look({**self._look, **(patch or {})})
+        self._save(); self._publish_cfg()
+        return {"ok": True, "look": dict(self._look)}
 
     # ── Pro Deck: Layout / Kategorien / Items (Platzierung) ──────────────
     def set_deck_layout(self, deck_id: str, patch: dict) -> dict:
@@ -3180,7 +3218,8 @@ class DeckCoreService:
                 "tick_min": _TICK_MIN, "tick_max": _TICK_MAX,
                 "refresh_min": _REFRESH_MIN, "refresh_max": _REFRESH_MAX,
                 "pool_categories": list(self._pool_categories),
-                "decks": self.decks(), "default_deck": _DEFAULT_DECK}
+                "decks": self.decks(), "default_deck": _DEFAULT_DECK,
+                "look": dict(self._look)}
 
     def get_tick(self) -> float:
         return round(self._tick, 2)

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
-import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor } from './deckstyle.js'
+import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, applyDeckLook } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 
@@ -586,6 +586,7 @@ export function TouchDeck() {
   const baseThemeRef = useRef(null)                   // globale Theme-Basis (für Deck-Theme-Override: Rückkehr)
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
+    applyDeckLook(d.look)   // globaler Deck-Look (Kachel-Stil-Default/Druck/Ordner) generisch anwenden
     const dks = d.decks || []
     setDecks(dks)
     const def = d.default_deck || 'main'

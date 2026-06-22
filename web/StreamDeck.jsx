@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS, TILE_SKINS } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
 import { THEME_PRESETS, THEME_VARS } from './themes.js'
@@ -556,6 +556,47 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
                 title="Dieses Deck mit allen DisplayFusion-Profil-Buttons füllen (additiv)">{popBusy === 'df' ? '…' : '🖥 DisplayFusion'}</button>}
         {popMsg && <span class={'msg small ' + (popMsg.ok ? 'ok' : 'err')}>{popMsg.t}</span>}
       </div>
+    </div>
+  )
+}
+
+// Globaler Deck-Look (Kachel-Stil-Default / Druck-Bestätigung / Ordner-Rahmen) — generische deckcore-Einstellung
+// im GETEILTEN Editor → Cockpit UND RigzDeck. Wirkt sofort live (applyDeckLook) + persistiert via /look-Route.
+function GlobalLookEditor({ look, onReload }) {
+  const lk = { ...LOOK_DEFAULT, ...(look || {}) }
+  const save = (patch) => {
+    applyDeckLook({ ...lk, ...patch })
+    postJSON('/api/streamdeck/look', patch).then(() => onReload && onReload()).catch(() => {})
+  }
+  const fld = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;color:var(--muted)'
+  return (
+    <div class="card" style="max-width:820px;margin-bottom:12px">
+      <div class="reward-row" style="flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <span class="kv-k" style="min-width:150px">🎛 Globaler Look</span>
+        <label style={fld}>Kachel-Stil
+          <select class="so-delay" value={lk.tile} onChange={(e) => save({ tile: e.currentTarget.value })}>
+            {TILE_SKINS.map(([v, l]) => <option value={v}>{l}</option>)}
+          </select>
+        </label>
+        <div style={fld}>Druck-Bestätigung
+          <span style="display:flex;gap:6px;align-items:center">
+            <select class="so-delay" value={lk.press} onChange={(e) => save({ press: e.currentTarget.value })}>
+              {PRESS_MODES.map(([v, l]) => <option value={v}>{l}</option>)}
+            </select>
+            <ColorField value={lk.pressColor} onChange={(c) => save({ pressColor: c })} />
+          </span>
+        </div>
+        <div style={fld}>Ordner-Rahmen
+          <span style="display:flex;gap:10px;align-items:center">
+            <label style="display:inline-flex;gap:5px;align-items:center;color:var(--fg);font-weight:500">
+              <input type="checkbox" checked={lk.folder !== false} onChange={(e) => save({ folder: e.currentTarget.checked })} /> an
+            </label>
+            {lk.folder !== false && <ColorField value={lk.folderColor} onChange={(c) => save({ folderColor: c })} />}
+          </span>
+        </div>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
+        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks ein eigenes Theme (unten am Deck).</p>
     </div>
   )
 }
@@ -1944,6 +1985,7 @@ export function StreamDeck() {
 
   const load = () => getJSON('/api/streamdeck/registry').then((d) => {
     setData(d)
+    applyDeckLook(d.look)   // globaler Deck-Look auch in der Editor-Vorschau (WYSIWYG)
     setActiveDeck((cur) => (cur && (d.decks || []).some((x) => x.id === cur)) ? cur : (d.default_deck || (d.decks && d.decks[0] && d.decks[0].id) || 'main'))
   }).catch((e) => setErr(String(e)))
   useEffect(() => { load() }, [])
@@ -1975,6 +2017,7 @@ export function StreamDeck() {
       </p>
 
       <RefreshRate reg={data} onSaved={load} />
+      <GlobalLookEditor look={data.look} onReload={load} />
 
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>

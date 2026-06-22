@@ -164,6 +164,11 @@ def build_streamdeck_router(
         """Deck-Theme-Override setzen/entfernen ({name, vars} oder leer = folgt dem globalen Theme)."""
         return JSONResponse(get_service(request).set_deck_theme(deck_id, (body or {}).get("theme")))
 
+    @r.post("/api/streamdeck/look")
+    def streamdeck_look(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Globalen Deck-Look setzen (Kachel-Stil-Default / Druck-Bestaetigung / Ordner-Rahmen)."""
+        return JSONResponse(get_service(request).set_look(body or {}))
+
     @r.post("/api/streamdeck/deck/populate_obs_scenes")
     def streamdeck_deck_populate_scenes(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Pro OBS-Szene einen Szenen-Wechsel-Button im Ziel-Deck (idempotent). Szenenquelle =
