@@ -430,6 +430,13 @@ body[data-press="lift"] .t-key.pressed, body[data-press="lift"] .t-key:active {
 .t-key.title-off .t-key-title { display: none; }
 .t-key.noframe { background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 2px; }
 .t-key.noframe::before, .t-key.noframe::after { display: none !important; }   /* rahmenlos = auch keine Stil-Verzierung */
+/* Globaler/per-Deck-Rahmen AUS (Look frame=false → body[data-frame=off]): flache Tasten frameless,
+   ohne Stil-Verzierung, größeres Symbol — wie .noframe, aber global/deck-weit. Bild-Tasten bleiben. */
+body[data-frame="off"] .t-key.t-flat:not(.has-img),
+body[data-frame="off"] .sd-prev-key.t-flat:not(.has-img) { background: transparent !important; box-shadow: none !important; }
+body[data-frame="off"] .t-key.t-flat::before, body[data-frame="off"] .t-key.t-flat::after,
+body[data-frame="off"] .sd-prev-key.t-flat::before, body[data-frame="off"] .sd-prev-key.t-flat::after { display: none !important; }
+body[data-frame="off"] .t-key.t-flat .t-key-icon { font-size: calc(50px * var(--sd-font)); }
 .t-key.noframe:active, .t-key.noframe.pressed { box-shadow: none; transform: scale(.9); }
 .t-key.noframe .t-key-icon { font-size: calc(56px * var(--sd-font)); }
 .t-key.noframe .t-key-img { width: 88%; height: 88%; }

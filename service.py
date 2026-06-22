@@ -188,13 +188,14 @@ _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
 _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
 _LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
-                 "folder": True, "folderColor": "#c8a44e"}
+                 "folder": True, "folderColor": "#c8a44e", "frame": True}
 
 
-def _sanitize_look(o) -> dict:
-    """Globale Look-Einstellung saeubern (Whitelist + Hex/Schluesselwort-Farben = import-sicher)."""
+def _look_overrides(o) -> dict:
+    """Nur die GUELTIGEN, gesetzten Look-Felder (Partial-Override). Basis fuer global (auf Default) UND
+    per-Deck (nur die ueberschriebenen Keys; fehlende folgen global). Import-sicher (Whitelist + Farben)."""
     o = o if isinstance(o, dict) else {}
-    out = dict(_LOOK_DEFAULT)
+    out = {}
     if o.get("tile") in _TILE_SKINS:
         out["tile"] = o["tile"]
     if o.get("press") in _PRESS_MODES:
@@ -207,7 +208,14 @@ def _sanitize_look(o) -> dict:
     fc = o.get("folderColor")
     if fc in _LOOK_COLOR_KW or _is_hex_color(fc):
         out["folderColor"] = fc
+    if "frame" in o:
+        out["frame"] = bool(o.get("frame"))
     return out
+
+
+def _sanitize_look(o) -> dict:
+    """Globaler Look = Default + gueltige Overrides (immer alle Felder gefuellt)."""
+    return {**_LOOK_DEFAULT, **_look_overrides(o)}
 
 
 def _is_hex_color(c) -> bool:
@@ -1993,10 +2001,18 @@ class DeckCoreService:
         # Deck-Theme-Override (Farben) erhalten — die Huelle setzt es, das Panel faerbt sich auf diesem Deck
         # damit komplett um (Deck-Identitaet, z.B. rot=Dual / blau=Solo). Nur bekannte CSS-Vars + Hex (import-sicher).
         tv = d.get("theme")
-        if isinstance(tv, dict) and isinstance(tv.get("vars"), dict):
-            v = {k: tv["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(tv["vars"].get(k))}
-            if v:
-                out["theme"] = {"name": str(tv.get("name") or "")[:40], "vars": v}
+        if isinstance(tv, dict):
+            th = {}
+            if isinstance(tv.get("vars"), dict):
+                v = {k: tv["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(tv["vars"].get(k))}
+                if v:
+                    th["vars"] = v
+                    th["name"] = str(tv.get("name") or "")[:40]
+            lk = _look_overrides(tv.get("look"))   # per-Deck-Look-Override (nur ueberschriebene Keys, Rest folgt global)
+            if lk:
+                th["look"] = lk
+            if th:
+                out["theme"] = th
         return out
 
     def _sanitize_decks(self, decks, valid_ids: set) -> list[dict]:
@@ -2218,14 +2234,20 @@ class DeckCoreService:
         deck = self._deck(deck_id)
         if not deck:
             return {"ok": False, "reason": "unknown_deck"}
-        if isinstance(theme, dict) and isinstance(theme.get("vars"), dict):
-            v = {k: theme["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(theme["vars"].get(k))}
-            if v:
-                deck["theme"] = {"name": str(theme.get("name") or "")[:40], "vars": v}
-            else:
-                deck.pop("theme", None)
+        th = {}
+        if isinstance(theme, dict):
+            if isinstance(theme.get("vars"), dict):
+                v = {k: theme["vars"][k] for k in _THEME_VAR_KEYS if _is_hex_color(theme["vars"].get(k))}
+                if v:
+                    th["vars"] = v
+                    th["name"] = str(theme.get("name") or "")[:40]
+            lk = _look_overrides(theme.get("look"))   # per-Deck-Look-Override (Partial)
+            if lk:
+                th["look"] = lk
+        if th:
+            deck["theme"] = th
         else:
-            deck.pop("theme", None)        # None/leer = Override entfernen → folgt dem globalen Theme
+            deck.pop("theme", None)        # None/leer = Override ganz entfernen → folgt global
         self._save(); self._publish_cfg()
         return {"ok": True, "id": deck_id, "theme": deck.get("theme")}
 

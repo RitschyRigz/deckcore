@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
-import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, applyDeckLook } from './deckstyle.js'
+import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 
@@ -584,9 +584,10 @@ export function TouchDeck() {
   const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
   const baseThemeRef = useRef(null)                   // globale Theme-Basis (für Deck-Theme-Override: Rückkehr)
+  const [globalLook, setGlobalLook] = useState({})    // globaler Deck-Look (registry.look) — per Deck überschreibbar
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
-    applyDeckLook(d.look)   // globaler Deck-Look (Kachel-Stil-Default/Druck/Ordner) generisch anwenden
+    setGlobalLook(d.look || {})   // globaler Deck-Look in State → der Deck-Effekt merged ihn mit dem per-Deck-Override
     const dks = d.decks || []
     setDecks(dks)
     const def = d.default_deck || 'main'
@@ -684,15 +685,20 @@ export function TouchDeck() {
   // Aktives TOP-LEVEL-Deck (Tab) hat ein eigenes Theme → dessen Farben auf :root; sonst die globale Basis
   // zurück. Folgt dem Tab, NICHT dem Ordner-Drilldown (ein Ordner gehört zur Identität seines Decks).
   useEffect(() => {
-    const base = baseThemeRef.current; if (!base) return
     const topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
     const dk = decks.find((d) => d.id === topId) || {}
-    const tv = (dk.theme && dk.theme.vars) || null
-    try {
-      const root = document.documentElement
-      for (const k of THEME_VAR_KEYS) root.style.setProperty(k, (tv && tv[k]) || base[k] || '')
-    } catch {}
-  }, [deck, defaultDeck, decks])
+    // Look: globaler Look + per-Deck-Override (Kachel-Stil/Druck/Ordner/Rahmen). NICHT an die Theme-Basis gebunden.
+    try { applyDeckLook({ ...globalLook, ...((dk.theme && dk.theme.look) || {}) }) } catch {}
+    // Farben: per-Deck-Theme auf :root, sonst die globale Basis zurück (Basis erst nach Mount erfasst).
+    const base = baseThemeRef.current
+    if (base) {
+      const tv = (dk.theme && dk.theme.vars) || null
+      try {
+        const root = document.documentElement
+        for (const k of THEME_VAR_KEYS) root.style.setProperty(k, (tv && tv[k]) || base[k] || '')
+      } catch {}
+    }
+  }, [deck, defaultDeck, decks, globalLook])
   useEffect(() => {
     if (!fullscreen) return
     const onKey = (e) => { if (e.key === 'Escape') setFullscreen(false) }
@@ -791,8 +797,11 @@ export function TouchDeck() {
   const gridStyle = `grid-template-columns:${gridCols};gap:${layout.gap || 12}px`
   const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}`
   const showCatTitles = layout.show_category_titles !== false
-  // Globaler Kachel-Stil-Default (von der Hülle gesetzt: body.dataset.tilestyle). Pro Taste via opts.skin überschreibbar.
-  const defSkin = (typeof document !== 'undefined' && (document.body.dataset.tilestyle || '')) || 'brackets'
+  // Effektiver Kachel-Stil-Default = globaler Look + per-Deck-Override (reaktiv, damit Deck-Wechsel sofort greift).
+  // Pro Taste via opts.skin überschreibbar.
+  const _topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
+  const _effLook = { ...LOOK_DEFAULT, ...globalLook, ...(((decks.find((d) => d.id === _topId) || {}).theme || {}).look || {}) }
+  const defSkin = _effLook.tile || 'brackets'
 
   const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null

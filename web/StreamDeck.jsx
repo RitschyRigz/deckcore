@@ -594,9 +594,14 @@ function GlobalLookEditor({ look, onReload }) {
             {lk.folder !== false && <ColorField value={lk.folderColor} onChange={(c) => save({ folderColor: c })} />}
           </span>
         </div>
+        <div style={fld}>Rahmen / Box
+          <label style="display:inline-flex;gap:5px;align-items:center;color:var(--fg);font-weight:500">
+            <input type="checkbox" checked={lk.frame !== false} onChange={(e) => save({ frame: e.currentTarget.checked })} /> an
+          </label>
+        </div>
       </div>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
-        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks ein eigenes Theme (unten am Deck).</p>
+        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
     </div>
   )
 }
@@ -607,41 +612,81 @@ function GlobalLookEditor({ look, onReload }) {
 function DeckThemeEditor({ deck, onReload }) {
   const [open, setOpen] = useState(false)
   const cur = (deck && deck.theme) || null
-  const presetId = cur ? ((THEME_PRESETS.find((p) => p.name === cur.name) || {}).id || '__custom') : ''
-  const save = (theme) => postJSON('/api/streamdeck/deck/' + encodeURIComponent(deck.id) + '/theme', { theme })
-    .then(() => onReload && onReload()).catch(() => {})
-  const pick = (id) => {
-    if (!id) { save(null); return }                                  // (Globales Theme) → Override entfernen
-    const p = THEME_PRESETS.find((x) => x.id === id)
-    if (p) save({ name: p.name, vars: { ...p.vars } })
+  const curVars = (cur && cur.vars) || null
+  const curName = (cur && cur.name) || ''
+  const curLook = (cur && cur.look) || {}
+  const presetId = curVars ? ((THEME_PRESETS.find((p) => p.name === curName) || {}).id || '__custom') : ''
+  const lf = 'font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:3px'
+  // Theme = {name, vars, look} bauen (leere Teile weglassen); ganz leer → Override entfernen (folgt global).
+  const push = (vars, name, look) => {
+    const theme = {}
+    if (vars) { theme.vars = vars; theme.name = name || 'Eigenes' }
+    if (look && Object.keys(look).length) theme.look = look
+    postJSON('/api/streamdeck/deck/' + encodeURIComponent(deck.id) + '/theme',
+      { theme: Object.keys(theme).length ? theme : null }).then(() => onReload && onReload()).catch(() => {})
   }
-  const editVar = (k, val) => save({ name: 'Eigenes', vars: { ...cur.vars, [k]: val } })
+  const pickPreset = (id) => {
+    if (!id) { push(null, '', curLook); return }                     // Farben → global (Look-Override behalten)
+    const p = THEME_PRESETS.find((x) => x.id === id)
+    if (p) push({ ...p.vars }, p.name, curLook)
+  }
+  const editVar = (k, val) => push({ ...(curVars || THEME_PRESETS[0].vars), [k]: val }, 'Eigenes', curLook)
+  const setLook = (k, val) => {   // val==='' / null → Key entfernen (folgt global); sonst setzen
+    const nl = { ...curLook }
+    if (val === '' || val == null) delete nl[k]; else nl[k] = val
+    push(curVars, curName, nl)
+  }
+  const tri = (k) => (k in curLook ? (curLook[k] ? 'on' : 'off') : '')   // folder/frame: '' | 'on' | 'off'
   return (
     <div class="sd-deck-theme">
       <div class="reward-row sd-state" style="flex-wrap:wrap">
-        <span class="muted conn-label">🎨 Deck-Theme</span>
+        <span class="muted conn-label">🎨 Deck-Theme (Farben)</span>
         <select class="so-delay" value={presetId}
-                onChange={(e) => { const v = e.currentTarget.value; if (v !== '__custom') pick(v) }}>
+                onChange={(e) => { const v = e.currentTarget.value; if (v !== '__custom') pickPreset(v) }}>
           <option value="">(Globales Theme)</option>
           {THEME_PRESETS.map((p) => <option value={p.id}>{p.name}</option>)}
           {presetId === '__custom' && <option value="__custom">Eigenes</option>}
         </select>
-        {cur && <span class="sd-deck-theme-sw" style={`background:${cur.vars['--accent'] || '#888'}`} title={cur.name} />}
-        {cur && <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Farben schließen' : '🎨 Farben anpassen'}</button>}
-        {cur && <button class="btn ghost small danger" onClick={() => { save(null); setOpen(false) }}>auf global</button>}
+        {curVars && <span class="sd-deck-theme-sw" style={`background:${curVars['--accent'] || '#888'}`} title={curName} />}
+        {curVars && <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Farben schließen' : '🎨 Farben anpassen'}</button>}
+        {curVars && <button class="btn ghost small danger" onClick={() => push(null, '', curLook)}>Farben auf global</button>}
       </div>
-      {cur && open && (
+      {curVars && open && (
         <div class="sd-dt-grid">
           {THEME_VARS.map((v) => (
             <label class="sd-dt-row" key={v.key} title={v.key}>
-              <input type="color" value={cur.vars[v.key] || '#000000'} onInput={(e) => editVar(v.key, e.currentTarget.value)} />
+              <input type="color" value={curVars[v.key] || '#000000'} onInput={(e) => editVar(v.key, e.currentTarget.value)} />
               <span>{v.label}</span>
             </label>
           ))}
         </div>
       )}
-      <p class="muted sd-help">Eigenes Theme für dieses Deck → beim Öffnen färbt sich das <b>ganze Panel</b> um
-        (z.B. <b>rot = Dual-Stream</b>). Das globale Theme bleibt für alle anderen Decks. Auf jedem Gerät gleich.</p>
+      <div class="reward-row sd-state" style="flex-wrap:wrap;margin-top:8px">
+        <span class="muted conn-label">🎛 Deck-Look</span>
+        <label style={lf}>Kachel-Stil
+          <select class="so-delay" value={curLook.tile || ''} onChange={(e) => setLook('tile', e.currentTarget.value)}>
+            <option value="">(folgt global)</option>{TILE_SKINS.map(([v, l]) => <option value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label style={lf}>Druck
+          <select class="so-delay" value={curLook.press || ''} onChange={(e) => setLook('press', e.currentTarget.value)}>
+            <option value="">(folgt global)</option>{PRESS_MODES.map(([v, l]) => <option value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label style={lf}>Ordner-Rahmen
+          <select class="so-delay" value={tri('folder')} onChange={(e) => setLook('folder', e.currentTarget.value === '' ? '' : e.currentTarget.value === 'on')}>
+            <option value="">(folgt global)</option><option value="on">an</option><option value="off">aus</option>
+          </select>
+        </label>
+        <label style={lf}>Rahmen/Box
+          <select class="so-delay" value={tri('frame')} onChange={(e) => setLook('frame', e.currentTarget.value === '' ? '' : e.currentTarget.value === 'on')}>
+            <option value="">(folgt global)</option><option value="on">an</option><option value="off">aus</option>
+          </select>
+        </label>
+      </div>
+      <p class="muted sd-help">Eigenes Aussehen für dieses Deck → beim Öffnen stylt/färbt sich das <b>ganze Panel</b> um
+        (z.B. <b>rot + Neon</b> fürs Dual-Stream-Deck). „(Globales Theme)" / „(folgt global)" = folgt dem Standard.
+        Pro Taste geht zusätzlich ein eigener „Stil". Auf jedem Gerät gleich.</p>
     </div>
   )
 }
@@ -677,7 +722,6 @@ function DeckLayout({ deck, onReload }) {
       </div>
       <div class="sd-lay-ctl">
         <span class="muted" style="font-size:12px">Standard-Stil (pro Button überschreibbar):</span>
-        <Toggle k="frame">Rahmen/Box</Toggle>
         <Toggle k="show_label">Name</Toggle>
         <label>Position
           <select value={lay.label_pos || 'bottom'} onChange={(e) => save({ label_pos: e.currentTarget.value }, true)}>

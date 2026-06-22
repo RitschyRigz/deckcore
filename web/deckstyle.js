@@ -44,13 +44,14 @@ export const PRESS_MODES = [
 // Globaler Deck-„Look" (Kachel-Stil-Default / Druck-Bestätigung / Ordner-Rahmen). GENERISCH: von TouchDeck
 // (Panel) UND StreamDeck (Editor-Vorschau) aus der Registry (`look`) angewandt → Cockpit + RigzDeck identisch,
 // ohne Hüllen-Theme-System. Kachel-Stil/Druck-Modus als body-data (deck.css liest sie), Farben/Breite als Vars.
-export const LOOK_DEFAULT = { tile: 'brackets', press: 'ring', pressColor: 'accent2', folder: true, folderColor: '#c8a44e' }
+export const LOOK_DEFAULT = { tile: 'brackets', press: 'ring', pressColor: 'accent2', folder: true, folderColor: '#c8a44e', frame: true }
 export function applyDeckLook(look) {
   const lk = { ...LOOK_DEFAULT, ...(look || {}) }
   try {
     const root = document.documentElement, body = document.body
     body.dataset.tilestyle = lk.tile || 'brackets'
     body.dataset.press = lk.press || 'ring'
+    body.dataset.frame = lk.frame === false ? 'off' : 'on'   // Rahmen/Box global aus (CSS body[data-frame=off])
     root.style.setProperty('--press', resolveColor(lk.pressColor) || 'var(--accent2)')
     root.style.setProperty('--folder-w', lk.folder === false ? '0' : '2px')
     root.style.setProperty('--folder', resolveColor(lk.folderColor) || '#c8a44e')
