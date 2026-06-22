@@ -1395,6 +1395,93 @@ class DeckCoreService:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "reason": str(e)}
 
+    # ── Schnellstart: proaktiver Einrichtungs-Assistent ───────────────────────────────
+    def quickstart_scan(self) -> dict:
+        """Schritt 1: welche Integrationen sind ERKANNT und haben generierbare Starter-Elemente?
+        Eine Antwort (statt N Einzel-Calls) fürs Schnellstart-Panel. base/custom/folders übersprungen
+        (keine Hardware/App-Erkennung mit Starter-Buttons; Windows-Audio bleibt drin = immer verfügbar).
+        ``available`` = es gibt Elemente UND die Integration meldet sich nicht als offline."""
+        SKIP = {"base", "custom", "folders"}
+        try:
+            statuses = self.integrations_status(probe=False) or {}
+        except Exception:  # noqa: BLE001
+            statuses = {}
+        out = []
+        for it in self.integrations():
+            iid = it.get("id")
+            if iid in SKIP:
+                continue
+            try:
+                el = self._elements_raw(iid)
+            except Exception:  # noqa: BLE001
+                el = {"available": False}
+            count = sum(len(g.get("items") or []) for g in (el.get("groups") or []))
+            st = str((statuses.get(iid) or {}).get("state") or "unknown")
+            out.append({"id": iid, "emoji": it.get("emoji"), "label": it.get("label"),
+                        "available": bool(el.get("available")) and count > 0 and st != "off",
+                        "count": count, "state": st, "reason": el.get("reason") or ""})
+        return {"integrations": out}
+
+    def quickstart_apply(self, ids) -> dict:
+        """Schritt 2: für die gewählten Integrationen die EMPFOHLENEN Buttons anlegen (reine
+        Wiederverwendung von ``integration_generate_selected`` — KEIN Sonderweg) und auf ein eigenes
+        „✨ Schnellstart"-Deck legen, nach Kategorie gruppiert. Alles bleibt frei editierbar.
+        Idempotent: erneuter Lauf legt nichts doppelt an/aufs Deck."""
+        wanted = [str(x) for x in (ids or []) if str(x)]
+        if not wanted:
+            return {"ok": False, "reason": "nichts ausgewählt"}
+        before = {b.get("id") for b in self._buttons}
+        results = []
+        for iid in wanted:
+            try:
+                el = self.integration_elements(iid)
+            except Exception as e:  # noqa: BLE001
+                results.append({"id": iid, "ok": False, "reason": str(e)}); continue
+            if not el.get("available"):
+                results.append({"id": iid, "ok": False, "reason": el.get("reason") or "nicht verfügbar"}); continue
+            sel = {"groups": {}, "toggles": {}, "options": {}, "renders": {}}
+            for g in el.get("groups", []):
+                # „recommend" (bei HWiNFO ab vielen Sensoren gesetzt) steuert die Vorauswahl; sonst alles.
+                sel["groups"][g["key"]] = [str(x["id"]) for x in g.get("items", []) if x.get("recommend", True)]
+                for x in g.get("items", []):
+                    if x.get("renders"):
+                        sel["renders"][str(x["id"])] = x.get("render") or "auto"
+            for tg in el.get("toggles", []):
+                sel["toggles"][tg["key"]] = False   # Verhaltens-Schalter (z.B. Kopplung) NICHT automatisch an
+            for op in el.get("options", []):
+                sel["options"][op["key"]] = op.get("default")
+            results.append({"id": iid, **(self.integration_generate_selected(iid, sel) or {})})
+        # Neu entstandene Buttons auf ein eigenes „Schnellstart"-Deck legen (nach Pool-Kategorie gruppiert).
+        new_buttons = [b for b in self._buttons if b.get("id") not in before]
+        placed, deck_id = 0, ""
+        if new_buttons:
+            deck_id = self._quickstart_deck()
+            deck = self._deck(deck_id)
+            if deck is not None:
+                have = {it["button"] for it in deck["items"]}
+                for b in new_buttons:
+                    cat = str(b.get("pool_cat") or "")
+                    if cat and cat not in deck["categories"]:
+                        deck["categories"].append(cat)
+                    if b["id"] not in have:
+                        deck["items"].append({"button": b["id"], "category": cat, "style": {}, "hidden": False})
+                        placed += 1
+                self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "placed": placed,
+                "created": sum(int(r.get("created") or 0) for r in results), "results": results}
+
+    def _quickstart_deck(self) -> str:
+        """Das „✨ Schnellstart"-Deck finden oder anlegen (eigenes Deck — stört bestehende nicht)."""
+        lbl = "✨ Schnellstart"
+        for d in self._decks:
+            if d.get("label") == lbl:
+                return d["id"]
+        self.add_deck(lbl, "✨")
+        for d in self._decks:
+            if d.get("label") == lbl:
+                return d["id"]
+        return ""
+
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
         (z.B. umbenannte Monitor-Typen). Im reinen Kern ein No-op. Rückgabe True, wenn

@@ -1442,6 +1442,67 @@ function ObsConn() {
 // (die Button-Typen verschwinden aus den Auswahllisten); bestehende Buttons laufen weiter.
 // Pro Integration optional ein „Generieren/Rescan"-Knopf (additiv+idempotent gegen den Live-Stand).
 // onReload lädt die Registry/Optionen neu → Gating + frisch generierte Buttons sofort sichtbar.
+// ✨ Schnellstart — proaktiver Einrichtungs-Assistent: erkennt LIVE, was vorhanden ist, und legt auf
+// einen Klick die empfohlenen Buttons + ein „✨ Schnellstart"-Deck an (reine Wiederverwendung der
+// Generatoren — kein Sonderweg). Erkanntes ist vorausgewählt; danach bleibt alles frei editierbar.
+function Quickstart({ onReload }) {
+  const [scan, setScan] = useState(null)
+  const [picked, setPicked] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const [open, setOpen] = useState(true)
+  useEffect(() => {
+    getJSON('/api/streamdeck/quickstart').then((d) => {
+      const its = d.integrations || []
+      setScan(its)
+      const p = {}; its.forEach((it) => { p[it.id] = !!it.available }); setPicked(p)
+    }).catch(() => setScan([]))
+  }, [])
+  if (!scan || !scan.length) return null
+  const nDet = scan.filter((it) => it.available).length
+  const apply = () => {
+    const ids = Object.keys(picked).filter((k) => picked[k])
+    if (!ids.length || busy) return
+    setBusy(true); setMsg(null)
+    postJSON('/api/streamdeck/quickstart', { ids })
+      .then((r) => {
+        setMsg(r.ok
+          ? { ok: true, t: `✓ ${r.created || 0} Buttons · ${r.placed || 0} aufs Deck „✨ Schnellstart" — jetzt frei anpassen.` }
+          : { ok: false, t: r.reason || 'Fehler' })
+        if (r.ok) onReload && onReload()
+      })
+      .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setBusy(false))
+  }
+  return (
+    <div style="border:0.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px;cursor:pointer" onClick={() => setOpen((o) => !o)}>
+        <span style="font-weight:600">✨ Schnellstart</span>
+        <span class="muted" style="font-size:12px">{nDet} erkannt — Starter-Buttons &amp; -Deck auf einen Klick</span>
+        <span style="flex:1" />
+        <span class="muted">{open ? '▴' : '▾'}</span>
+      </div>
+      {open && (
+        <div style="margin-top:10px">
+          <p class="muted" style="font-size:12px;margin:0 0 8px">Erkannt = vorausgewählt. Anhaken/abwählen, dann anlegen — alles bleibt danach frei editierbar.</p>
+          <div class="sd-int-cols">
+            {scan.map((it) => (
+              <label key={it.id} class={'sd-int-chk' + (it.available ? '' : ' off')} title={it.available ? `${it.count} Elemente erkannt` : (it.reason || 'nicht gefunden')}>
+                <input type="checkbox" checked={!!picked[it.id]} onChange={() => setPicked((p) => ({ ...p, [it.id]: !p[it.id] }))} />
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{it.emoji} {it.label}</span>
+                <span class={'sd-int-dot ' + (it.available ? 'ok' : 'off')} />
+              </label>
+            ))}
+          </div>
+          <div class="sd-int-gen" style="margin-top:10px">
+            <button class="btn small" disabled={busy} onClick={apply}>{busy ? '… lege an' : '✨ Starter-Deck anlegen'}</button>
+            {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Integrations({ onReload, buttons, poolCategories, resolved, options }) {
   const [items, setItems] = useState(null)
   const [err, setErr] = useState(null)
@@ -1478,6 +1539,7 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
   return (
     <div class="card" style="max-width:1100px">
       <h3 class="section-h" style="margin-top:0">🔌 Kategorien <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
+      <Quickstart onReload={onReload} />
       <div class="conn-toolbar" style="margin-bottom:8px">
         <span class="sd-int-search"><input value={search} placeholder="🔍 Kategorie suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
         <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Status prüfen'}</button>

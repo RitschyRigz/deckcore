@@ -83,6 +83,17 @@ def build_streamdeck_router(
         """Baut NUR die ausgewählten Elemente in den Pool. body = {groups:{key:[ids]}, toggles, options}."""
         return JSONResponse(get_service(request).integration_generate_selected(iid, body or {}))
 
+    @r.get("/api/streamdeck/quickstart")
+    def streamdeck_quickstart_scan(request: Request) -> JSONResponse:
+        """Schnellstart Schritt 1: erkannte, generierbare Integrationen (ein Scan statt N Calls)."""
+        return JSONResponse(get_service(request).quickstart_scan())
+
+    @r.post("/api/streamdeck/quickstart")
+    def streamdeck_quickstart_apply(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Schnellstart Schritt 2: Starter-Buttons + -Deck für die gewählten Integrationen anlegen.
+        body = {ids:[integration_id, …]}."""
+        return JSONResponse(get_service(request).quickstart_apply((body or {}).get("ids") or []))
+
     @r.post("/api/integrations/{iid}")
     def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         """Integration an-/abschalten (Basis nicht abschaltbar). Reines Editor-Gating —
