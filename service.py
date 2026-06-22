@@ -110,6 +110,8 @@ _PKG_DIR = Path(__file__).resolve().parent
 
 _TICK_SEC = 1.5            # Default-Basis-Takt der Neuberechnung (global, einstellbar)
 _TICK_MIN, _TICK_MAX = 0.3, 10.0   # Klemmgrenzen für die globale Rate
+_AUDIO_PUSH_SEC = 1.0 / 15.0   # ~15 Hz: Live-Audio-Push (VU/Pegel) über SSE-Topic streamdeck:audio
+_AUDIO_SUB_TTL = 12.0     # s — eine Panel-Audio-Subscription gilt so lange ohne Keepalive-Refresh
 _REFRESH_MIN, _REFRESH_MAX = 0.3, 600.0   # Klemmgrenzen für den Pro-Button-Override
 _HTTP_TIMEOUT = 4.0       # Sekunden für poll/http
 _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (Anti-tasklist-Sturm)
@@ -606,6 +608,10 @@ class DeckCoreService:
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
+        # Live-Audio-Push (Variante 2): Panels MELDEN ihre sichtbaren Audio-Targets (scoped), der
+        # _audio_loop pusht deren Snapshot ~15 Hz über SSE `streamdeck:audio` → KEIN 90-ms-HTTP-Poll mehr.
+        self._audio_subs: dict[str, tuple] = {}   # client-token -> (targets:dict, expiry:monotonic)
+        self._audio_last: Optional[dict] = None   # letzter gepushter Frame (Change-Diff → kein Push bei Stille)
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -622,6 +628,7 @@ class DeckCoreService:
         self._eval_task: Optional[asyncio.Task] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._coupling_task: Optional[asyncio.Task] = None
+        self._audio_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._load()
         self._load_integrations()
@@ -2626,6 +2633,79 @@ class DeckCoreService:
         """App-Mute setzen/umschalten (``muted=None`` = toggle)."""
         return self._winaudio.app_set_mute(proc, muted)
 
+    def winaudio_snapshot(self, devices=None, procs=None) -> dict:
+        """EIN gebündelter Live-Snapshot für die Fader/den Mixer: Master + die angefragten Geräte +
+        die angefragten Programme in EINER Antwort — ersetzt N Einzel-Polls (``/volume`` +
+        ``/app_volume?proc=`` je Kachel) durch genau einen Request je Tick. Nutzt die schon vom
+        Helfer gecachten ``snaps`` (jedes Target wird nur „gewatcht" → der Helfer hält + sampelt es);
+        die Reads sind nie blockierend und nie COM. Master ist IMMER dabei (Default-Gerät)."""
+        wa = self._winaudio
+        out = {"available": wa.available(), "master": wa.volume_snapshot(None),
+               "devices": {}, "apps": {}}
+        for d in (devices or []):
+            d = str(d or "").strip()
+            if d and d not in out["devices"]:
+                out["devices"][d] = wa.volume_snapshot(d)
+        for p in (procs or []):
+            p = str(p or "").strip()
+            if p and p not in out["apps"]:
+                out["apps"][p] = wa.app_snapshot(p)
+        return out
+
+    # ── Live-Audio-Push (Variante 2): SSE-Topic streamdeck:audio statt 90-ms-HTTP-Poll ──
+    def set_audio_subscription(self, token: str, devices=None, procs=None,
+                               wavelink: bool = False, all_apps: bool = False) -> dict:
+        """Ein Panel meldet seine AKTUELL sichtbaren Audio-Targets (scoped aufs sichtbare Deck) und hält
+        sie per Keepalive frisch. Der ``_audio_loop`` pusht daraufhin NUR deren Snapshot über
+        ``streamdeck:audio`` — kein 90-ms-HTTP-Poll mehr, der mit dem SSE-Stream um die HTTP/1.1-
+        Verbindungsslots konkurriert. ``token`` = pro Panel-Mount eindeutig (mehrere Panels → Union).
+        Leere Subscription (nichts Audio sichtbar) → Eintrag entfällt → der Loop idlet (kein Helfer/COM)."""
+        token = str(token or "").strip()
+        if not token:
+            return {"ok": False}
+        devs = [str(d) for d in (devices or []) if str(d).strip()]
+        prcs = [str(p) for p in (procs or []) if str(p).strip()]
+        if not devs and not prcs and not wavelink and not all_apps:
+            self._audio_subs.pop(token, None)
+        else:
+            targets = {"devices": devs, "procs": prcs, "wavelink": bool(wavelink), "all_apps": bool(all_apps)}
+            self._audio_subs[token] = (targets, time.monotonic() + _AUDIO_SUB_TTL)
+        return {"ok": True}
+
+    def _audio_sub_union(self) -> Optional[dict]:
+        """Vereinigte, noch gültige Audio-Targets aller Panels (abgelaufene Abos fliegen raus).
+        None = niemand schaut → der Loop pusht nichts (Helfer bleibt idle)."""
+        now = time.monotonic()
+        for t in [t for t, (_, exp) in self._audio_subs.items() if exp <= now]:
+            self._audio_subs.pop(t, None)
+        if not self._audio_subs:
+            return None
+        devices: set = set()
+        procs: set = set()
+        wavelink = all_apps = False
+        for targets, _ in self._audio_subs.values():
+            devices.update(targets.get("devices") or [])
+            procs.update(targets.get("procs") or [])
+            wavelink = wavelink or bool(targets.get("wavelink"))
+            all_apps = all_apps or bool(targets.get("all_apps"))
+        return {"devices": sorted(devices), "procs": sorted(procs), "wavelink": wavelink, "all_apps": all_apps}
+
+    def _build_audio_push(self, union: dict) -> dict:
+        """Live-Snapshot der abonnierten Targets (nicht-blockierende, gecachte Helfer-Reads): Windows-
+        Master/-Geräte/-Apps + optional die ganze App-Session-Liste (Mixer-Deck) + optional Wave-Link-
+        Meter/-State. Spiegelt 1:1, was die Fader/der Mixer vorher per HTTP gepollt haben."""
+        procs = list(union.get("procs") or [])
+        sessions = None
+        if union.get("all_apps"):
+            sessions = self._winaudio.audio_sessions_fast() or []   # NICHT-blockierend (kein 1,2-s-Wait im 15-Hz-Loop)
+            procs = procs + [s.get("proc") for s in sessions if s.get("proc")]
+        out: dict = {"winaudio": self.winaudio_snapshot(union.get("devices"), procs)}
+        if sessions is not None:
+            out["sessions"] = sessions
+        if union.get("wavelink"):
+            out["wavelink"] = {"meters": self.wavelink_meters(), "state": self.wavelink_snapshot()}
+        return out
+
     def app_icon(self, proc: str):
         """PNG-Bytes des App-Icons (aus der laufenden ``.exe`` des Prozesses) — für die Fader-Kacheln.
         Findet die exe per psutil (gecacht), extrahiert das Icon einmalig. None, wenn nicht gefunden."""
@@ -3476,6 +3556,7 @@ class DeckCoreService:
         self._eval_task = asyncio.create_task(self._eval_loop())
         self._sse_task = asyncio.create_task(self._sse_loop())
         self._coupling_task = asyncio.create_task(self._coupling_loop())
+        self._audio_task = asyncio.create_task(self._audio_loop())
         log.info("StreamDeckService gestartet (%d Buttons, Rate %.2fs)",
                  len(self._buttons), self._tick)
 
@@ -3493,7 +3574,7 @@ class DeckCoreService:
             self._wl.close()
         except Exception:  # noqa: BLE001
             pass
-        for t in (self._eval_task, self._sse_task, self._coupling_task):
+        for t in (self._eval_task, self._sse_task, self._coupling_task, self._audio_task):
             if t:
                 t.cancel()
                 try:
@@ -3531,6 +3612,30 @@ class DeckCoreService:
                 log.info("Kopplung: Wave-Link-Main -> Windows-Standard %s", win_id)
         except Exception as e:  # noqa: BLE001
             log.debug("coupling tick fehlgeschlagen: %s", e)
+
+    async def _audio_loop(self) -> None:
+        """~15 Hz: pusht den Live-Snapshot der abonnierten Audio-Targets über ``streamdeck:audio``
+        (Variante 2 — ersetzt den 90-ms-HTTP-Poll der Fader/des Mixers; die Daten reiten auf der schon
+        offenen SSE-Verbindung statt um die HTTP/1.1-Slots zu konkurrieren). Idle, solange KEIN Panel
+        Audio-Targets abonniert (kein Helfer/COM-Zugriff). Change-Diff: bei Stille kein Push. Off-loop in
+        einem Thread, weil die Snapshot-Reads zwar gecacht, aber synchron sind."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(_AUDIO_PUSH_SEC)
+                if self.bus is None:
+                    continue
+                union = self._audio_sub_union()
+                if not union:
+                    self._audio_last = None   # niemand schaut → Reset, damit der erste Frame nach Re-Abo sicher pusht
+                    continue
+                frame = await asyncio.to_thread(self._build_audio_push, union)
+                if frame != self._audio_last:
+                    self._audio_last = frame
+                    self.bus.publish("streamdeck:audio", frame)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001
+                log.debug("audio_loop Fehler: %s", e)
 
     async def _eval_loop(self) -> None:
         while not self._stop.is_set():

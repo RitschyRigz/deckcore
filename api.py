@@ -455,6 +455,27 @@ def build_streamdeck_router(
         schnell fürs Live-VU + den Reglerstand. ``?proc=<procname>`` (z.B. spotify.exe)."""
         return JSONResponse(get_service(request).app_volume(request.query_params.get("proc") or ""))
 
+    @r.get("/api/winaudio/snapshot")
+    def winaudio_snapshot(request: Request) -> JSONResponse:
+        """EIN gebündelter Live-Snapshot: Master + ``?device=<id>`` (mehrfach) + ``?proc=<name>``
+        (mehrfach) in EINER Antwort → {available, master, devices:{id:…}, apps:{proc:…}}. Ersetzt die
+        N Einzel-Polls der Live-Fader/des Mixers durch genau einen Request je Tick (entlastet das
+        HTTP/1.1-6-Verbindungs-Limit am Tablet)."""
+        qp = request.query_params
+        devs = [x for x in qp.getlist("device") if x]
+        procs = [x for x in qp.getlist("proc") if x]
+        return JSONResponse(get_service(request).winaudio_snapshot(devs, procs))
+
+    @r.post("/api/streamdeck/audio_sub")
+    def streamdeck_audio_sub(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Ein Panel meldet seine sichtbaren Audio-Targets → der Server pusht NUR deren Live-Snapshot über
+        das SSE-Topic ``streamdeck:audio`` (statt 90-ms-HTTP-Poll). Body: {token, devices?, procs?,
+        wavelink?, all_apps?}. Keepalive: das Panel re-postet periodisch; leere Targets = abmelden."""
+        b = body or {}
+        return JSONResponse(get_service(request).set_audio_subscription(
+            b.get("token", ""), b.get("devices"), b.get("procs"),
+            bool(b.get("wavelink")), bool(b.get("all_apps"))))
+
     @r.post("/api/winaudio/app_volume")
     def winaudio_app_set_volume(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Stufenloser App-Fader: Lautstärke (0..100) eines Programms setzen. {proc, level}"""

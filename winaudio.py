@@ -165,6 +165,13 @@ class WinAudio:
                 s = self._fresh().get("sessions") or []
         return list(s)
 
+    def audio_sessions_fast(self) -> list:
+        """Wie ``audio_sessions()``, aber OHNE die Erst-Aufruf-Wartezeit — für schnelle Loops (der Audio-
+        Push, ~15 Hz). Sendet den ``@sessions``-Watch (Helfer hält die Liste frisch) und liefert die zuletzt
+        gepushte Liste sofort (leer, bis der Helfer sie ~1 Tick nach dem Watch gesammelt hat)."""
+        self._send({"cmd": "watch", "target": "@sessions"})
+        return list(self._fresh().get("sessions") or [])
+
     def resolve_render_id(self, name_substring: str) -> Optional[str]:
         sub = (name_substring or "").lower()
         if not sub:

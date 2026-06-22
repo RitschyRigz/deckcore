@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
-import { useEventStream } from './sse.js'
+import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
@@ -77,7 +77,9 @@ function FastGraph({ kind, color }) {
   const [pct, setPct] = useState(null)
   const [fps, setFps] = useState(0)
   const [msg, setMsg] = useState(null)
+  const visible = usePageVisible()
   useEffect(() => {
+    if (!visible) return   // Tab/Display aus → den schnellsten Poll (~18 Hz) ganz aussetzen
     let alive = true, n = 0
     const tick = () => {
       getJSON('/api/frametime/series?kind=' + kind).then((d) => {
@@ -91,7 +93,7 @@ function FastGraph({ kind, color }) {
     tick()
     const iv = setInterval(tick, 55)   // ~18 Hz — flüssig + RTSS-näher; Last niedrig (kleiner Ring, ~100 Punkte)
     return () => { alive = false; clearInterval(iv) }
-  }, [kind])
+  }, [kind, visible])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
   // Frametime: FESTES ~2,6-s-Zeitfenster (fps-abhängige Frame-Zahl, da echte Per-Frame-Daten) → ruhiger, RTSS-
   //   ähnlicher Verlauf statt sub-sekündlichem Geflacker. FPS: ~20 s, ausgedünnt + geglättet.
@@ -298,13 +300,19 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const trackRef = useRef(null)
   const movedRef = useRef(false)
   const downYRef = useRef(null)                 // Start-Y eines aktiven Zeigers (null = inaktiv) — Tap/Drag-Guard
+  const downXRef = useRef(null)                 // Start-X — für die Richtungs-Erkennung (vertikal=Fader / horizontal=Wisch)
+  const lockRef = useRef(null)                  // null | 'drag' (vertikal) | 'swipe' (horizontal) — einmal entschieden, fix
   const sentRef = useRef(0)
   const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
   const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
+  const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
+  const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
 
   const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
-  const level = drag != null ? drag : baseLevel
+  // Beim Ziehen = Finger-Wert; kurz nach dem Loslassen = gehaltene Position (kein Zurückspringen, während
+  // Set + Geräte-Roundtrip + nächster Live-Wert unterwegs sind); sonst der Live-State.
+  const level = drag != null ? drag : (optLevel != null ? optLevel : baseLevel)
   const muted = optMute != null ? optMute : !!st.muted
   const mlvl = (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
   const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
@@ -335,6 +343,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [])
+  useEffect(() => () => { if (holdT.current) clearTimeout(holdT.current) }, [])   // Hold-Timer beim Unmount räumen
 
   const levelAt = (clientY) => {
     const el = trackRef.current
@@ -356,24 +365,38 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     e.stopPropagation()
     movedRef.current = false
     downYRef.current = e.clientY
+    downXRef.current = e.clientX
+    lockRef.current = null
+    if (holdT.current) { clearTimeout(holdT.current); holdT.current = null }   // erneut gegriffen → Hold weg
+    setOptLevel(null)
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
   }
   const onMove = (e) => {
     if (downYRef.current == null) return
     e.stopPropagation()
-    if (!movedRef.current && Math.abs(e.clientY - downYRef.current) > 4) movedRef.current = true
-    if (movedRef.current) {
-      const l = levelAt(e.clientY)
-      setDrag(l)
-      push(l, false)
-    }
+    const dy = e.clientY - downYRef.current, dx = e.clientX - (downXRef.current ?? e.clientX)
+    // Richtungs-Lock: die erste klare Bewegung (>8 px) entscheidet — horizontal = Deck-Wisch (Fader NICHT
+    // anfassen, das Panel wechselt das Deck), vertikal = echter Fader-Drag. Danach bleibt die Wahl fix.
+    if (lockRef.current == null && (Math.abs(dx) > 8 || Math.abs(dy) > 8))
+      lockRef.current = Math.abs(dx) > Math.abs(dy) ? 'swipe' : 'drag'
+    if (lockRef.current !== 'drag') return        // 'swipe' oder noch unentschieden → Pegel NICHT verändern
+    movedRef.current = true
+    const l = levelAt(e.clientY)
+    setDrag(l)
+    push(l, false)
   }
   const onUp = (e) => {
     if (downYRef.current == null) return
     e.stopPropagation()
-    downYRef.current = null
+    const swiped = lockRef.current === 'swipe'
+    downYRef.current = null; downXRef.current = null; lockRef.current = null
+    if (swiped) { setDrag(null); return }            // war ein horizontaler Deck-Wisch → Fader-Eingabe verwerfen
     if (movedRef.current) {
-      push(levelAt(e.clientY), true)                 // finalen Wert sicher senden
+      const fin = levelAt(e.clientY)
+      push(fin, true)                                 // finalen Wert sicher senden
+      setOptLevel(fin)                                // Position halten, bis der Live-Wert nachgezogen ist
+      if (holdT.current) clearTimeout(holdT.current)
+      holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
       setOptMute(!muted)
       if (isApp) postJSON('/api/winaudio/app_mute', { proc: proc || '' }).catch(() => {})
@@ -416,36 +439,12 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
 }
 
 // Interaktives Audio-Mixer-Deck (deck.auto==='audio_mixer'): rendert LIVE den Windows-Master + je
-// laufendem Programm einen Fader (minus Ausblend-Liste). Pollt selbst (Liste ~1,5 s; Pegel ~90 ms) →
-// Programme erscheinen/verschwinden automatisch. Reine Panel-Schicht — nutzt dieselbe <Fader>-Kachel.
-// Master IMMER zuerst. Nicht manuell editierbar (kein statisches Item-Modell).
-function AudioMixer({ hidden, gridStyle, w, h, iconOnly }) {
-  const [apps, setApps] = useState([])
-  const [waSnap, setWaSnap] = useState({})       // '' = Windows-Master
-  const [appSnap, setAppSnap] = useState({})     // proc -> {available,level,muted,peak}
-  const hideKey = JSON.stringify((hidden || []).map((x) => String(x).toLowerCase()).sort())
-  // Live-Liste der tönenden Programme (minus Ausblend-Liste) — Apps erscheinen/verschwinden automatisch.
-  useEffect(() => {
-    const hide = new Set(JSON.parse(hideKey))
-    let alive = true
-    const poll = () => getJSON('/api/winaudio/sessions')
-      .then((d) => { if (alive) setApps((d.sessions || []).filter((s) => s.proc && !hide.has(String(s.proc).toLowerCase()))) })
-      .catch(() => {})
-    poll(); const iv = setInterval(poll, 1500)
-    return () => { alive = false; clearInterval(iv) }
-  }, [hideKey])
-  // Pegel/VU schnell: Master + jede sichtbare App.
-  const procKey = JSON.stringify(apps.map((a) => a.proc))
-  useEffect(() => {
-    let alive = true
-    const poll = () => {
-      getJSON('/api/winaudio/volume').then((d) => { if (alive) setWaSnap({ '': d || {} }) }).catch(() => {})
-      JSON.parse(procKey).forEach((p) => getJSON('/api/winaudio/app_volume?proc=' + encodeURIComponent(p))
-        .then((d) => { if (alive) setAppSnap((s) => ({ ...s, [p]: d || {} })) }).catch(() => {}))
-    }
-    poll(); const iv = setInterval(poll, 90)
-    return () => { alive = false; clearInterval(iv) }
-  }, [procKey])
+// laufendem Programm einen Fader (minus Ausblend-Liste). Daten kommen vom Eltern-Panel via SSE-Push
+// (streamdeck:audio mit all_apps) — KEIN eigenes Polling mehr. Reine Render-Schicht, dieselbe <Fader>-
+// Kachel. Master IMMER zuerst. Nicht manuell editierbar (kein statisches Item-Modell).
+function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOnly }) {
+  const hideSet = new Set((hidden || []).map((x) => String(x).toLowerCase()))
+  const apps = (sessions || []).filter((s) => s.proc && !hideSet.has(String(s.proc).toLowerCase()))
   const noop = () => {}
   const fw = Math.max(1, Math.min(4, w || 1)), fh = Math.max(1, Math.min(4, h || 2))   // Fader-Spannweite (Felder), in der Kategorie einstellbar
   // ⚠ .t-key ist per Default quadratisch (aspect-ratio 1/1) — erst die Klasse .spanned löst das auf und
@@ -522,6 +521,15 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
   )
 }
 
+// Wave-Link-Snapshot ({mixes,channels}) → {id:{level(0..100),muted}} fürs Fader-Lesen. Geteilt von
+// früherem Poll und jetzt dem SSE-Push. Pegel/Mute pro Mix UND Channel.
+function buildWlState(snap) {
+  const m = {}
+  for (const x of ((snap || {}).mixes || [])) m[x.id] = { level: Math.round((x.level || 0) * 100), muted: !!x.isMuted }
+  for (const c of ((snap || {}).channels || [])) m[c.id] = { level: Math.round((c.level || 0) * 100), muted: !!c.isMuted }
+  return m
+}
+
 export function TouchDeck() {
   const [decks, setDecks] = useState([])        // volle Templates [{id,label,icon,layout,categories,items}]
   const [defaultDeck, setDefaultDeck] = useState('main')
@@ -536,7 +544,10 @@ export function TouchDeck() {
   const [wlMeters, setWlMeters] = useState({})       // Wave-Link VU-Pegel {id:0..1} (geteilter schneller Poll)
   const [wlState, setWlState] = useState({})         // Wave-Link {id:{level,muted}} (geteilter langsamer Poll)
   const [waSnap, setWaSnap] = useState({})           // Windows-Master {available,level,muted,peak} (geteilter Poll)
-  const [appSnap, setAppSnap] = useState({})         // App-Mixer pro Programm {proc:{available,level,muted,peak}} (geteilter Poll)
+  const [appSnap, setAppSnap] = useState({})         // App-Mixer pro Programm {proc:{available,level,muted,peak}} (SSE-Push)
+  const [mixSessions, setMixSessions] = useState([]) // App-Session-Liste fürs Mixer-Deck (aus dem SSE-Push, all_apps)
+  const tokenRef = useRef('')                         // eindeutiges Panel-Token für die Audio-Subscription (pro Mount)
+  if (!tokenRef.current) tokenRef.current = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36)
   const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
   // Vollbild-Deck: nur das aktive Deck, Chrome weg. Beim Laden den LETZTEN Zustand wiederherstellen
@@ -547,10 +558,11 @@ export function TouchDeck() {
   })
   const [deckFlash, setDeckFlash] = useState('')     // kurz eingeblendeter Deck-Name beim Vollbild-Wisch
   const [slideDir, setSlideDir] = useState(0)        // Slide-Animation beim Side-Scroll: +1 nächstes / -1 voriges / 0 keine
-  const [pull, setPull] = useState(0)                // Pull-to-Refresh: aktuelle Zugdistanz (px) für den Indikator
-  const swipeRef = useRef(null)                       // Touch-Start für „Wisch-zum-Beenden"/Pull
-  const pullRef = useRef(0)                            // live Zugdistanz (Entscheidung beim Loslassen, lag-frei)
+  const [sysMenu, setSysMenu] = useState(false)      // System-Knopf (unten links): Menü mit „Neu laden" + Vollbild auf/zu
+  const swipeRef = useRef(null)                       // Touch-Start für den horizontalen Deck-Wisch
   const flashT = useRef(null)
+  const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
+  const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
     const dks = d.decks || []
@@ -569,61 +581,61 @@ export function TouchDeck() {
     loadReg()
     getJSON('/api/streamdeck/resolved').then((d) => { _accumHist(histRef.current, d.buttons || {}); setVis(d.buttons || {}) }).catch(() => {})
   }, [])
-  useEventStream(['streamdeck:buttons', 'streamdeck:layout'], {
+  useEventStream(['streamdeck:buttons', 'streamdeck:layout', 'streamdeck:audio'], {
     'streamdeck:buttons': (d) => { if (d.buttons) { _accumHist(histRef.current, d.buttons); setVis(d.buttons) } },
     // Deck-Template- ODER Button-Änderung aus dem Editor → Registry neu lesen (hält actionById frisch).
     'streamdeck:layout': () => loadReg(),
+    // Variante 2: Live-Audio (VU/Pegel) kommt jetzt GEPUSHT über DENSELBEN stabilen Stream — kein 90-ms-
+    // HTTP-Poll mehr. Speist die Fader (waSnap/appSnap/wlMeters/wlState) UND das Mixer-Deck (sessions).
+    'streamdeck:audio': (d) => {
+      const wa = d.winaudio || {}
+      const wm = { '': wa.master || {} }
+      for (const id in (wa.devices || {})) wm[id] = wa.devices[id]
+      setWaSnap(wm)
+      setAppSnap(wa.apps || {})
+      if (d.sessions) setMixSessions(d.sessions)
+      if (d.wavelink) { setWlMeters((d.wavelink.meters || {}).meters || {}); setWlState(buildWlState(d.wavelink.state || {})) }
+    },
   })
 
-  // Fader brauchen Live-Daten — EIN geteilter Poll JE QUELLE (nicht pro Kachel), nur wenn eine solche
-  // Fader-Kachel existiert. Wave Link: VU schnell + Level/Mute langsam. Windows-Master: ein Poll (der
-  // Peak ändert schnell, Level/Mute kommen gratis mit). Quelle = der Monitor-Typ des Fader-Buttons.
-  const faderMons = Object.entries(monById).filter(([fid]) => renderById[fid] === 'fader')
+  // Phase 1 (Effizienz): NUR die Fader des SICHTBAREN Decks brauchen Live-Daten — der aktive Tab bzw.
+  // der oberste Ordner im navStack, plus (falls offen) das Radial-Overlay-Deck. Ein Fader auf einem nicht
+  // angezeigten Deck pollte sonst dauerhaft mit → skaliert nicht (viele Decks × Fader). Sichtbare ids:
+  const _tabSel = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
+  const _shownId = navStack.length ? navStack[navStack.length - 1] : _tabSel
+  const _visIds = new Set()
+  for (const _d of [decks.find((d) => d.id === _shownId), overlay && decks.find((d) => d.id === overlay.deck)])
+    for (const it of (_d && _d.items) || []) if (it && !it.hidden) _visIds.add(it.button)
+  // Fader brauchen Live-Daten — EIN geteilter Poll JE QUELLE (nicht pro Kachel), nur für Fader-Kacheln,
+  // die auf dem sichtbaren Deck liegen. Wave Link: VU schnell + Level/Mute langsam. Windows-Master: ein
+  // Poll (Peak ändert schnell, Level/Mute kommen gratis mit). Quelle = der Monitor-Typ des Fader-Buttons.
+  const faderMons = Object.entries(monById).filter(([fid]) => renderById[fid] === 'fader' && _visIds.has(fid))
   const hasWlFader = faderMons.some(([, m]) => { const ty = (m || {}).type; return ty !== 'winaudio_volume' && ty !== 'app_volume' })
-  // Windows-Volume-Fader können je auf ein anderes Gerät zeigen ('' = Standard) → pro DISTINKTEM Gerät ein Poll.
-  // Das Gerät steht an der AKTION des Fader-Buttons (device_id), nicht am Monitor.
+  // Windows-Volume-Fader zeigen je auf ein Gerät ('' = Standard) — das Gerät steht an der AKTION (device_id).
   const waDevices = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'winaudio_volume')
     .map(([fid]) => (actionById[fid] || {}).device_id || ''))]
-  const waKey = JSON.stringify(waDevices)   // [] vs [''] MUSS sich unterscheiden — join('|') macht beide zu '', dann startet der Poll nie
-  // App-Mixer-Fader: pro DISTINKTEM Programm (app_proc, an der Aktion) ein Poll auf den App-Snapshot.
+  // App-Fader: pro Programm (app_proc, an der Aktion).
   const appProcs = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'app_volume')
     .map(([fid]) => (actionById[fid] || {}).app_proc || '').filter(Boolean))]
-  const appKey = JSON.stringify(appProcs)
+  // Mixer-Deck? Dann will das Panel ALLE tönenden Programme (Server zählt die Sessions, all_apps).
+  const _activeMixer = (decks.find((d) => d.id === _shownId) || {}).auto === 'audio_mixer'
+  // Variante 2: statt zu POLLEN meldet das Panel dem Server seine sichtbaren Audio-Targets (scoped) und
+  // hält sie per Keepalive frisch → der Server PUSHT nur deren Live-Snapshot über streamdeck:audio (auf der
+  // schon offenen, stabilen SSE-Verbindung — kein Konkurrieren um HTTP/1.1-Slots, kein 90-ms-Poll). Nichts
+  // sichtbar / Display aus → leere Meldung = abmelden (Server idlet, kein Helfer/COM).
+  const subKey = JSON.stringify([waDevices, appProcs, hasWlFader, _activeMixer, pageVisible])
   useEffect(() => {
-    if (!hasWlFader) return
-    let alive = true
-    const buildState = (snap) => {
-      const m = {}
-      for (const x of (snap.mixes || [])) m[x.id] = { level: Math.round((x.level || 0) * 100), muted: !!x.isMuted }
-      for (const c of (snap.channels || [])) m[c.id] = { level: Math.round((c.level || 0) * 100), muted: !!c.isMuted }
-      return m
+    const token = tokenRef.current
+    const send = (body) => postJSON('/api/streamdeck/audio_sub', body).catch(() => {})
+    if (!(pageVisible && (waDevices.length || appProcs.length || hasWlFader || _activeMixer))) {
+      send({ token }); return   // abmelden
     }
-    const pollMeters = () => getJSON('/api/wavelink/meters').then((d) => { if (alive) setWlMeters(d.meters || {}) }).catch(() => {})
-    const pollState = () => getJSON('/api/wavelink/state').then((d) => { if (alive) setWlState(buildState(d)) }).catch(() => {})
-    pollMeters(); pollState()
-    const im = setInterval(pollMeters, 90), is = setInterval(pollState, 1600)
-    return () => { alive = false; clearInterval(im); clearInterval(is) }
-  }, [hasWlFader])
-  useEffect(() => {
-    if (!waDevices.length) return
-    let alive = true
-    const poll = () => waDevices.forEach((dev) =>
-      getJSON('/api/winaudio/volume' + (dev ? '?device=' + encodeURIComponent(dev) : ''))
-        .then((d) => { if (alive) setWaSnap((s) => ({ ...s, [dev]: d || {} })) }).catch(() => {}))
-    poll()
-    const iv = setInterval(poll, 90)
-    return () => { alive = false; clearInterval(iv) }
-  }, [waKey])
-  useEffect(() => {
-    if (!appProcs.length) return
-    let alive = true
-    const poll = () => appProcs.forEach((proc) =>
-      getJSON('/api/winaudio/app_volume?proc=' + encodeURIComponent(proc))
-        .then((d) => { if (alive) setAppSnap((s) => ({ ...s, [proc]: d || {} })) }).catch(() => {}))
-    poll()
-    const iv = setInterval(poll, 90)
-    return () => { alive = false; clearInterval(iv) }
-  }, [appKey])
+    const body = { token, devices: waDevices.filter(Boolean), procs: appProcs, wavelink: hasWlFader, all_apps: _activeMixer }
+    send(body)                                        // sofort abonnieren …
+    const iv = setInterval(() => send(body), 5000)    // … + Keepalive (Server-TTL 12 s)
+    return () => clearInterval(iv)
+  }, [subKey])
+  useEffect(() => () => { postJSON('/api/streamdeck/audio_sub', { token: tokenRef.current }).catch(() => {}) }, [])   // Unmount → abmelden
 
   // Vollbild: body-Klasse umschalten (die Host-Hülle blendet darüber ihre EIGENE Nav aus), Escape
   // beendet (Desktop). Aufräumen beim Unmount, damit die Klasse nie hängenbleibt.
@@ -665,32 +677,26 @@ export function TouchDeck() {
     try { const u = new URL(location.href); u.searchParams.set('_r', String(Date.now())); location.replace(u.toString()) }
     catch (_) { location.reload() }
   }
-  // EINE Top-Pull-Geste (Entscheidung beim Loslassen → kein Konflikt): kurz ziehen = Vollbild verlassen
-  // (nur im Vollbild), WEIT ziehen = Pull-to-Refresh (neu laden). Greift nur am Deck-Anfang (scrollTop≈0),
-  // normales Scrollen/Tippen bleibt unberührt. Plus: horizontaler Wisch = Deck wechseln (nur Vollbild).
-  const PULL_EXIT = 75, PULL_REFRESH = 150
+  // Horizontaler Wisch = Deck wechseln (nur Vollbild, Top-Level). Die früheren VERTIKALEN Pull-Gesten
+  // (Refresh / Vollbild-raus) sind RAUS — sie kollidierten mit dem vertikalen Fader-Ziehen. Das macht jetzt
+  // der immer sichtbare System-Knopf unten links (↻ Neu laden / ⛶ Vollbild).
   const onTouchStart = (e) => {
     const t = e.touches && e.touches[0]
-    swipeRef.current = t ? { x: t.clientX, y: t.clientY, top: ((e.currentTarget && e.currentTarget.scrollTop) || 0) <= 2 } : null
-    pullRef.current = 0
+    swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null
   }
   const onTouchMove = (e) => {
     const s = swipeRef.current; if (!s) return
     const t = e.touches && e.touches[0]; if (!t) return
     const dy = t.clientY - s.y, dx = t.clientX - s.x
+    // Klar horizontale Geste → als Wisch markieren: ein Button-Tap, der gleich danach feuert, wird verworfen
+    // (die Fader regeln das selbst über ihren Richtungs-Lock). Schon ab 24 px, damit der Schutz früh greift.
+    if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 1.2) swipeAtRef.current = Date.now()
     // Horizontaler Wisch (klar seitlich) im Vollbild auf Top-Level → Deck wechseln (eine Geste = ein Wechsel).
     if (fullscreen && !navStack.length && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null; pullRef.current = 0; setPull(0); return
+      cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null
     }
-    // Vertikaler Pull von oben → Indikator wachsen lassen (Aktion erst beim Loslassen).
-    if (s.top && dy > 8 && dy > Math.abs(dx) * 1.5) { pullRef.current = dy; setPull(dy) }
-    else if (pullRef.current) { pullRef.current = 0; setPull(0) }
   }
-  const onTouchEnd = () => {
-    const p = pullRef.current; pullRef.current = 0; swipeRef.current = null; setPull(0)
-    if (p > PULL_REFRESH) { hardReload(); return }
-    if (fullscreen && p > PULL_EXIT) setFullscreen(false)
-  }
+  const onTouchEnd = () => { swipeRef.current = null }
   // ⛶ Vollbild-Knopf (rechts in der Deck-Leiste). Im Vollbild selbst ausgeblendet → Rückkehr per Wisch.
   const FsBtn = () => (
     <button class="t-fs-btn" title="Vollbild" aria-label="Vollbild"
@@ -705,6 +711,7 @@ export function TouchDeck() {
 
   // EINHEITLICHER Tap-Handler (Haupt-Raster UND Radial): Ordner → navigieren; sonst → Press.
   const onTap = async (id, evt) => {
+    if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
       if ((a.mode || 'replace') === 'radial') {
@@ -815,13 +822,6 @@ export function TouchDeck() {
   return (
     <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
          onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
-      {pull > 0 && (
-        <div class={'t-ptr' + (pull > 150 ? ' armed' : '')} style={`height:${Math.min(pull, 80)}px`}>
-          {pull > 150 ? '↻ Loslassen zum Neuladen'
-            : (fullscreen && pull > 75 ? '⤓ Loslassen: Vollbild aus'
-            : '↓ Weiter ziehen zum Neuladen')}
-        </div>
-      )}
       {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
       {navStack.length > 0 ? (
         <div class="t-nav">
@@ -845,7 +845,8 @@ export function TouchDeck() {
       )}
       <div class={'t-deck-body' + (slideDir > 0 ? ' t-slide-next' : slideDir < 0 ? ' t-slide-prev' : '')} key={shownId}>
         {active.auto === 'audio_mixer'
-          ? <AudioMixer hidden={active.mixer_hidden} gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} iconOnly={active.mixer_icon_only} />
+          ? <AudioMixer hidden={active.mixer_hidden} sessions={mixSessions} waSnap={waSnap} appSnap={appSnap}
+                        gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} iconOnly={active.mixer_icon_only} />
           : !(active.items || []).length
           ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
           : freeMode ? (
@@ -863,6 +864,24 @@ export function TouchDeck() {
             ))
           )}
       </div>
+      {/* System-Knopf unten links — IMMER sichtbar (auch im Vollbild). Ersetzt die vertikalen Pull-Gesten:
+          Menü (öffnet nach oben) mit „Neu laden" + Vollbild auf/zu. (Verbindungen bleiben der native ☰-Griff.) */}
+      {sysMenu && <div class="t-sysmenu-backdrop" onClick={() => setSysMenu(false)} />}
+      {sysMenu && (
+        <div class="t-sysmenu">
+          <button class="t-sysmenu-item" onClick={() => { setSysMenu(false); hardReload() }}>↻ Neu laden</button>
+          <button class="t-sysmenu-item" onClick={() => { setSysMenu(false); setFullscreen((f) => !f) }}>
+            {fullscreen ? '⛶ Vollbild beenden' : '⛶ Vollbild'}
+          </button>
+          {typeof window !== 'undefined' && window.DeckHostNative && window.DeckHostNative.hosts && (
+            <button class="t-sysmenu-item" onClick={() => { setSysMenu(false); try { window.DeckHostNative.hosts() } catch (_) {} }}>
+              🔌 Verbindungen
+            </button>
+          )}
+        </div>
+      )}
+      <button class={'t-sysbtn' + (sysMenu ? ' open' : '')} title="System" aria-label="System"
+              onClick={(e) => { e.stopPropagation(); setSysMenu((v) => !v) }}>☰</button>
       {overlay && overlayDeck && (
         <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById}
                     anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />

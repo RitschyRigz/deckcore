@@ -1,4 +1,19 @@
-import { useEffect, useRef } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
+
+// Seiten-Sichtbarkeit: true, solange der Tab/das Display aktiv ist. Tablet-Screen aus oder App im
+// Hintergrund → false. Die schweren Live-Polls (Audio-VU, Fader, Frametime) hängen sich daran auf und
+// PAUSIEREN, wenn niemand hinschaut — spart Akku, Funk und die HTTP/1.1-Verbindungsslots. Der SSE-Stream
+// selbst bleibt bewusst offen (eine billige Verbindung; der Heartbeat-Watchdog hält sie gesund).
+export function usePageVisible() {
+  const [vis, setVis] = useState(() => (typeof document === 'undefined' ? true : !document.hidden))
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const on = () => setVis(!document.hidden)
+    document.addEventListener('visibilitychange', on)
+    return () => document.removeEventListener('visibilitychange', on)
+  }, [])
+  return vis
+}
 
 // Gemeinsame SSE-Anbindung an die Host-App (/api/events) für Live-Topics (Transkripte, Audio-VU,
 // Health, Activity, Musik …). Pro Mount EINE EventSource mit genau den gebrauchten Topics
