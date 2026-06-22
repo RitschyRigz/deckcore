@@ -1637,6 +1637,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       {it.id === 'audio' && <AudioMixerControl onReload={onReload} />}
       {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
       {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
+      {it.enabled && el && el.available && el.note && <p class="hint" style="margin:10px 0 0">{el.note}</p>}
       {it.enabled && el && el.available && (
         <>
           {it.id === 'audio' && <div class="sd-int-grp-h" style="margin-top:16px;border-top:0.5px solid var(--line);padding-top:12px"><span>📌 Feste Fader-Buttons erstellen <span class="muted">— landen im Pool, auf jedes Deck ziehbar (grau, wenn App aus)</span></span></div>}

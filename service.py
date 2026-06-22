@@ -924,6 +924,30 @@ class DeckCoreService:
                 for op in el.get("options", []):
                     if op.get("key") == "cameras":
                         op["default"] = min(max(cams_seen) + 1, 4)
+            # Live-Discovery (opportunistisch): OBSBOT Center meldet pro Slot Verbindung + Name, WENN es
+            # antwortet. Erkannte Namen als Hinweis + (nur bei noch leerem Pool) als Anzahl-Vorbelegung; die
+            # manuelle Anzahl bleibt Fallback/Override. EHRLICH: Steuerung läuft live, der Tracking-Status
+            # ist deck-getrieben (OBSBOT liefert dafür keine OSC-Rückmeldung).
+            try:
+                _st = self._obsbot.status()
+            except Exception:  # noqa: BLE001
+                _st = {}
+            _det = sorted((int(di), str((info or {}).get("name") or "").strip())
+                          for di, info in ((_st or {}).get("devices") or {}).items()
+                          if (info or {}).get("connected"))
+            if _det and not cams_seen:
+                for op in el.get("options", []):
+                    if op.get("key") == "cameras":
+                        op["default"] = min(max(d for d, _ in _det) + 1, 4)
+            _names = [nm for _, nm in _det if nm]
+            _honest = ("Steuerung läuft live; der Tracking-Status ist deck-getrieben "
+                       "(OBSBOT meldet ihn nicht zurück).")
+            if _names:
+                el["note"] = "🔍 Erkannt: " + ", ".join(_names) + " · " + _honest
+            elif (_st or {}).get("reachable"):
+                el["note"] = "🔍 OBSBOT erreichbar — Geräteliste lädt, ggf. erneut öffnen. " + _honest
+            else:
+                el["note"] = _honest
         return el
 
     def _elements_raw(self, iid: str) -> dict:
@@ -2449,7 +2473,9 @@ class DeckCoreService:
         """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
         Tracking-Toggle + Wake/Sleep. Jeder Button SPIEGELT den Live-Status (Monitor ``obsbot_cam``):
         App/OSC nicht erreichbar → 🔌 dunkel · Kamera schläft → 💤 gedimmt · bereit → Cam-Farbe.
-        Der Tracking-Button zeigt zusätzlich den ECHTEN AN/AUS-Zustand (``obsbot_track``, Readback).
+        Der Tracking-Button zeigt den zuletzt ÜBERS DECK geschalteten Zustand (``obsbot_track``,
+        deck-getrieben — OBSBOT liefert KEINEN OSC-Tracking-Readback; verifiziert 2026-06-20).
+        Kamera-Labels = echter Gerätename, wenn OBSBOT Center antwortet, sonst „Cam N".
         Farben: Cam 1 blau · Cam 2 violett · Cam 3 türkis · Cam 4 orange. Idempotent (id ``obsbot_c<d>_<key>``)."""
         n = max(1, min(int(cameras or 2), 4))
         COLORS = ["#3a9bf0", "#a855f7", "#22c6c6", "#f59e0b"]   # blau / violett / türkis / orange
@@ -2457,10 +2483,21 @@ class DeckCoreService:
         pool_by_id = {b.get("id"): b for b in self._buttons}
         created = updated = 0
         cats_used: list[str] = []
+        # Live-Namen je Kamera (opportunistisch): OBSBOT Center meldet pro Slot einen Namen, wenn es
+        # antwortet → als Button-Label statt „Cam N" (nur NEUE Buttons; bestehende behalten ihr Label via
+        # _regen_preserve). Ohne erreichbares Center bleibt es „Cam N" — kein Fake-Name.
+        dev_names: dict[int, str] = {}
+        try:
+            for di, info in (self._obsbot.status().get("devices") or {}).items():
+                nm = str((info or {}).get("name") or "").strip()
+                if nm and (info or {}).get("connected"):
+                    dev_names[int(di)] = nm
+        except Exception:  # noqa: BLE001
+            pass
         for d in range(n):
             col = COLORS[d % len(COLORS)]
             cat = f"📷 Kamera {d + 1}"
-            camlbl = f"Cam {d + 1}"
+            camlbl = dev_names.get(d) or f"Cam {d + 1}"
             if cat not in cats_used:
                 cats_used.append(cat)
             # Normale Buttons (Status über obsbot_cam): 3 Presets (Tiny 3 meldet 3 Speicherplätze) + Zentrieren + Wake/Sleep

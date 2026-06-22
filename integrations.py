@@ -110,7 +110,9 @@ CORE_INTEGRATIONS = [
     },
     {
         "id": "obsbot", "emoji": "📷", "label": "OBSBOT",
-        "description": "OBSBOT-Kameras steuern: Presets, Zentrieren, Wake/Sleep, Tracking-Toggle (OSC).",
+        "description": "OBSBOT-Kameras steuern: Presets, Zentrieren, Wake/Sleep, Tracking-Toggle (OSC). "
+                       "Steuerung läuft live; der Tracking-Status ist deck-getrieben (OBSBOT meldet ihn "
+                       "nicht zurück).",
         "actions": ["obsbot"], "monitors": ["obsbot_cam", "obsbot_track"],
         "requires": "OBSBOT Center läuft + OSC aktiv (UDP-Server, Standard-Port 16284).",
         "generator": {"endpoint": "/api/streamdeck/generate/obsbot",
