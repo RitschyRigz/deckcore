@@ -517,11 +517,11 @@ def _smart_classify(name: str, unit: str) -> dict:
 # HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → der Auto-Import kuratiert ab hier.
 _HW_AUTO_CAP = 50
 _HWINFO_ENABLE_STEPS = (
-    "Empfohlen (kostenlos, ohne Admin, ohne HWiNFO-Pro): in HWiNFO die gewünschten Sensoren in die "
-    "Registry / ans Gadget ausgeben — HWiNFO → Einstellungen → Sensoren periodisch in die Registry "
-    "schreiben (VSB/Gadget) und die gewünschten Sensoren markieren. Das liest die App OHNE Shared "
-    "Memory. Optional (eher HWiNFO-Pro): Shared Memory Support liest alle Sensoren auf einmal — läuft "
-    "HWiNFO als Administrator, muss die App ebenfalls erhöht laufen. Danach hier erneut öffnen.")
+    "Empfohlen (kostenlos, ohne Admin/Pro): im HWiNFO-SENSOREN-Fenster (nicht das Hauptfenster) auf "
+    "Einstellungen → Reiter 'HWiNFO Gadget' → unten 'Aktivieren der Berichterstellung im Gadget' anhaken; "
+    "dann bei jedem gewünschten Sensor 'Wert zum Gadget melden' ankreuzen. Danach hier erneut öffnen. "
+    "Optional (HWiNFO-Pro): 'Shared Memory Support' liest alle Sensoren auf einmal (HWiNFO als Admin → "
+    "App muss ebenfalls erhöht laufen).")
 _HWINFO_SETUP_HINT = ("HWiNFO nicht erreichbar oder keine Sensoren freigegeben. So aktivierst du sie: "
                       + _HWINFO_ENABLE_STEPS)
 

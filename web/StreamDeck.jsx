@@ -2331,10 +2331,11 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
             </select>
           </div>
           {!hwSensors.length && (
-            <p class="muted sd-help">Keine HWiNFO-Sensoren gefunden. In <b>HWiNFO</b> eine Quelle aktivieren:
-              entweder <b>„Shared Memory Support"</b> (alle Sensoren — die App muss dann ggf. als Admin laufen)
-              ODER <b>regelmäßig in die Registry schreiben</b> (Gadget, ohne Admin) und die gewünschten Sensoren
-              markieren. Danach hier neu öffnen.</p>
+            <p class="muted sd-help">Keine HWiNFO-Sensoren gefunden. <b>Empfohlen (gratis, ohne Admin):</b> im
+              HWiNFO-<b>Sensoren</b>-Fenster → <b>Einstellungen</b> → Reiter <b>HWiNFO Gadget</b> → unten
+              <b>„Aktivieren der Berichterstellung im Gadget"</b> anhaken, dann bei jedem Sensor
+              <b>„Wert zum Gadget melden"</b> ankreuzen. <b>Optional (Pro):</b> „Shared Memory Support".
+              Danach hier neu öffnen.</p>
           )}
         </>
       )}
