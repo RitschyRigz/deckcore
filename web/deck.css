@@ -199,7 +199,7 @@
 .sd-gs .grid-stack-item:hover .sd-tile-acts { display: flex; }
 /* Text-/Label-Kachel (freier Text, keine Aktion). Schrift-Größe kommt inline (skaliert mit Kachel-Höhe). */
 .t-key.t-widget { border: 0; box-shadow: none; cursor: default; padding: 4px 8px; justify-content: center; align-items: center; }
-.t-key.cqsize { container-type: inline-size; }   /* Schrift in cqw skaliert mit der Kachel-BREITE (4 Felder = 4×) */
+.t-key.cqsize, .sd-prev-key.cqsize { container-type: inline-size; }   /* cqw skaliert mit der Kachel-BREITE — auch in der Editor-Vorschau (Fader/Graph) */
 .sd-prev-key.t-widget { container-type: inline-size; border: 0; box-shadow: none; align-items: center; justify-content: center; }
 .t-label-text { font-weight: 800; text-align: center; line-height: 1.15; color: var(--fg); width: 100%; word-break: break-word; }
 /* ── Uhr-Kachel: dunkler Verlauf + Eck-Brackets + Glow-Ziffern (gleiches Design wie Flat-/Fader-Buttons) ── */
@@ -225,13 +225,17 @@
 .t-readout { position: relative; box-sizing: border-box; width: 100%; height: 100%;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3cqw;
   padding: 8cqw 6cqw; border-radius: 16px; overflow: hidden; container-type: inline-size; }
-.t-readout.framed { background: linear-gradient(165deg, #171c26, #0c0f14);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
-.t-readout.framed::before, .t-readout.framed::after { content: ""; position: absolute;
-  width: 15cqw; height: 15cqw; min-width: 11px; min-height: 11px; max-width: 22px; max-height: 22px;
-  pointer-events: none; opacity: .85; }
-.t-readout.framed::before { top: 6px; left: 6px; border-top: 2px solid var(--acc); border-left: 2px solid var(--acc); border-radius: 6px 0 0 0; }
-.t-readout.framed::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc); border-right: 2px solid var(--acc); border-radius: 0 0 6px 0; }
+/* Nur der Karten-Hintergrund — die Verzierung (Rahmen/Glow/Brackets) liefert der Kachel-Stil .s-* darunter.
+   ⚠ KEINE eigene box-shadow hier: die hätte höhere Spezifität (.t-readout.framed = 2 Klassen) als .s-innerglow
+   (1 Klasse) und würde Innen-Glow/Neon/Plate-Glow schlucken (genau der „Readout hat kein Glow"-Bug). */
+.t-readout.framed { background: linear-gradient(165deg, var(--bg3), var(--bg)); }
+/* Verzierung (Rahmen/Brackets/Glow) kommt aus dem gewählten Kachel-Stil .s-* (global/Deck-Look ODER pro
+   Taste opts.skin) — EXAKT wie flache Tasten + Fader. --acc kommt vom Button (theme-bindbar). */
+/* Rahmen/Stil AUS (Look frame=false ODER per-Taste „Rahmen aus") → Status-Karte ohne Verzierung + Karte. */
+body[data-frame="off"] .t-readout, .t-key.noframe .t-readout {
+  background: transparent !important; border: 0 !important; box-shadow: none !important; clip-path: none !important; }
+body[data-frame="off"] .t-readout::before, body[data-frame="off"] .t-readout::after,
+.t-key.noframe .t-readout::before, .t-key.noframe .t-readout::after { display: none !important; }
 .t-readout-icon { font-size: 30cqw; line-height: 1; filter: drop-shadow(0 0 7px var(--acc)); }
 .t-readout-v { font-weight: 800; text-align: center; line-height: 1.12; color: var(--fg);
   text-shadow: 0 0 9px var(--acc), 0 1px 2px rgba(0,0,0,.65); width: 100%; word-break: break-word;
@@ -502,11 +506,11 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 
 /* ===== Graph-/Sparkline-Kachel (button.render = "graph") ===== */
 /* Verlaufskurve des Monitor-Werts; dunkle Kachel, farbige Linie (= Status-/Schwellwert-Farbe). */
-.t-key.is-graph { justify-content: flex-start; align-items: stretch; padding: 7px 8px 5px; gap: 3px;
+.t-key.is-graph, .sd-prev-key.is-graph { justify-content: flex-start; align-items: stretch; padding: 7px 8px 5px; gap: 3px;
   border-color: var(--line); }
-.t-key.is-graph .t-key-title { font-size: calc(12px * var(--sd-font)); font-weight: 800; text-align: left;
+.t-key.is-graph .t-key-title, .sd-prev-key.is-graph .t-key-title { font-size: calc(12px * var(--sd-font)); font-weight: 800; text-align: left;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.t-key.is-graph .t-key-label { margin-top: auto; opacity: .7; }
+.t-key.is-graph .t-key-label, .sd-prev-key.is-graph .t-key-label { margin-top: auto; opacity: .7; }
 .t-spark { width: 100%; flex: 1 1 auto; min-height: 16px; display: block; }
 .t-spark-wait { width: 100%; flex: 1 1 auto; min-height: 16px; opacity: .35;
   background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 6px); border-radius: 4px; }
@@ -545,13 +549,19 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 /* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */
 .t-fader-key { padding: 0; overflow: hidden; }
-/* Fader-Kachel: dunkler Verlauf + Eck-Brackets (Akzentfarbe = --acc, kommt vom Button). */
+/* Fader-Kachel: dunkler Verlauf. Die VERZIERUNG (Rahmen/Brackets/Glow) kommt jetzt aus dem gewählten
+   Kachel-Stil .s-* (globaler/per-Deck-Look ODER pro Taste opts.skin) — EXAKT wie bei flachen Tasten.
+   --acc kommt vom Button (resolveColor → Theme-Schlüsselwörter möglich); --acc-dim (unteres Fill-Ende)
+   wird via color-mix aus --acc abgeleitet → folgt damit auch Theme-Farben. */
 .t-fader { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
   padding: 10cqw 5cqw; gap: 5cqw; align-items: center; cursor: ns-resize; touch-action: none;
-  background: linear-gradient(165deg, #171c26, #0c0f14); }
-.t-fader::before, .t-fader::after { content: ""; position: absolute; width: 18cqw; height: 18cqw; max-width: 24px; max-height: 24px; pointer-events: none; opacity: .75; }
-.t-fader::before { top: 6px; left: 6px; border-top: 2px solid var(--acc, var(--accent2)); border-left: 2px solid var(--acc, var(--accent2)); border-radius: 6px 0 0 0; }
-.t-fader::after { bottom: 6px; right: 6px; border-bottom: 2px solid var(--acc, var(--accent2)); border-right: 2px solid var(--acc, var(--accent2)); border-radius: 0 0 6px 0; }
+  --acc-dim: color-mix(in srgb, var(--acc, var(--accent2)) 45%, #06080c);
+  background: linear-gradient(165deg, var(--fbg-top, var(--bg3)), var(--fbg-bot, var(--bg))); }
+/* Rahmen/Stil AUS (globaler/per-Deck-Look frame=false ODER per-Taste „Rahmen aus") → Fader OHNE
+   Stil-Verzierung, aber Track/Fill/VU bleiben (ein rahmenloser Fader ist trotzdem ein Fader). */
+body[data-frame="off"] .t-fader, .t-key.noframe .t-fader { border: 0 !important; box-shadow: none !important; clip-path: none !important; }
+body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
+.t-key.noframe .t-fader::before, .t-key.noframe .t-fader::after { display: none !important; }
 .t-fader-name { font-size: 10cqw; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; line-height: 1.1;
   color: var(--fg); opacity: .82; max-width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 10%;
@@ -566,12 +576,13 @@ body.dc-deck-fs .t-deck { padding: 10px; }
 .t-fader-vu { position: relative; width: 26cqw; max-width: 34px; padding: 3cqw 0;
   display: flex; flex-direction: column-reverse; gap: 2cqw; }
 .t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); transition: background .08s, box-shadow .08s; }
-.t-vu-seg.on.g { background: #34d39a; box-shadow: 0 0 6px rgba(52,211,154,.85); }
-.t-vu-seg.on.y { background: #ffc24b; box-shadow: 0 0 6px rgba(255,194,75,.85); }   /* oberes Drittel: amber */
-.t-vu-seg.on.r { background: #ff5d5d; box-shadow: 0 0 7px rgba(255,93,93,.9); }     /* oberes Viertel: rot */
-/* Roter Max-Schleppzeiger (Peak-Hold) — Position kommt per rAF aus der Fader-Komponente. */
-.t-vu-peak { position: absolute; left: -2px; right: -2px; height: 2px; border-radius: 2px; background: #ff2f2f;
-  box-shadow: 0 0 8px rgba(255,47,47,.95), 0 0 2px #fff; pointer-events: none; opacity: 0; }
+/* VU-Zonen-Farben = Theme-Vars (--vu-low/mid/high), im Deck-Theme-Editor frei einstellbar. */
+.t-vu-seg.on.g { background: var(--vu-low); box-shadow: 0 0 6px color-mix(in srgb, var(--vu-low) 85%, transparent); }
+.t-vu-seg.on.y { background: var(--vu-mid); box-shadow: 0 0 6px color-mix(in srgb, var(--vu-mid) 85%, transparent); }   /* oberes Drittel */
+.t-vu-seg.on.r { background: var(--vu-high); box-shadow: 0 0 7px color-mix(in srgb, var(--vu-high) 90%, transparent); } /* oberes Viertel */
+/* Max-Schleppzeiger (Peak-Hold) — folgt der VU-Spitzenfarbe. Position kommt per rAF aus der Fader-Komponente. */
+.t-vu-peak { position: absolute; left: -2px; right: -2px; height: 2px; border-radius: 2px; background: var(--vu-high);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--vu-high) 95%, transparent), 0 0 2px #fff; pointer-events: none; opacity: 0; }
 .t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--fg); opacity: .9; font-weight: 700; min-height: 1em; }
 .t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
 /* Bild-Emote im Fader-Symbolslot (statt Emoji) — fügt sich wie v.image bei normalen Buttons ein. */
@@ -619,6 +630,9 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   cursor: pointer; padding: 0; transition: transform .1s; }
 .sd-theme-sw:hover { transform: scale(1.18); }
 .sd-theme-sw.sel { outline: 2px solid var(--fg); outline-offset: 1px; }
+/* „(Theme)"-Reset-Chip: keine eigene Farbe → folgt dem Theme. Transparent mit ∅-Symbol. */
+.sd-sw-none { background: transparent; color: var(--muted); font-size: 11px; line-height: 14px;
+  display: inline-flex; align-items: center; justify-content: center; }
 
 /* ── Glyph-Picker (Modal): Suche + Kategorien + Symbol-Raster ── */
 .sd-glyph-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.55);

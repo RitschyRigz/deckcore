@@ -182,11 +182,12 @@ _TILE_SKINS = ("brackets", "neon", "double", "inset", "underline", "dashed", "gr
 # Theme-CSS-Variablen, die ein Deck-Theme-Override setzen darf (Farben). Muss zur Huelle (theme.js) +
 # TouchDeck (THEME_VAR_KEYS) passen. Werte werden gegen _is_hex_color geprueft (import-sicher).
 _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
-                   "--accent", "--accent2", "--ok", "--warn", "--err", "--live")
+                   "--accent", "--accent2", "--ok", "--warn", "--err", "--live",
+                   "--off", "--vu-low", "--vu-mid", "--vu-high")
 # Globaler „Look" (Deck-Verzierung) — generische deckcore-Einstellung, von BEIDEN Huellen (Cockpit + RigzDeck)
 # im geteilten Editor gesetzt. Druck-Modi/Farb-Schluesselwoerter muessen zu deck.css passen.
 _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
-_LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live")
+_LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live", "off")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
                  "folder": True, "folderColor": "#c8a44e", "frame": True}
 
@@ -229,6 +230,11 @@ def _is_hex_color(c) -> bool:
         return False
 
 
+def _is_color(c) -> bool:
+    """Gueltige Button-/Look-/Fader-Farbe: Theme-Schluesselwort (folgt dem Theme) ODER feste Hex."""
+    return c in _LOOK_COLOR_KW or _is_hex_color(c)
+
+
 def _sanitize_opts(o) -> dict:
     o = o if isinstance(o, dict) else {}
     out = {}
@@ -236,8 +242,11 @@ def _sanitize_opts(o) -> dict:
         out["font"] = o["font"]
     if o.get("size") in ("s", "m", "l", "xl"):
         out["size"] = o["size"]
-    if _is_hex_color(o.get("color")):
+    if _is_color(o.get("color")):                      # Widget-/Readout-Akzent: Theme-Keyword ODER Hex
         out["color"] = o["color"]
+    for k in ("bg", "vuLow", "vuMid", "vuHigh"):       # Per-Fader-Overrides (Hintergrund + 3 VU-Zonen)
+        if _is_color(o.get(k)):
+            out[k] = o[k]
     if o.get("mode") in _CLOCK_MODES:
         out["mode"] = o["mode"]
     if "seconds" in o:
@@ -309,14 +318,14 @@ def _wl_mix_def(mix_id: str, name: str) -> dict:
     return {"id": "wl_mix_" + _slug(mix_id), "label": name, "render": "fader",
             "action": {"type": "wavelink", "wl_action": "mix_mute", "mix_id": mix_id},
             "monitor": {"type": "wavelink_level", "target_type": "mix", "id": mix_id},
-            "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "#4ea1ff"}}
+            "states": [], "default": {"icon": "🎚", "title": "{value}%", "color": "accent"}}
 
 
 def _wl_chan_def(chan_id: str, name: str) -> dict:
     return {"id": "wl_chan_" + _slug(chan_id), "label": name, "render": "fader",
             "action": {"type": "wavelink", "wl_action": "channel_mute", "channel_id": chan_id},
             "monitor": {"type": "wavelink_level", "target_type": "channel", "id": chan_id},
-            "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "#a06bff"}}
+            "states": [], "default": {"icon": "🎙", "title": "{value}%", "color": "accent2"}}
 
 
 def _wl_out_def(dev_id: str, name: str) -> dict:
@@ -324,19 +333,19 @@ def _wl_out_def(dev_id: str, name: str) -> dict:
             "action": {"type": "wavelink", "wl_action": "main_output",
                        "output_device_id": dev_id, "output_id": dev_id},
             "monitor": {"type": "wavelink_main_output", "output_device_id": dev_id},
-            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
-            "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"}}
+            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "ok"}],
+            "default": {"icon": "🔈", "title": name, "color": "off"}}
 
 
 def _wl_couple_def() -> dict:
     return {"id": "wl_couple_toggle", "label": "Kopplung Win↔WL",
             "action": {"type": "flag_toggle", "flag": "wavelink_follow_default.flag"},
             "monitor": {"type": "flag", "flag": "wavelink_follow_default.flag"},
-            "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "#1f9d55"}],
-            "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "#2a2a2a"}}
+            "states": [{"when": {"op": "truthy"}, "icon": "🔗", "title": "Kopplung AN", "color": "ok"}],
+            "default": {"icon": "🔓", "title": "Kopplung AUS", "color": "off"}}
 
 
-def _obs_scene_def(bid: str, name: str, active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
+def _obs_scene_def(bid: str, name: str, active_color: str = "ok", idle_color: str = "off") -> dict:
     """OBS-Szenen-Wechsel-Button (Aktiv-Highlight via obs_scene-Monitor). Wird von populate_obs_scenes
     UND generate_obs_scene_buttons genutzt → EINE Wahrheit. ``bid`` bestimmt der Aufrufer (Slug-
     Kollisions-Logik); ``pool_cat``/Deck-Platzierung setzt ebenfalls der Aufrufer."""
@@ -354,7 +363,7 @@ def _winaudio_master_def(bid: str) -> dict:
     return {"id": bid, "label": "Windows-Lautstärke", "render": "fader",
             "action": {"type": "winaudio", "wa_action": "toggle_mute"},
             "monitor": {"type": "winaudio_volume"},
-            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "#34d39a"}}
+            "states": [], "default": {"icon": "🔊", "title": "{value}%", "color": "ok"}}
 
 
 def _winaudio_device_def(dev_id: str, name: str) -> dict:
@@ -363,8 +372,8 @@ def _winaudio_device_def(dev_id: str, name: str) -> dict:
     return {"id": "wa_dev_" + _slug(dev_id), "label": name,
             "action": {"type": "winaudio", "wa_action": "set_default", "device_name": name},
             "monitor": {"type": "winaudio_default", "device_name": name},
-            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "#1f9d55"}],
-            "default": {"icon": "🔈", "title": name, "color": "#2a2a2a"}}
+            "states": [{"when": {"op": "truthy"}, "icon": "🔊", "title": name, "color": "ok"}],
+            "default": {"icon": "🔈", "title": name, "color": "off"}}
 
 
 def _clamp_num(v, lo, hi, fallback):
@@ -1375,9 +1384,9 @@ class DeckCoreService:
                     _u({"id": "obssrc_" + _slug(nm), "label": nm,
                         "action": {"type": "obs", "obs_action": "source_toggle", "scene": "*", "source": nm, "mode": "toggle"},
                         "monitor": {"type": "obs_source_visible", "scene": "*", "source": nm},
-                        "states": [{"when": {"op": "truthy"}, "icon": "👁", "title": nm, "color": "#1f9d55"},
-                                   {"when": {"op": "falsy"}, "icon": "🙈", "title": nm, "color": "#2a2a2a"}],
-                        "default": {"icon": "👁", "title": nm, "color": "#2a2a2a"}}, "OBS-Quellen")
+                        "states": [{"when": {"op": "truthy"}, "icon": "👁", "title": nm, "color": "ok"},
+                                   {"when": {"op": "falsy"}, "icon": "🙈", "title": nm, "color": "off"}],
+                        "default": {"icon": "👁", "title": nm, "color": "off"}}, "OBS-Quellen")
                 _ctrl = {"stream": ("🔴", "Stream", "stream"), "record": ("⏺", "Aufnahme", "record")}
                 for cid in groups.get("controls", []):
                     c = _ctrl.get(str(cid))
@@ -1386,7 +1395,7 @@ class DeckCoreService:
                     _u({"id": "obs_" + str(cid), "label": c[1],
                         "action": {"type": "obs", "obs_action": c[2], "mode": "toggle"},
                         "monitor": {"type": "none"}, "states": [],
-                        "default": {"icon": c[0], "title": c[1], "color": "#b04545"}}, "OBS-Steuerung")
+                        "default": {"icon": c[0], "title": c[1], "color": "live"}}, "OBS-Steuerung")
             elif iid == "displayfusion":
                 r = self.generate_displayfusion_buttons(only=groups.get("profiles", []))
                 if not r.get("ok") and r.get("reason") != "no_profiles":
@@ -1421,7 +1430,7 @@ class DeckCoreService:
                         _u({"id": "app_" + _slug(proc), "label": nm, "render": "fader",
                             "action": {"type": "app_audio", "aa_action": "toggle_mute", "app_proc": proc},
                             "monitor": {"type": "app_volume"}, "states": [],
-                            "default": {"icon": "🎵", "title": "{value}%", "color": "#a855f7"}}, "App-Lautstärke")
+                            "default": {"icon": "🎵", "title": "{value}%", "color": "accent2"}}, "App-Lautstärke")
                 want_devs = set(str(x) for x in groups.get("devices", []))
                 if want_devs:
                     for d in ((self.winaudio_devices() or {}).get("devices") or []):
@@ -1549,31 +1558,31 @@ class DeckCoreService:
                 _tile({"id": "start_outdev", "label": "Ausgabegerät",
                        "action": {"type": "open_deck", "deck": odf, "mode": "radial"},
                        "monitor": {"type": "none"}, "states": [],
-                       "default": {"icon": "🔊", "title": "Ausgabegerät", "color": "#2f3037"}}, "Audio")
+                       "default": {"icon": "🔊", "title": "Ausgabegerät"}}, "Audio")
             self.set_audio_mixer(True)   # interaktives Live-Mixer-Deck (App-Lautstärke) — Ordner öffnet es
             _tile({"id": "start_mixer", "label": "App-Mixer",
                    "action": {"type": "open_deck", "deck": "audio_mixer", "mode": "replace"},
                    "monitor": {"type": "none"}, "states": [],
-                   "default": {"icon": "🎚", "title": "App-Mixer", "color": "#2f3037"}}, "Audio")
+                   "default": {"icon": "🎚", "title": "App-Mixer"}}, "Audio")
         dt = self.populate_desktop()   # Desktop-Ordner (Windows-universal) — immer, kein Setup
         if dt.get("ok"):
             _tile({"id": "start_desktop", "label": "Desktop",
                    "action": {"type": "open_deck", "deck": dt["deck"], "mode": "replace"},
                    "monitor": {"type": "none"}, "states": [],
-                   "default": {"icon": "🖥", "title": "Desktop", "color": "#2f3037"}}, "Programme")
+                   "default": {"icon": "🖥", "title": "Desktop"}}, "Programme")
         _tile({"id": "start_clock", "label": "Uhr", "render": "clock",
                "action": {"type": "none"}, "monitor": {"type": "none"}, "states": [], "default": {}},
               "Widgets", w=2, h=2)
         if "weather" in want:   # Wetter-Kachel (opt-in; holt Daten aus dem Netz, ~20 min gecacht)
             _tile({"id": "start_weather", "label": "Wetter", "render": "readout",
                    "action": {"type": "none"}, "monitor": {"type": "weather"}, "states": [],
-                   "default": {"icon": "🌤", "title": "{value}", "color": "#2f3037"}}, "Wetter", w=2)
+                   "default": {"icon": "🌤", "title": "{value}"}}, "Wetter", w=2)
         if "obs" in want:   # erkannte Integration: Live/Aufnahme (kuratiert, nicht „alles")
             for cid, ic, lbl in (("stream", "🔴", "Live"), ("record", "⏺", "Aufnahme")):
                 _tile({"id": "obs_" + cid, "label": lbl,
                        "action": {"type": "obs", "obs_action": cid, "mode": "toggle"},
                        "monitor": {"type": "none"}, "states": [],
-                       "default": {"icon": ic, "title": lbl, "color": "#b04545"}}, "OBS-Steuerung")
+                       "default": {"icon": ic, "title": lbl, "color": "live"}}, "OBS-Steuerung")
         if "presentmon" in want:   # erkannte Integration: FPS-Graph
             _tile({"id": "pm_fps", "label": "FPS", "render": "graph",
                    "action": {"type": "none"}, "monitor": {"type": "fps"}, "states": [],
@@ -1658,7 +1667,7 @@ class DeckCoreService:
             fn = {"id": bid, "label": stem, "pool_cat": "🖥 Desktop",
                   "action": {"type": "launch", "path": path},
                   "monitor": {"type": "none"}, "states": [],
-                  "default": {"icon": icon, "title": stem, "color": "#2f3037",
+                  "default": {"icon": icon, "title": stem,
                               "image": "/api/streamdeck/file_icon?path=" + urllib.parse.quote(path)}}
             if bid in by_id:
                 self._buttons[by_id[bid]] = fn
@@ -2077,7 +2086,7 @@ class DeckCoreService:
         return {"id": "folder_" + _slug(deck["id"]), "label": lbl,
                 "action": {"type": "open_deck", "deck": str(deck["id"]), "mode": "replace"},
                 "monitor": {"type": "none"}, "states": [],
-                "default": {"icon": deck.get("icon") or "📁", "title": lbl, "color": "#3a3a3a"}}
+                "default": {"icon": deck.get("icon") or "📁", "title": lbl}}
 
     def _make_folder_opener(self, deck_id: str) -> str:
         """Öffnen-Button für ein Ordner-Deck anlegen (idempotent). So ist ein frisch erstellter Ordner
@@ -2553,7 +2562,7 @@ class DeckCoreService:
         return {"ok": True, "folder": did, "opener": opener["id"]}
 
     def populate_obs_scenes(self, deck_id: str, scenes: list, *, group: str = "OBS-Szenen",
-                            active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
+                            active_color: str = "ok", idle_color: str = "off") -> dict:
         """Erzeugt/aktualisiert pro OBS-Szene einen Szenen-Wechsel-Button im POOL (Funktion:
         Szene wechseln + Aktiv-Highlight via obs_scene-Monitor) UND ein Item im Ziel-Deck
         (Platzierung). Stabile Button-id ``scene_<slug>`` → wiederholtes Befüllen aktualisiert
@@ -2775,8 +2784,8 @@ class DeckCoreService:
             fn = {"id": bid, "label": name, "_df_profile": name, "pool_cat": "DisplayFusion",
                   "action": {"type": "displayfusion", "profile": name},
                   "monitor": {"type": "displayfusion_profile"},
-                  "states": [{"when": {"op": "eq", "value": name}, "icon": "🖥", "title": name, "color": "#1f9d55"}],
-                  "default": {"icon": "🖥", "title": name, "color": "#2a2a2a"}}
+                  "states": [{"when": {"op": "eq", "value": name}, "icon": "🖥", "title": name, "color": "ok"}],
+                  "default": {"icon": "🖥", "title": name, "color": "off"}}
             ex = pool_by_id.get(bid)
             if ex is not None:
                 fn = _regen_preserve(ex, fn)   # User-Kosmetik behalten, nur Funktion auffrischen
@@ -2873,10 +2882,10 @@ class DeckCoreService:
         Der Tracking-Button zeigt den zuletzt ÜBERS DECK geschalteten Zustand (``obsbot_track``,
         deck-getrieben — OBSBOT liefert KEINEN OSC-Tracking-Readback; verifiziert 2026-06-20).
         Kamera-Labels = echter Gerätename, wenn OBSBOT Center antwortet, sonst „Cam N".
-        Farben: Cam 1 blau · Cam 2 violett · Cam 3 türkis · Cam 4 orange. Idempotent (id ``obsbot_c<d>_<key>``)."""
+        Farben = Theme-Akzente (unterscheidbar je Kamera, theme-bar). Idempotent (id ``obsbot_c<d>_<key>``)."""
         n = max(1, min(int(cameras or 2), 4))
-        COLORS = ["#3a9bf0", "#a855f7", "#22c6c6", "#f59e0b"]   # blau / violett / türkis / orange
-        DIM, OFF = "#3a3f4a", "#252a33"                        # schläft (gedimmt) / App weg (dunkel)
+        COLORS = ["accent", "accent2", "ok", "warn"]   # Cam 1–4 = unterscheidbare Theme-Akzente
+        DIM, OFF = "off", "off"                          # schläft / App weg → Inaktiv-Farbe (theme-bar)
         pool_by_id = {b.get("id"): b for b in self._buttons}
         created = updated = 0
         cats_used: list[str] = []
@@ -2914,7 +2923,7 @@ class DeckCoreService:
             # Anzeige deck-getrieben (obsbot_track) — OSC hat keinen Tracking-Readback.
             buttons.append(("track", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
                             {"type": "obsbot_track", "device": d},
-                            [{"when": {"op": "eq", "value": "trackon"}, "icon": "🎯", "title": "Tracking AN", "color": "#22c55e"},
+                            [{"when": {"op": "eq", "value": "trackon"}, "icon": "🎯", "title": "Tracking AN", "color": "ok"},
                              {"when": {"op": "eq", "value": "trackoff"}, "icon": "👁", "title": "Tracking aus", "color": col},
                              {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": "schläft", "color": DIM}],
                             {"icon": "🔌", "title": "App aus", "color": OFF}))
@@ -3171,7 +3180,7 @@ class DeckCoreService:
         return _extract_icon_png(exe) if exe else None
 
     def populate_displayfusion_profiles(self, deck_id: str, *, group: str = "Monitor-Profile",
-                                        active_color: str = "#1f9d55", idle_color: str = "#2a2a2a") -> dict:
+                                        active_color: str = "ok", idle_color: str = "off") -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button im POOL (Funktion) + Item im Ziel-Deck.
         Stabile id ``df_<slug>``; das aktive Profil wird live grün (displayfusion_profile-Monitor +
         eq-State). Idempotent; User-Platzierung/Stil bleibt erhalten."""
@@ -3943,7 +3952,16 @@ class DeckCoreService:
         # {value} im Titel → aktueller Monitor-Wert (z.B. Manual-Event-Zähler).
         def tpl(s):
             return s.replace("{value}", str(value if value is not None else "")) if isinstance(s, str) and "{value}" in s else s
+        # Leere/Sentinel-Farbe → SEMANTISCHER Fallback (Theme-Schlüsselwort), nicht festes Grau:
+        #  • erfüllter Zustand (aktiver Look) → Akzent
+        #  • Default eines Status-Buttons (= Ruhe/Idle, weil keine Bedingung griff) → Inaktivitätsfarbe `off`
+        #  • Default eines Buttons OHNE Zustände (neutrale Aktion) → Akzent
+        # So braucht KEIN Button ein hartes „off"/Grau zu speichern; ein Dreh am Theme-`--off` färbt alle
+        # Idle-Zustände um, und „∅ folgt Theme" meint beim Status-Default automatisch die Inaktivitätsfarbe.
+        def _col(c, fb):
+            return c if (c and c != "#222") else fb
         default = btn.get("default") or {}
+        has_states = bool(btn.get("states"))
         for st in btn.get("states") or []:
             if _match(value, st.get("when") or {}):
                 return {
@@ -3951,7 +3969,7 @@ class DeckCoreService:
                     "title": tpl(st.get("title", "")),
                     "icon": st.get("icon", ""),
                     "image": st.get("image", ""),
-                    "color": st.get("color", "#222"),
+                    "color": _col(st.get("color"), "accent"),
                     "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
                 }
         return {
@@ -3959,7 +3977,7 @@ class DeckCoreService:
             "title": tpl(default.get("title", "")),
             "icon": default.get("icon", ""),
             "image": default.get("image", ""),
-            "color": default.get("color", "#222"),
+            "color": _col(default.get("color"), "off" if has_states else "accent"),
             "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
         }
 

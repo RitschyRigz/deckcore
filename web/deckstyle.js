@@ -17,6 +17,7 @@ export const UNCAT = 'Ohne Kategorie'
 // resolveColor() macht aus dem Schlüsselwort die CSS-Variable; jede Hex bleibt unverändert.
 export const THEME_COLORS = {
   accent: 'Akzent', accent2: 'Akzent 2', ok: 'Grün / OK', warn: 'Warnung', err: 'Fehler', live: 'Live',
+  off: 'Inaktiv / Aus',
 }
 export function isThemeColor(c) {
   return typeof c === 'string' && Object.prototype.hasOwnProperty.call(THEME_COLORS, c)
@@ -25,6 +26,14 @@ export function isThemeColor(c) {
 // unverändert. Leer/undefined → '' (Aufrufer setzt seinen eigenen Fallback, z.B. '#222').
 export function resolveColor(c) {
   return isThemeColor(c) ? `var(--${c})` : (c || '')
+}
+// Akzent-/Look-Farbe einer Kachel (Rahmen-Brackets + Icon-Glow = --acc). Explizite Farbe (Theme-Keyword →
+// var, sonst Hex) ODER — wenn KEINE gesetzt bzw. der alte „#222"-Sentinel — der THEME-Akzent. So folgt der
+// Rahmen automatisch dem Theme, ohne dass jede Taste eine eigene Farbe hinterlegen muss; die Taste-Farbe ist
+// nur noch ein OPTIONALER Override. ('#222' = historischer „keine Farbe"-Platzhalter → wie unset behandeln.)
+export function accentVar(c, fb) {
+  if (!c || c === '#222') return fb || 'var(--accent)'
+  return resolveColor(c)
 }
 
 // Kachel-Stile (Verzierung einer flachen Taste) — [Wert, Label]. EINE Wahrheit für den Button-Editor

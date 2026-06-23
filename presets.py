@@ -6,12 +6,16 @@ kennt keine konkrete App. Gibt ein Teil-Button-Skelett ``{monitor, states, defau
 zurück, das über die feste Aktion/ID gemergt wird.
 
 Farb-Konvention (überall gleich): aktiv/an = grün · inaktiv/aus = grau · live/Aufnahme = rot.
+
+⭐ Farben sind THEME-SCHLÜSSELWÖRTER (kein festes Hex), damit jede generierte Taste dem Theme folgt und
+der Nutzer global umfärben kann (resolveColor → var(--x)). Pro Taste bleibt eine eigene (auch feste) Farbe
+wählbar; ein Re-Generieren überschreibt sie nicht (_regen_preserve bewahrt default/states/color).
 """
 from __future__ import annotations
 
-GREEN = "#1f9d55"   # aktiv / an
-GREY = "#2a2a2a"     # inaktiv / aus / neutral
-RED = "#dc2626"      # live / Aufnahme
+GREEN = "ok"     # aktiv / an  → var(--ok)
+GREY = "off"     # inaktiv / aus / neutral → var(--off)
+RED = "live"     # live / Aufnahme → var(--live)
 
 # Media-Tasten → Symbol + Titel
 _MEDIA = {
@@ -59,7 +63,7 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
         # der Monitor liest es von dort → hier KEIN Programm im Monitor. Violett = App-Mixer-Identität.
         return {"render": "fader",
                 "monitor": {"type": "app_volume"},
-                "states": [], "default": {"icon": "🎵", "title": "{value}%", "color": "#a855f7"}}
+                "states": [], "default": {"icon": "🎵", "title": "{value}%", "color": "accent2"}}
 
     # ── OBS (generisch) ──────────────────────────────────────────────────
     if t == "obs":
@@ -81,7 +85,7 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
         if sub == "record":
             return {"monitor": {"type": "none"}, "states": [],
                     "default": {"icon": "⏺", "title": "Aufnahme", "color": RED}}
-        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🎬", "color": GREY}}
+        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🎬"}}
 
     # ── Programme / System (generisch) ───────────────────────────────────
     if t == "displayfusion":
@@ -93,19 +97,19 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
     if t == "media":
         icon, title = _MEDIA.get(a.get("key", ""), ("⏯", "Media"))
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": icon, "title": title, "color": GREY}}
+                "default": {"icon": icon, "title": title}}
 
     if t == "hotkey":
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "⌨", "title": a.get("keys") or "Makro", "color": GREY}}
+                "default": {"icon": "⌨", "title": a.get("keys") or "Makro"}}
 
     if t == "http":
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "🌐", "title": "HTTP", "color": GREY}}
+                "default": {"icon": "🌐", "title": "HTTP"}}
 
     if t == "open_deck":
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "📁", "title": deck_label or "Ordner", "color": GREY}}
+                "default": {"icon": "📁", "title": deck_label or "Ordner"}}
 
     if t == "open_folder":
         # Titel = letzter Pfad-Bestandteil (z.B. „Desktop"); `shell:Downloads` → „Downloads".
@@ -115,12 +119,12 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
         else:
             name = raw.replace("/", "\\").split("\\")[-1] if raw else "Ordner"
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "📂", "title": name or "Ordner", "color": GREY}}
+                "default": {"icon": "📂", "title": name or "Ordner"}}
 
     if t == "launch":
         # Symbol/Titel kommen i.d.R. aus der Datei-Icon-Extraktion (pick_file) → hier nur Fallback,
         # kein Monitor. Bestehende Felder werden im Editor NICHT überschrieben.
-        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🚀", "color": GREY}}
+        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🚀"}}
 
     # ── Schalter / Flags (generisch) ─────────────────────────────────────
     if t == "flag_toggle":
@@ -130,7 +134,7 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
 
     if t == "flag_set":
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "📌", "title": a.get("flag") or "Flag", "color": GREY}}
+                "default": {"icon": "📌", "title": a.get("flag") or "Flag"}}
 
     # ── Nur Cockpit (Registry trägt sie generisch; in schlanken Hüllen nie angefragt) ──
     if t == "process_action":
@@ -141,19 +145,19 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
     if t == "manual_event":
         et = a.get("event_type") or ""
         return {"monitor": {"type": "manual_count", "event_type": et}, "states": [],
-                "default": {"icon": _MANUAL_ICONS.get(et, "🎯"), "title": "{value}", "color": GREY}}
+                "default": {"icon": _MANUAL_ICONS.get(et, "🎯"), "title": "{value}"}}
 
     if t == "alert":
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "🔔", "title": a.get("alert_type") or "Alert", "color": GREY}}
+                "default": {"icon": "🔔", "title": a.get("alert_type") or "Alert"}}
 
     if t == "events_action":
-        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "⚡", "color": GREY}}
+        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "⚡"}}
 
     if t == "wavelink":
         # Einzel-Button (z.B. Mix-Mute). Komplette Fader-Decks kommen über den „🎚 Wave-Link-Fader"-
         # Generator (render=fader) — nicht über dieses Preset.
-        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🎚", "color": GREY}}
+        return {"monitor": {"type": "none"}, "states": [], "default": {"icon": "🎚"}}
 
     # none / unbekannt → neutral, ohne Monitor
     return {"monitor": {"type": "none"}, "states": [], "default": {}}

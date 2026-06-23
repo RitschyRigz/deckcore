@@ -1,14 +1,14 @@
 import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
-import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
+import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
 // ganze Panel um (Deck-Identität, z.B. rot=Dual / blau=Solo); verlässt man es, wird die globale Basis
 // wiederhergestellt. Muss zur Hülle (theme.js) + service (_THEME_VAR_KEYS) passen.
-const THEME_VAR_KEYS = ['--bg', '--bg2', '--bg3', '--line', '--fg', '--muted', '--accent', '--accent2', '--ok', '--warn', '--err', '--live']
+const THEME_VAR_KEYS = ['--bg', '--bg2', '--bg3', '--line', '--fg', '--muted', '--accent', '--accent2', '--ok', '--warn', '--err', '--live', '--off', '--vu-low', '--vu-mid', '--vu-high']
 import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle Hüllen
 
 // 🎛 Deck — Soft-Stream-Deck: rendert die config-getriebene Registry wie das echte Plugin,
@@ -189,7 +189,7 @@ function statStyle(v, o) {
   return sc ? `color:${sc};text-shadow:0 0 9px ${sc}88,0 0 2px ${sc}` : ''
 }
 
-function Sparkline({ data, color, minSpan, pct, opts, uid }) {
+export function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const o = opts || {}
@@ -248,14 +248,8 @@ function Sparkline({ data, color, minSpan, pct, opts, uid }) {
 //   • wavelink_level → Wave-Link Mix/Channel (meters/state = geteilte Wave-Link-Polls).
 //   • winaudio_volume → der allgemeine Windows-Master-Lautstärkeregler (wa = geteilter winaudio-Poll).
 // Alle Polls sind vom Deck GETEILT (ein Request für ALLE Fader, nicht pro Kachel).
-// Akzentfarbe abdunkeln (unteres Ende des Fill-Gradients) — reines Hex -> rgb().
-function darken(hex, f) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '')
-  if (!m) return hex || '#173a63'
-  const n = parseInt(m[1], 16)
-  const c = (x) => Math.max(0, Math.min(255, Math.round(x * f)))
-  return 'rgb(' + c((n >> 16) & 255) + ',' + c((n >> 8) & 255) + ',' + c(n & 255) + ')'
-}
+// (Das frühere JS-`darken` für --acc-dim ist weg: --acc-dim leitet sich jetzt in deck.css via
+//  color-mix aus --acc ab → folgt auch Theme-gebundenen Akzentfarben statt nur reiner Hex.)
 
 // Windows-Audio liefert einen ROHEN Linear-Peak (0..1) — optisch sehr niedrig (anders als Wave Links
 // perzeptueller Prozent-Pegel). Auf eine dBFS-Skala (-48..0 dB) mappen, damit die VU genauso lebendig
@@ -307,7 +301,7 @@ function KeyImg({ image, icon }) {
   return <span class="t-key-icon">{(isGlyph(icon) ? glyphName(icon) : icon) || '•'}</span>
 }
 
-function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly }) {
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly, skin, opts }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
   const ttype = mon.target_type || 'mix'
@@ -332,8 +326,17 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const level = drag != null ? drag : (optLevel != null ? optLevel : baseLevel)
   const muted = optMute != null ? optMute : !!st.muted
   const mlvl = (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
-  const accentHex = (v.color && /^#[0-9a-f]{6}$/i.test(v.color) && v.color !== '#222') ? v.color : '#4ea1ff'
-  const accentDim = darken(accentHex, 0.34)
+  // Akzent wie bei flachen Tasten: Theme-Schlüsselwort (resolveColor → var(--x)) ODER feste Hex, sonst
+  // Fallback. --acc-dim wird in deck.css via color-mix aus --acc abgeleitet (kein JS-darken mehr).
+  const accCss = accentVar(v.color)
+  // Per-Fader-Overrides (alles optional, leer = folgt Theme): Hintergrund (opts.bg) + VU-Zonen (opts.vuLow/
+  // vuMid/vuHigh). Als Inline-CSS-Vars auf .t-fader → überschreiben nur diesen Fader (Kinder erben sie).
+  const _fo = opts || {}
+  let faderStyle = `--acc:${accCss}`
+  if (_fo.bg) { const c = resolveColor(_fo.bg); faderStyle += `;--fbg-top:${c};--fbg-bot:color-mix(in srgb, ${c} 55%, #06080c)` }
+  if (_fo.vuLow) faderStyle += `;--vu-low:${resolveColor(_fo.vuLow)}`
+  if (_fo.vuMid) faderStyle += `;--vu-mid:${resolveColor(_fo.vuMid)}`
+  if (_fo.vuHigh) faderStyle += `;--vu-high:${resolveColor(_fo.vuHigh)}`
   const name = v.label || v.title || id
   // App-Icon: explizit gesetztes v.image, sonst live aus der .exe des Programms (App-Fader).
   const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc) : '')
@@ -432,7 +435,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
   }
   return (
-    <div class={'t-fader' + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '')} style={`--acc:${accentHex};--acc-dim:${accentDim}`}
+    <div class={'t-fader s-' + (skin || 'brackets') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '')} style={faderStyle}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>
         {iconOnly
@@ -463,7 +466,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
 // laufendem Programm einen Fader (minus Ausblend-Liste). Daten kommen vom Eltern-Panel via SSE-Push
 // (streamdeck:audio mit all_apps) — KEIN eigenes Polling mehr. Reine Render-Schicht, dieselbe <Fader>-
 // Kachel. Master IMMER zuerst. Nicht manuell editierbar (kein statisches Item-Modell).
-function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOnly }) {
+function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOnly, skin }) {
   const hideSet = new Set((hidden || []).map((x) => String(x).toLowerCase()))
   const apps = (sessions || []).filter((s) => s.proc && !hideSet.has(String(s.proc).toLowerCase()))
   const noop = () => {}
@@ -475,13 +478,13 @@ function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOn
   return (
     <div class="t-deck-grid" style={gridStyle + ';grid-auto-rows:var(--sd-size)'}>
       <div class={tileCls} style={tileStyle}>
-        <Fader id="__master__" v={{ label: 'Windows', color: '#34d39a', icon: '🔊' }} mon={{ type: 'winaudio_volume' }}
-               meters={{}} state={{}} wa={waSnap[''] || {}} dev="" onMute={noop} iconOnly={iconOnly} />
+        <Fader id="__master__" v={{ label: 'Windows', color: 'ok', icon: '🔊' }} mon={{ type: 'winaudio_volume' }}
+               meters={{}} state={{}} wa={waSnap[''] || {}} dev="" onMute={noop} iconOnly={iconOnly} skin={skin} />
       </div>
       {apps.map((a) => (
         <div key={a.proc} class={tileCls} style={tileStyle}>
-          <Fader id={'app_' + a.proc} v={{ label: a.name || a.proc, color: '#a855f7' }} mon={{ type: 'app_volume' }}
-                 meters={{}} state={{}} app={appSnap[a.proc] || {}} proc={a.proc} onMute={noop} iconOnly={iconOnly} />
+          <Fader id={'app_' + a.proc} v={{ label: a.name || a.proc, color: 'accent2' }} mon={{ type: 'app_volume' }}
+                 meters={{}} state={{}} app={appSnap[a.proc] || {}} proc={a.proc} onMute={noop} iconOnly={iconOnly} skin={skin} />
         </div>
       ))}
       {!apps.length && <div class="t-empty" style="grid-column:1/-1;margin:14px auto;font-size:13px">Warte auf Programme mit Ton … (der Master links regelt die Windows-Gesamtlautstärke)</div>}
@@ -841,7 +844,7 @@ export function TouchDeck() {
       return (
         <div key={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + (spanned ? ' spanned' : '')}
              style={'background:var(--bg)' + place}>
-          <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState}
+          <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} skin={skin} opts={o}
                  dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
                  proc={(actionById[id] || {}).app_proc || ''} app={appSnap[(actionById[id] || {}).app_proc || ''] || {}}
                  onMute={() => onTap(id)} />
@@ -851,11 +854,11 @@ export function TouchDeck() {
     return (
       <button key={id}
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat s-' + skin : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (resolveColor(v.color) || '#222'))))) + place}
+              style={(isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
-          : isReadout ? <Readout v={v} opts={o} />
+          : isReadout ? <Readout v={v} opts={o} skin={skin} />
           : isGraph ? (
             <>
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
@@ -906,7 +909,7 @@ export function TouchDeck() {
       <div class={'t-deck-body' + (slideDir > 0 ? ' t-slide-next' : slideDir < 0 ? ' t-slide-prev' : '')} key={shownId}>
         {active.auto === 'audio_mixer'
           ? <AudioMixer hidden={active.mixer_hidden} sessions={mixSessions} waSnap={waSnap} appSnap={appSnap}
-                        gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} iconOnly={active.mixer_icon_only} />
+                        gridStyle={gridStyle} w={active.mixer_w} h={active.mixer_h} iconOnly={active.mixer_icon_only} skin={defSkin} />
           : !(active.items || []).length
           ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
           : freeMode ? (

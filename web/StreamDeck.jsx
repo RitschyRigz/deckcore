@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
-import { Clock, Gauge, Readout, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
+import { Clock, Gauge, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { Sparkline } from './TouchDeck.jsx'   // reine Verlaufskurve fürs WYSIWYG (zieht ihre Helfer mit; Panel unberührt)
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
 import { THEME_PRESETS, THEME_VARS } from './themes.js'
 
@@ -288,6 +289,9 @@ function ColorField({ value, onChange }) {
       <input type="color" class="sd-color" value={theme ? '#2a2a2a' : (value || '#2a2a2a')}
              title="Eigene Farbe" onInput={(e) => onChange(e.currentTarget.value)} />
       <span class="sd-theme-sws">
+        {/* „(Theme)": keine eigene Farbe → Rahmen/Glow folgen dem Theme-Akzent (kein per-Taste-Override). */}
+        <button type="button" class={'sd-theme-sw sd-sw-none' + (!value ? ' sel' : '')}
+                title="Keine eigene Farbe → folgt dem Theme" onClick={() => onChange('')}>∅</button>
         {Object.keys(THEME_COLORS).map((k) => (
           <button key={k} type="button" class={'sd-theme-sw tc-' + k + (value === k ? ' sel' : '')}
                   style={`background:var(--${k})`} title={'Theme-Farbe: ' + THEME_COLORS[k]}
@@ -316,11 +320,37 @@ function Swatch({ vis }) {
   )
 }
 
-// Live-Kachel im WYSIWYG-Raster (Stil = item.style über Deck-Layout). render-bewusst: Uhr/Text werden
-// auch in der Editor-Vorschau LIVE gerendert (wie im Panel), sonst das normale Symbol/Titel-Bild.
-function LiveKey({ v, eff, base, render, opts }) {
+// Verlaufs-Speicher für die WYSIWYG-Graph-Vorschau: der Editor bekommt dieselben resolved-Werte per SSE wie
+// das Panel; wir schreiben pro Button eine kleine Zahlenreihe mit, damit die <Sparkline> im Editor eine echte
+// (wenn auch SSE-langsame) Kurve zeigen kann — statt einer flachen Kachel. Modul-Level = von LiveKey lesbar.
+const _previewHist = {}
+function _accumPreviewHist(buttons) {
+  for (const id in (buttons || {})) {
+    const val = Number(buttons[id] && buttons[id].value)
+    if (Number.isFinite(val)) {
+      const h = _previewHist[id] || (_previewHist[id] = [])
+      h.push(val); if (h.length > 80) h.shift()
+    }
+  }
+}
+
+// Live-Kachel im WYSIWYG-Raster (Stil = item.style über Deck-Layout). render-bewusst: Uhr/Text/Gauge/Stat/
+// Graph/Fader werden auch in der Editor-Vorschau LIVE/1:1 gerendert (wie im Panel), sonst Symbol/Titel-Bild.
+function LiveKey({ v, eff, base, render, opts, uid }) {
   v = v || {}
   const o = opts || {}
+  const skin = o.skin || (typeof document !== 'undefined' && document.body.dataset.tilestyle) || 'brackets'   // Kachel-Stil (WYSIWYG wie Panel)
+  if (render === 'fader') {
+    return <div class={keyClass(eff, base) + ' t-fader-key cqsize'} style="background:var(--bg)"><FaderView v={v} opts={o} skin={skin} /></div>
+  }
+  if (render === 'graph') {
+    return (
+      <div class={keyClass(eff, base) + ' is-graph cqsize'} style="background:var(--bg)">
+        {v.title ? <span class="t-key-title">{v.title}</span> : null}
+        <Sparkline data={_previewHist[uid]} color={v.color} opts={o} uid={uid} />
+      </div>
+    )
+  }
   if (render === 'clock') {
     return <div class={keyClass(eff, base) + ' t-widget is-clock'} style="background:transparent"><Clock opts={o} /></div>
   }
@@ -332,7 +362,7 @@ function LiveKey({ v, eff, base, render, opts }) {
     )
   }
   if (render === 'readout') {
-    return <div class={keyClass(eff, base) + ' t-widget is-readout cqsize'} style="background:transparent"><Readout v={v} opts={o} /></div>
+    return <div class={keyClass(eff, base) + ' t-widget is-readout cqsize'} style="background:transparent"><Readout v={v} opts={o} skin={skin} /></div>
   }
   if (render === 'gauge') {
     return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
@@ -341,10 +371,9 @@ function LiveKey({ v, eff, base, render, opts }) {
     return <div class={keyClass(eff, base) + ' is-stat cqsize'} style="background:var(--bg)"><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
   }
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
-  const skin = o.skin || (typeof document !== 'undefined' && document.body.dataset.tilestyle) || 'brackets'   // Kachel-Stil (WYSIWYG wie Panel)
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat s-' + skin : '')}
-         style={isFlat ? `--acc:${resolveColor(v.color) || '#222'}` : ('background:' + (resolveColor(v.color) || '#222'))}>
+         style={isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (resolveColor(v.color) || 'var(--bg3)'))}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
         : <IconView icon={v.icon} cls="sd-prev-icon" fallback={<span class="sd-prev-icon">•</span>} />}
       {v.title ? <span class="sd-prev-title">{v.title}</span> : null}
@@ -757,7 +786,7 @@ function ItemInspector({ deck, item, onReload }) {
   )
   return (
     <div class="sd-inspect">
-      <span class="muted" style="font-size:12px">Stil von <b>{item.button}</b> auf diesem Deck:</span>
+      <span class="muted" style="font-size:12px">Überschreibt das Aussehen von <b>{item.button}</b> — aber nur auf <b>diesem</b> Deck. (Das „🎨 Aussehen" oben gilt überall.)</span>
       <div class="sd-lay-ctl">
         <Sel k="frame" label="Rahmen" opts={[['inherit', 'Standard'], ['on', 'mit Rahmen'], ['off', 'nur Symbol']]} />
         <Sel k="label" label="Name" opts={[['inherit', 'Standard'], ['on', 'an'], ['off', 'aus']]} />
@@ -765,12 +794,13 @@ function ItemInspector({ deck, item, onReload }) {
         <Sel k="title" label="Titel" opts={[['inherit', 'Standard'], ['on', 'an'], ['off', 'aus']]} />
         <Sel k="title_pos" label="Titel-Position" opts={[['inherit', 'unten'], ['bottom', 'unten'], ['top', 'oben']]} />
       </div>
-      <div class="sd-lay-ctl" style="margin-top:8px">
+      <p class="muted sd-help" style="margin:6px 0 0">Der „Titel" ist der große Text (aus „🎨 Aussehen → Standard/Status"); er liegt bei Bild-Buttons als Overlay oben oder unten drauf — wie im Stream Deck.</p>
+      <p class="muted" style="margin:14px 0 4px;font-weight:600;font-size:12px">📐 Größe im Panel</p>
+      <div class="sd-lay-ctl">
         <Span k="w" label="Breite (Spalten)" max={6} />
         <Span k="h" label="Höhe (Reihen)" max={6} />
       </div>
-      <p class="muted sd-help" style="margin:6px 0 0">⚠ Größe gilt <b>nur im Touch-Panel</b> (z. B. breite Graph-/Sensor-Kachel). Auf einem echten Stream Deck bleibt der Button immer <b>1×1</b> (Icon + Wert) — die Größe wird dort ignoriert.</p>
-      <p class="muted sd-help" style="margin:6px 0 0">Der „Titel" ist der große Text (aus „Aussehen → Standard/Status"); er liegt bei Bild-Buttons als Overlay oben oder unten drauf — wie im Stream Deck.</p>
+      <p class="muted sd-help" style="margin:6px 0 0">⚠ Gilt <b>nur im Touch-Panel</b> (z. B. breite Graph-/Sensor-Kachel). Auf einem echten Stream Deck bleibt der Button immer <b>1×1</b> (Icon + Wert) — die Größe wird dort ignoriert.</p>
     </div>
   )
 }
@@ -833,7 +863,7 @@ function DeckItemInspector({ deck, item, btn, options, onReload, onClose, onNavi
       {btn
         ? <FunctionEditor key={item.button} button={btn} options={options} onSaved={onReload} />
         : <p class="muted sd-help">Diese Funktion liegt nicht (mehr) in der Button-Bibliothek.</p>}
-      <h4 class="section-h sd-inspect-sub">📐 Platzierung auf diesem Deck</h4>
+      <h4 class="section-h sd-inspect-sub">📐 Anzeige auf diesem Deck <span class="muted" style="font-weight:400;font-size:12px">— Rahmen · Name · Titel · Größe (überschreibt nur hier)</span></h4>
       <ItemInspector deck={deck} item={item} onReload={onReload} />
     </div>
   )
@@ -970,7 +1000,7 @@ function FreeDeckGrid({ deck, pool, poolCategories, resolved, onReload, onExit, 
               <div class="grid-stack-item" key={it.button} {...attrs}>
                 <div class={'grid-stack-item-content' + (sel === it.button ? ' sel' : '')}
                      onClick={() => setSel(sel === it.button ? '' : it.button)}>
-                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key"
+                  <LiveKey v={resolved[it.button]} eff={resolveStyle(it.style, layout)} base="sd-prev-key" uid={it.button}
                            render={(byId[it.button] || {}).render} opts={(byId[it.button] || {}).opts} />
                   <span class="sd-tile-acts">
                     <button class="sd-tile-act" title="Einstellungen öffnen"
@@ -1200,7 +1230,7 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
                              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); dropOnTile(it.button) }}
                              onClick={() => setSel(sel === it.button ? '' : it.button)}
                              title={isFolder ? 'Ordner — Buttons hierauf ziehen = in den Ordner verschieben' : it.button}>
-                          <LiveKey v={resolved[it.button]} eff={eff} base="sd-prev-key"
+                          <LiveKey v={resolved[it.button]} eff={eff} base="sd-prev-key" uid={it.button}
                                    render={(btnById[it.button] || {}).render} opts={(btnById[it.button] || {}).opts} />
                           <span class="sd-tile-acts">
                             <button class="sd-tile-act" title={it.hidden ? 'einblenden' : 'ausblenden'}
@@ -1418,9 +1448,8 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
           </select>
         </label>
       )}
-      <label>{isReadout ? 'Akzent' : 'Farbe'}
-        <input type="color" class="so-delay" style="width:46px;height:30px;padding:2px"
-               value={o.color || (isClock || isReadout ? '#8ec5ff' : '#ffffff')} onChange={(e) => setO({ color: e.currentTarget.value })} />
+      <label class="sd-inline" style="gap:6px">{isReadout ? 'Akzent' : 'Farbe'}
+        <ColorField value={o.color || ''} onChange={(c) => setO({ color: c || undefined })} />
       </label>
       {isClock && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.seconds !== false} onChange={(e) => setO({ seconds: e.currentTarget.checked })} /> Sekunden</label>}
       {isClock && digital && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={o.format24 !== false} onChange={(e) => setO({ format24: e.currentTarget.checked })} /> 24-Std</label>}
@@ -2029,16 +2058,24 @@ export function StreamDeck() {
 
   const load = () => getJSON('/api/streamdeck/registry').then((d) => {
     setData(d)
-    applyDeckLook(d.look)   // globaler Deck-Look auch in der Editor-Vorschau (WYSIWYG)
     setActiveDeck((cur) => (cur && (d.decks || []).some((x) => x.id === cur)) ? cur : (d.default_deck || (d.decks && d.decks[0] && d.decks[0].id) || 'main'))
   }).catch((e) => setErr(String(e)))
   useEffect(() => { load() }, [])
+
+  // Editor-Vorschau (WYSIWYG) folgt dem EFFEKTIVEN Look des aktiven Decks = globaler Look + per-Deck-Override
+  // (Kachel-Stil/Druck/Ordner/Rahmen). Ohne das zeigte die Vorschau immer den globalen Default-Stil (z.B.
+  // „Eck-Brackets") statt des am Deck eingestellten „Innen-Glow" — genau wie im Panel.
+  useEffect(() => {
+    if (!data) return
+    const dk = (data.decks || []).find((x) => x.id === activeDeck) || (data.decks || [])[0] || {}
+    applyDeckLook({ ...(data.look || {}), ...((dk.theme && dk.theme.look) || {}) })
+  }, [data, activeDeck])
 
   useEffect(() => {
     const es = new EventSource('/api/streamdeck/stream')
     esRef.current = es
     es.addEventListener('streamdeck:buttons', (ev) => {
-      try { setResolved(JSON.parse(ev.data).buttons || {}) } catch { /* noop */ }
+      try { const b = JSON.parse(ev.data).buttons || {}; _accumPreviewHist(b); setResolved(b) } catch { /* noop */ }
     })
     es.onerror = () => { /* Browser reconnectet selbst */ }
     return () => es.close()
@@ -2050,6 +2087,12 @@ export function StreamDeck() {
   const decks = data.decks || []
   const deck = decks.find((d) => d.id === activeDeck) || decks[0]
   const options = normOptions(data.options)
+  // ⚠ Editor-Vorschau im DECK-Theme rendern: ohne das zeigen Swatches/Vorschauen das statische Cockpit-Slate
+  // (Akzent ≈ Violett/Blau) statt der echten Deck-Farben (z.B. Gold) → „Themenfarbe: Akzent" wirkte falsch.
+  // Die Deck-Theme-Vars auf die Deck-Karte legen → jedes var(--x) darin (LiveKey/Swatch/ColorField-Swatches)
+  // löst zur Deck-Palette auf, exakt wie im Panel. Folgt das Deck dem globalen Theme → kein Override (Slate).
+  const _dtv = (deck && deck.theme && deck.theme.vars) || null
+  const deckThemeStyle = _dtv ? THEME_VARS.map((v) => (_dtv[v.key] ? `${v.key}:${_dtv[v.key]}` : '')).filter(Boolean).join(';') : ''
 
   return (
     <div>
@@ -2061,7 +2104,12 @@ export function StreamDeck() {
       </p>
 
       <RefreshRate reg={data} onSaved={load} />
-      <GlobalLookEditor look={data.look} onReload={load} />
+      {/* Auch der GLOBALE Look-Editor zeigt seine Farb-Swatches im aktiven Deck-Theme — sonst zeigt „Akzent 2"
+          das Cockpit-Slate (Blau), während ein Theme-Schlüsselwort beim Drücken die Deck-Farbe (z.B. Gold) nimmt.
+          So entspricht der Swatch dem echten Render; wer eine FESTE Farbe will, wählt eine eigene Hex. */}
+      <div style={deckThemeStyle}>
+        <GlobalLookEditor look={data.look} onReload={load} />
+      </div>
 
       <div class="sd-tabbar">
         <button class={'sd-tab' + (view === 'decks' ? ' active' : '')} onClick={() => setView('decks')}>🎛 Decks &amp; Layout</button>
@@ -2074,7 +2122,7 @@ export function StreamDeck() {
           <DeckBar decks={decks} active={deck ? deck.id : ''} defaultDeck={data.default_deck || 'main'}
                    dfAvailable={options.displayfusion_available} onSelect={setActiveDeck} onReload={load} />
           {deck && (
-            <div class="card" style="max-width:1100px">
+            <div class="card" style={'max-width:1100px' + (deckThemeStyle ? ';' + deckThemeStyle : '')}>
               <h3 class="section-h" style="margin-top:0">{deck.icon || '🎛'} {deck.label} <span class="muted" style="font-weight:400;font-size:13px">— {deck.auto === 'audio_mixer' ? 'Interaktiv (Live-Audio)' : 'Layout & Buttons'}</span></h3>
               <DeckLayout deck={deck} onReload={load} />
               <DeckThemeEditor deck={deck} onReload={load} />
@@ -2813,7 +2861,7 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
       <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={st.title || ''}
                   onInput={(v) => onChange({ ...st, title: v })} />
       <IconPicker value={st.image} onChange={(url) => onChange({ ...st, image: url })} />
-      <ColorField value={st.color} onChange={(color) => onChange({ ...st, color })} />
+      <ColorField value={st.color} onChange={(color) => onChange({ ...st, color: color || undefined })} />
       <Swatch vis={{ color: st.color, icon: st.icon, title: st.title, image: st.image }} />
       <button class="btn ghost small danger" onClick={onDelete}>✕</button>
     </div>
@@ -2868,7 +2916,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 onChange={(e) => onOpts({ ...(opts || {}), size: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
           {Object.keys(SIZE_LABELS).map((k) => <option value={k}>{SIZE_LABELS[k]}</option>)}
         </select>
-        {(!render || render === 'value') && (
+        {(!render || render === 'value' || render === 'fader') && (
           <>
             <span class="muted conn-label" style="margin-left:8px">Stil</span>
             <select class="so-delay" value={(opts || {}).skin || ''}
@@ -2913,6 +2961,26 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 ? 'Diese Taste hat keinen Status (Überwachung = „Keine") → es zählt nur das „Standard"-Aussehen unten.'
                 : 'Pro Status eine Regel: „Wenn Wert … dann zeige …". Erster Treffer gewinnt; sonst „Standard".'}
           </p>
+          {render === 'fader' && (
+            <>
+              <div class="reward-row sd-state" style="margin:2px 0 4px">
+                <span class="muted conn-label">🎚 Slider-Farbe</span>
+                <ColorField value={def.color} onChange={(color) => onDefault({ color: color || undefined })} />
+                <span class="muted conn-label" style="margin-left:10px">🎨 Hintergrund</span>
+                <ColorField value={(opts || {}).bg || ''} onChange={(c) => onOpts({ ...(opts || {}), bg: c || undefined })} />
+              </div>
+              <div class="reward-row sd-state" style="margin:0 0 6px">
+                <span class="muted conn-label">📊 VU</span>
+                <span class="muted" style="font-size:11px">unten</span>
+                <ColorField value={(opts || {}).vuLow || ''} onChange={(c) => onOpts({ ...(opts || {}), vuLow: c || undefined })} />
+                <span class="muted" style="font-size:11px">Mitte</span>
+                <ColorField value={(opts || {}).vuMid || ''} onChange={(c) => onOpts({ ...(opts || {}), vuMid: c || undefined })} />
+                <span class="muted" style="font-size:11px">oben</span>
+                <ColorField value={(opts || {}).vuHigh || ''} onChange={(c) => onOpts({ ...(opts || {}), vuHigh: c || undefined })} />
+              </div>
+              <p class="muted sd-help" style="margin:0 0 6px">Jede Fader-Farbe einzeln: <b>Slider</b>, <b>Hintergrund</b>, <b>Rahmen</b> (= Slider-Farbe + „Stil" oben) und die 3 <b>VU-Zonen</b>. Leer (∅) = folgt dem Theme.</p>
+            </>
+          )}
           {!stateless && (states || []).map((st, i) => (
             <StateRow key={i} st={st} options={options} knownValues={knownValues}
                       onChange={(s) => upd(i, s)} onDelete={() => rm(i)} />
@@ -2924,8 +2992,9 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
             <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
                         onInput={(v) => onDefault({ title: v })} />
             <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
-            <ColorField value={def.color} onChange={(color) => onDefault({ color })} />
-            <Swatch vis={{ color: def.color, icon: def.icon, title: def.title, image: def.image }} />
+            <ColorField value={def.color} onChange={(color) => onDefault({ color: color || undefined })} />
+            {/* Swatch spiegelt den Idle-Fallback: leerer Default eines Status-Buttons → Inaktivitätsfarbe (wie im Panel). */}
+            <Swatch vis={{ color: def.color || ((states && states.length) ? 'off' : undefined), icon: def.icon, title: def.title, image: def.image }} />
           </div>
         </>
       )}

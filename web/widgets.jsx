@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'preact/hooks'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
+import { resolveColor, accentVar } from './deckstyle.js'
 
 // Geteilte Widget-Bausteine für Frei-Kacheln (Text/Label + Uhr). Genutzt von Panel (TouchDeck) UND
 // Editor (StreamDeck). ⚠ Reine Panel-Darstellung — physisches Stream Deck rendert sie nie (kein Pool-Button).
@@ -68,7 +69,7 @@ export function Clock({ opts }) {
     const iv = setInterval(() => setNow(new Date()), withSeconds ? 1000 : 15000)
     return () => clearInterval(iv)
   }, [withSeconds])
-  const accent = o.color || '#8ec5ff'
+  const accent = resolveColor(o.color) || 'var(--accent)'
   const cardCls = 't-clock-card' + (framed ? ' framed' : '')
   const dateEl = withDate ? <span class="t-clock-date">{fmtDate(now)}</span> : null
 
@@ -152,10 +153,11 @@ export function Gauge({ value, opts }) {
 // Unter-Titel (Label). Generisch & template-fähig: JEDER Namens-/Text-Monitor (Wave-Link-Hauptausgang,
 // Windows-Standardgerät, OBS-Szene …) kann sie nutzen — Aussehen kommt aus opts, nicht aus Sonderlogik.
 // Reine Panel-Darstellung — das physische Stream Deck rendert nur Symbol/Titel.
-export function Readout({ v, opts }) {
+export function Readout({ v, opts, skin }) {
   const o = opts || {}
   const framed = o.frame !== false
-  const accent = o.color || '#8ec5ff'
+  // Akzent theme-bindbar (resolveColor → var(--x)); Default = Theme-Akzent statt festem Blau.
+  const accent = resolveColor(o.color) || 'var(--accent)'
   const val = v || {}
   const text = val.title || val.label || ''
   // Auf dem ROHWERT klassifizieren (z.B. Gerätename), nicht auf dem ggf. formatierten Titel.
@@ -169,10 +171,48 @@ export function Readout({ v, opts }) {
   // Unter-Titel nur, wenn das Label einen ZUSÄTZLICHEN Sinn trägt (≠ angezeigter Wert).
   const sub = o.sub === false ? '' : (val.label && val.label !== text ? val.label : '')
   return (
-    <div class={'t-readout' + (framed ? ' framed' : '')} style={`--acc:${accent}`}>
+    <div class={'t-readout' + (framed ? ' framed s-' + (skin || 'brackets') : '')} style={`--acc:${accent}`}>
       {iconEl}
       <span class="t-readout-v" style={`font-family:${fontStack(o.font)};font-size:${widgetFontSize(o, 'text')}`}>{text || '—'}</span>
       {sub ? <span class="t-readout-sub">{sub}</span> : null}
+    </div>
+  )
+}
+
+// 🎚 Fader-VORSCHAU (render=fader im Editor-WYSIWYG): rendert die Fader-Kachel 1:1 über DIESELBEN CSS-Klassen
+// wie das Live-Panel (deck.css .t-fader*), nur STATISCH — fester Pegel, repräsentative VU-Säule, KEIN Drag/
+// Live-Meter. So sieht der Editor aus wie der echte Fader (statt einer flachen Kachel), bleibt aber editierbar.
+// Spiegelt die Look-Optionen: Slider/Akzent (v.color → --acc), Kachel-Stil (skin), Hintergrund + VU pro Fader (opts).
+export function FaderView({ v, opts, skin }) {
+  const val = v || {}, o = opts || {}
+  let style = `--acc:${accentVar(val.color)}`
+  if (o.bg) { const c = resolveColor(o.bg); style += `;--fbg-top:${c};--fbg-bot:color-mix(in srgb, ${c} 55%, #06080c)` }
+  if (o.vuLow) style += `;--vu-low:${resolveColor(o.vuLow)}`
+  if (o.vuMid) style += `;--vu-mid:${resolveColor(o.vuMid)}`
+  if (o.vuHigh) style += `;--vu-high:${resolveColor(o.vuHigh)}`
+  const name = val.label || val.title || ''
+  const lvl = 66                                      // repräsentativer Pegel für die Vorschau
+  const SEGS = 19, segs = []
+  for (let i = 0; i < SEGS; i++) {
+    const thr = (i + 1) / SEGS
+    const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
+    segs.push(<span key={i} class={'t-vu-seg' + (thr <= 0.58 ? ' on ' + cls : '')} />)   // statisch bis ~58% „an"
+  }
+  const icon = val.icon
+  return (
+    <div class={'t-fader s-' + (skin || 'brackets')} style={style}>
+      <div class="t-fader-name" title={name}>{name}</div>
+      <div class="t-fader-body">
+        <div class="t-fader-track">
+          <div class="t-fader-fill" style={`height:${lvl}%`} />
+          <div class="t-fader-knob" style={`bottom:${lvl}%`} />
+        </div>
+        <div class="t-fader-vu">{segs}</div>
+      </div>
+      <div class="t-fader-foot">{lvl}%</div>
+      {icon && (isGlyph(icon) && hasGlyph(glyphName(icon))
+        ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={glyphName(icon)} /></div>
+        : <div class="t-fader-icon" title={name}>{isGlyph(icon) ? glyphName(icon) : icon}</div>)}
     </div>
   )
 }
