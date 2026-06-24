@@ -189,7 +189,7 @@ _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
 _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
 _LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live", "off")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
-                 "folder": True, "folderColor": "#c8a44e", "frame": True}
+                 "folder": True, "folderColor": "#c8a44e", "frame": True, "colorMode": "source"}
 
 
 def _look_overrides(o) -> dict:
@@ -211,6 +211,13 @@ def _look_overrides(o) -> dict:
         out["folderColor"] = fc
     if "frame" in o:
         out["frame"] = bool(o.get("frame"))
+    if o.get("colorMode") in ("source", "theme"):   # Daten-Viz-Farbmodus (HWiNFO-Familien): Quelle ODER Theme
+        out["colorMode"] = o["colorMode"]
+    pal = o.get("palette")                            # editierte Familien-Farben (nur gültige fam-Keys + Hex)
+    if isinstance(pal, dict):
+        clean = {k: v for k, v in pal.items() if k in _SMART and _is_hex_color(v)}
+        if clean:
+            out["palette"] = clean
     return out
 
 
@@ -230,9 +237,15 @@ def _is_hex_color(c) -> bool:
         return False
 
 
+def _is_fam_color(c) -> bool:
+    """Familien-Farb-Token ``fam:<key>`` (gpu/cpu/…) — löst sich im Frontend zur Quellen-Palette ODER zum
+    Theme auf (--fam-* CSS-Vars). Ein generierter Familien-Look, KEIN manueller Override."""
+    return isinstance(c, str) and c.startswith("fam:") and c[4:] in _SMART
+
+
 def _is_color(c) -> bool:
-    """Gueltige Button-/Look-/Fader-Farbe: Theme-Schluesselwort (folgt dem Theme) ODER feste Hex."""
-    return c in _LOOK_COLOR_KW or _is_hex_color(c)
+    """Gueltige Button-/Look-/Fader-Farbe: Theme-Schluesselwort, Familien-Token (fam:<key>) ODER feste Hex."""
+    return c in _LOOK_COLOR_KW or _is_fam_color(c) or _is_hex_color(c)
 
 
 def _sanitize_opts(o) -> dict:
@@ -270,9 +283,11 @@ def _sanitize_opts(o) -> dict:
         except (TypeError, ValueError):
             pass
     if isinstance(o.get("unit"), str) and o["unit"].strip():
-        out["unit"] = o["unit"].strip()[:8]            # Gauge-Einheit (°C, %, …)
+        out["unit"] = o["unit"].strip()[:8]            # Gauge-/Balken-Einheit (°C, %, …)
     if "crit" in o:
         out["crit"] = bool(o.get("crit"))              # Kritisch-Rot (oberste 20%) ein/aus (False = z.B. Lüfter/Pumpe, hoch=gut)
+    if o.get("orient") in ("h", "v"):
+        out["orient"] = o["orient"]                     # Balken-Ausrichtung (horizontal/vertikal)
     return out
 
 
@@ -533,58 +548,225 @@ def _slug(s: str) -> str:
     return "".join(out).strip("_") or "x"
 
 
-# ── Smart-Import: Sensor nach Einheit + Namens-Schlüsselwort klassifizieren (mehrsprachig DE/EN) →
-#    Render/Farbe/Kategorie/Bereich. So zieht JEDER HWiNFO-Import ein fertig gestyltes, sortiertes Deck aus
-#    der EIGENEN Hardware (kein fester Sensorname). Bereiche = Typ-Defaults (hardware-spezifisch → User feintunt).
-_SMART = {"gpu": "#35d07f", "cpu": "#e0a92e", "water": "#3a9bf0", "power": "#f5d423", "ram": "#1fc9b0"}
+# ── Smart-Import / Klassifizierung (mehrsprachig DE/EN) → zwei ORTHOGONALE Achsen statt starrer
+#    Keyword-Reihenfolge: KOMPONENTE (per Name) × MESSART (per Einheit). Daraus folgen Kategorie, Render,
+#    Wertebereich und Familien-Farbe. So zieht JEDER HWiNFO-Import ein fertig gestyltes, sortiertes Deck aus
+#    der EIGENEN Hardware (kein fester Sensorname). Hardware-agnostisch: Lüfter ≠ Wasserkühlung; Wasser/Radiator
+#    nur über echte Loop-Begriffe. Bereiche = Typ-Defaults (Feintuning via Editor / Auto-Bereich).
+#
+# Familien-Palette (Quellen-Farben). Generierte Kacheln tragen das Token ``fam:<key>`` statt einer Hex →
+# das Frontend (resolveColor + ``--fam-*``-CSS-Vars) löst es zur Quellen-Palette ODER zum Theme auf (Modus
+# umschaltbar, ohne die Kachel neu zu bauen). Ein echter manueller Farb-Override ist eine Hex/Theme-Keyword
+# (≠ ``fam:*``) und bleibt davon unberührt.
+_SMART = {"gpu": "#35d07f", "cpu": "#e0a92e", "ram": "#1fc9b0", "board": "#b07cf0", "power": "#f5d423",
+          "fan": "#5bb0ff", "water": "#3a9bf0", "radiator": "#37c6e0", "storage": "#e0773a",
+          "net": "#7cc4f0", "other": "#8aa0b8"}
+# Kategorie-Reihenfolge — EINE Wahrheit für Smart-Import, Integrations-Gruppierung und Dashboard.
+_HW_FAM_ORDER = ["🟢 GPU", "🟡 CPU", "🧠 RAM", "🧩 Mainboard", "🔌 Strom",
+                 "🌀 Lüfter", "💧 Wasserkühlung", "🔆 Radiator", "💾 Speicher", "🌐 Netzwerk", "📊 Sensoren"]
+_FAM_CAT = {"gpu": ("🟢 GPU", "gpu"), "cpu": ("🟡 CPU", "cpu"), "ram": ("🧠 RAM", "ram"),
+            "board": ("🧩 Mainboard", "board"), "power": ("🔌 Strom", "power"), "fan": ("🌀 Lüfter", "fan"),
+            "water": ("💧 Wasserkühlung", "water"), "radiator": ("🔆 Radiator", "radiator"),
+            "storage": ("💾 Speicher", "storage"), "net": ("🌐 Netzwerk", "net"), "other": ("📊 Sensoren", "other")}
+
+
+def _hw_component(n: str) -> str:
+    """Komponente NUR aus dem (kleingeschriebenen) Namen — mehrsprachig, Reihenfolge = Spezifität."""
+    has = lambda *ws: any(w in n for w in ws)   # noqa: E731
+    if has("gpu", "grafik", "graphics", "vram", "geforce", "radeon", "video"):
+        return "gpu"
+    if has("cpu", "kern", "core", "prozessor", "package", "paket", "ryzen", "ccd", "tctl", "tdie", "tjmax"):
+        return "cpu"
+    if has("nvme", "ssd", "hdd", "festplatt", "laufwerk", "disk", "drive", "datenträg"):
+        return "storage"
+    if has("ethernet", "network", "netzwerk", "wlan", "wi-fi", "wifi"):
+        return "net"
+    if has("mainboard", "motherboard", "chipsatz", "chipset", "board", "vrm", "pch", "mosfet"):
+        return "board"
+    if has("ram", "arbeitsspeicher", "dimm", "spd"):
+        return "ram"
+    if has("memory", "speicher"):   # generisch „Memory/Speicher" (GPU-VRAM ist oben schon abgefangen) → RAM
+        return "ram"
+    return "none"
+
+
+def _hw_measure(n: str, u: str) -> str:
+    """Messart aus Einheit (+ Namens-Hinweise). Steuert Render + Default-Bereich."""
+    has = lambda *ws: any(w in n for w in ws)   # noqa: E731
+    if u.startswith("°") or u in ("c", "grad", "celsius", "f", "fahrenheit"):
+        return "temp"
+    if u == "%":
+        return "load"
+    if u in ("rpm", "u/min"):
+        return "fan"
+    if u in ("l/h", "lph", "l/min", "gpm"):
+        return "flow"
+    if u in ("w", "watt"):
+        return "power"
+    if u in ("v", "volt", "mv"):
+        return "voltage"
+    if u in ("a", "amp", "ampere", "ma"):
+        return "current"
+    if u in ("mhz", "ghz", "khz"):
+        return "clock"
+    if u in ("mb/s", "gb/s", "kb/s", "mbit/s", "mbps", "gbit/s", "gt/s", "b/s"):
+        return "rate"
+    if u in ("mb", "gb", "kb", "tb", "mib", "gib"):
+        return "fill" if has("used", "belegt", "usage", "auslast", "commit", "alloc") else "other"
+    if u in ("ms", "fps"):
+        return "rate"
+    return "other"
+
+
+# Default-Wertebereiche je (Messart, Komponente) — luft-normal, NICHT wasserkühlungs-exklusiv. (min, max, crit).
+def _hw_range(meas: str, fam: str, is_f: bool) -> tuple:
+    if meas == "temp":
+        if is_f:   # Fahrenheit-Skala (sonst wirkte 90 „kalt")
+            return ((77, 194, True) if fam == "gpu" else (68, 203, True) if fam == "cpu"
+                    else (68, 131, True) if fam in ("water", "radiator") else (68, 212, True))
+        return ((25, 90, True) if fam == "gpu" else (20, 95, True) if fam == "cpu"
+                else (20, 55, True) if fam in ("water", "radiator") else (20, 100, True) if fam == "board"
+                else (20, 90, True))
+    if meas == "load":
+        return (0, 100, True)
+    if meas == "power":
+        return ((0, 600, True) if fam == "gpu" else (0, 250, True) if fam == "cpu"
+                else (0, 300, True) if fam == "power" else (0, 500, True))
+    if meas == "fan":
+        return (0, 6000, False) if fam == "water" else (0, 2200, False)   # Pumpe schneller; Lüfter/Radiator luft-normal
+    if meas == "flow":
+        return (0, 300, False)
+    return (0, 100, True)
 
 
 def _smart_classify(name: str, unit: str) -> dict:
+    """→ {render, color, cat, fam, component, measure, opts}. `color` = Familien-Hex (Back-Compat),
+    `fam` = Token-Schlüssel (für ``fam:<fam>``). `opts` = None bei Stat."""
     n = (name or "").lower()
     u = (unit or "").lower().strip()
     has = lambda *ws: any(w in n for w in ws)   # noqa: E731
-    is_gpu = has("gpu", "grafik", "graphics", "vram", "geforce", "radeon")
-    is_cpu = has("cpu", "kern", "core", "prozessor", "package", "paket", "thread", "ryzen", "ccd")
-    is_water = has("wasser", "water", "coolant", "kühl", "kuhl", "loop", "mora", "radiator", "aio")
-    is_ram = has("ram", "arbeitsspeicher", "memory", "dimm", "spd", "speicher")
-    is_board = has("mainboard", "motherboard", "chipsatz", "chipset", "board", "vrm", "pch")
-    if is_gpu: color, cat = _SMART["gpu"], "🟢 GPU"
-    elif is_cpu: color, cat = _SMART["cpu"], "🟡 CPU"
-    elif is_water: color, cat = _SMART["water"], "🔵 Wasserkühlung"
-    elif is_ram or is_board: color, cat = _SMART["ram"], "🧠 RAM & Board"
-    else: color, cat = _SMART["ram"], "📊 Sensoren"
-    if u.startswith("°") or u in ("c", "grad", "celsius", "f", "fahrenheit"):   # Temperatur → Graph (Verlauf zählt)
-        is_f = ("f" in u)   # °F / F / Fahrenheit → andere Skala (sonst wirkte 90 „kalt")
-        if is_f:
-            rng = (77, 194) if is_gpu else (68, 203) if is_cpu else (68, 131) if is_water else (68, 194)
-        else:
-            rng = (25, 90) if is_gpu else (20, 95) if is_cpu else (20, 55) if is_water else (20, 90)
-        return {"render": "graph", "color": color, "cat": cat, "opts": {"min": rng[0], "max": rng[1], "crit": True}}
-    if u == "%":                                          # Last → Gauge (Momentanwert/sprunghaft)
-        return {"render": "gauge", "color": color, "cat": cat, "opts": {"min": 0, "max": 100, "unit": "%", "crit": True, "color": color}}
-    if u in ("rpm", "u/min"):                             # Lüfter/Pumpe → Graph, blau, NICHT kritisch (hoch=gut)
-        mx = 6000 if has("pumpe", "pump") else 3000
-        return {"render": "graph", "color": _SMART["water"], "cat": "🔵 Wasserkühlung", "opts": {"min": 0, "max": mx, "crit": False}}
-    if u in ("w", "watt"):                                # Leistung → Gauge, GELB (Strom)
-        mx = 600 if is_gpu else 300 if is_cpu else 500
-        return {"render": "gauge", "color": _SMART["power"], "cat": cat, "opts": {"min": 0, "max": mx, "unit": "W", "crit": True, "color": _SMART["power"]}}
-    if u in ("v", "volt"):                                # Spannung → Stat, GELB (Strom)
-        return {"render": "stat", "color": _SMART["power"], "cat": cat, "opts": None}
-    if u in ("l/h", "lph", "l/min", "gpm"):               # Durchfluss → Graph, blau, nicht kritisch
-        return {"render": "graph", "color": _SMART["water"], "cat": "🔵 Wasserkühlung", "opts": {"min": 0, "max": 300, "crit": False}}
-    if u in ("a", "amp", "ampere", "ma"):                 # Strom → Stat, GELB
-        return {"render": "stat", "color": _SMART["power"], "cat": cat, "opts": None}
-    if u in ("mhz", "ghz", "khz"):                        # Takt → Graph (Verlauf); KEIN fester Max (variiert je HW)
-        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
-    if u in ("mb/s", "gb/s", "kb/s", "mbit/s", "mbps", "gt/s", "b/s"):   # Datenrate (Netz/Disk) → Graph
-        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
-    if u in ("mb", "gb", "kb", "tb", "mib", "gib"):       # Daten/Belegung → Graph bei „used/belegt", sonst Stat
-        if has("used", "belegt", "usage", "auslast", "commit", "alloc"):
-            return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
-        return {"render": "stat", "color": color, "cat": cat, "opts": None}
-    if u in ("ms", "fps"):                                # Zeit/FPS → Graph (Verlauf)
-        return {"render": "graph", "color": color, "cat": cat, "opts": {"crit": False}}
-    return {"render": "stat", "color": color, "cat": cat, "opts": None}   # Rest → Stat-Zahl
+    comp = _hw_component(n)
+    meas = _hw_measure(n, u)
+    is_pumpish = has("wasser", "water", "coolant", "kühl", "kuhl", "loop", "mora", "aio", "pump", "pumpe", "durchfluss")
+    is_rad = has("radiator")
+    # Familie: Lüfter/Durchfluss zuerst (sie überschreiben die Komponente — alle Lüfter zusammen, nicht unter CPU/GPU),
+    # dann un-zugeordnete Elektrik → Strom, sonst die Komponente.
+    if meas == "fan":
+        fam = "radiator" if is_rad else ("water" if is_pumpish else "fan")
+    elif meas == "flow":
+        fam = "water"
+    elif comp == "none" and (is_pumpish or is_rad):   # Coolant/Radiator-Temp ohne Komponenten-Name = Wasserseite
+        fam = "water"
+    elif meas in ("power", "voltage", "current") and comp == "none":
+        fam = "power"
+    elif comp != "none":
+        fam = comp
+    else:
+        fam = "other"
+    cat, famkey = _FAM_CAT[fam]
+    color = _SMART.get(famkey, _SMART["other"])   # Hex (Back-Compat fürs `color`-Feld); Kacheln nutzen das Token
+    coltok = "fam:" + famkey                        # Familien-Token → Frontend löst zur Palette/zum Theme auf
+    ret = lambda render, opts: {"render": render, "color": color, "cat": cat, "fam": famkey,   # noqa: E731
+                                "component": comp, "measure": meas, "opts": opts}
+    if meas == "temp":
+        is_f = ("f" in u)
+        lo, hi, crit = _hw_range("temp", fam, is_f)
+        return ret("gauge", {"min": lo, "max": hi, "crit": crit, "color": coltok})
+    if meas == "load":
+        return ret("gauge", {"min": 0, "max": 100, "unit": "%", "crit": True, "color": coltok})
+    if meas == "fan":   # Lüfter/Pumpe → Graph (Verlauf zeigt den Ramp), fester Maßstab, NICHT kritisch (hoch=gut)
+        lo, hi, crit = _hw_range("fan", fam, False)
+        return ret("graph", {"min": lo, "max": hi, "crit": crit})
+    if meas == "flow":  # Durchfluss → Graph (Verlauf), nicht kritisch
+        lo, hi, crit = _hw_range("flow", fam, False)
+        return ret("graph", {"min": lo, "max": hi, "crit": crit})
+    if meas == "power":
+        lo, hi, crit = _hw_range("power", fam, False)
+        return ret("gauge", {"min": lo, "max": hi, "unit": "W", "crit": crit, "color": coltok})
+    if meas in ("voltage", "current"):
+        return ret("stat", None)
+    if meas == "clock":                                   # Takt → Graph (Verlauf); KEIN fester Max (variiert je HW)
+        return ret("graph", {"crit": False})
+    if meas == "rate":                                    # Datenrate / Zeit / FPS → Graph
+        return ret("graph", {"crit": False})
+    if meas == "fill":                                    # Belegung: % → Balken; absolut (GB/MB) → Graph
+        if u == "%":                                      #   (der Dashboard-Builder hebt absolute auf Balken+Total)
+            return ret("bar", {"min": 0, "max": 100, "unit": "%", "crit": True, "color": color})
+        return ret("graph", {"crit": False})
+    return ret("stat", None)                              # Rest → Stat-Zahl
+
+
+def _nice_ceil(x: float) -> float:
+    """Auf eine „runde" Obergrenze aufrunden (für Auto-Bereiche): 1/2/5×10ⁿ."""
+    import math
+    if x <= 0:
+        return 1.0
+    exp = math.floor(math.log10(x))
+    base = 10 ** exp
+    for m in (1, 2, 2.5, 5, 10):
+        if m * base >= x:
+            return float(m * base)
+    return float(10 * base)
+
+
+def _auto_range(meas: str, fam: str, value=None, total=None) -> Optional[dict]:
+    """Sinnvoller Wertebereich, der NICHT aus einem einzelnen Idle-Wert abgeleitet wird: Typ-Default ist
+    primär; der Live-Wert WEITET nur (nie schrumpfen); Mindest-Span bleibt; Belegung nutzt Total falls da.
+    Gibt None zurück, wenn der statische Default (Temp/Last/Leistung) bereits passt."""
+    try:
+        v = float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        v = None
+    if meas == "fill":
+        if total not in (None, ""):
+            try:
+                return {"min": 0, "max": float(total)}
+            except (TypeError, ValueError):
+                pass
+        if v is not None:
+            return {"min": 0, "max": _nice_ceil(max(v * 1.6, v + 1))}
+        return {"min": 0, "max": 100, "unit": "%"}
+    if meas == "clock":
+        mx = 6000.0                                       # generöser MHz-Default (deckt Boost ab) — kein Idle-Clip
+        if v is not None and v * 1.25 > mx:
+            mx = _nice_ceil(v * 1.25)
+        return {"min": 0, "max": mx, "crit": False}
+    if meas == "fan":
+        lo, hi, _ = _hw_range("fan", fam, False)
+        if v is not None and v * 1.2 > hi:
+            hi = _nice_ceil(v * 1.2)
+        return {"min": lo, "max": hi, "crit": False}
+    return None   # temp/load/power: statische Defaults sind sinnvoll → kein Auto
+
+
+def _hw_bid(sensor) -> str:
+    """EINE Wahrheit für die Pool-Button-id eines Sensors (Smart-Import / Integration / Dashboard) →
+    keine Duplikate. id bleibt aus Back-Compat ``hw_<slug(key)>`` (bestehende Buttons + _integration_bid matchen)."""
+    key = sensor.get("key") if isinstance(sensor, dict) else sensor
+    return "hw_" + _slug(str(key or ""))
+
+
+def _hw_monitor(sensor) -> dict:
+    """Monitor-Dict eines Sensors. ``sensor`` bleibt der (eindeutige) Key — direkter, schneller Lookup
+    wie bisher (Back-Compat). Zusätzlich ``group`` (HWiNFO-Sensorgruppe) + ``source`` als robuster Fallback,
+    falls sich die Sensor-Reihenfolge verschiebt (Wert über Gruppe+Basis-Label wiederfindbar)."""
+    if not isinstance(sensor, dict):
+        sensor = {"key": sensor}
+    mon = {"type": "hwinfo", "sensor": str(sensor.get("key") or "")}
+    grp = str(sensor.get("group") or sensor.get("sensor") or "").strip()
+    if grp:
+        mon["group"] = grp
+    src = str(sensor.get("source") or "").strip()
+    if src:
+        mon["source"] = src
+    return mon
+
+
+def _hw_dcolor(c: dict, render: str) -> str:
+    """``default.color`` einer Sensor-Kachel. Gauge/Bar lösen das ``fam:``-Token live auf (Farb-Modus
+    umschaltbar, via style/--acc). Graph/Stat brauchen eine konkrete Farbe (SVG-Attribute / Alpha-Suffix)
+    → Familien-Hex. EINE Wahrheit für Smart-Import / Integration / Dashboard."""
+    return ("fam:" + c["fam"]) if render in ("gauge", "bar") else c["color"]
 
 
 # HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → der Auto-Import kuratiert ab hier.
@@ -1101,13 +1283,13 @@ class DeckCoreService:
                 s = self.hwinfo_sensors() or {}
                 if not s.get("available"):
                     return {"available": False, "reason": _HWINFO_SETUP_HINT}
-                RND = [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"], ["gauge", "Gauge"]]
+                RND = [["auto", "Auto"], ["value", "Wert"], ["graph", "Graph"], ["gauge", "Gauge"], ["bar", "Balken"]]
                 raw = [x for x in (s.get("sensors") or []) if x.get("key")]
                 _many = len(raw) > _HW_AUTO_CAP   # sehr viele Sensoren → nur „primäre" vorauswählen (sonst „alles" = Chaos)
-                # Nach Familie gruppieren (GPU/CPU/Wasser/RAM/Sensoren) → bei vielen Sensoren navigierbar
+                # Nach Familie gruppieren (GPU/CPU/RAM/Board/Strom/Lüfter/Wasser/…) → bei vielen Sensoren navigierbar
                 # statt einer 300er-Liste. Gruppen-KEYS sind für hwinfo egal (alle Gruppen = Sensoren →
-                # _integration_bid/generate behandeln sie einheitlich); Reihenfolge stabil, leere Familien weg.
-                FAM_ORDER = ["🟢 GPU", "🟡 CPU", "🔵 Wasserkühlung", "🧠 RAM & Board", "📊 Sensoren"]
+                # _integration_bid/generate behandeln sie einheitlich); Reihenfolge stabil (_HW_FAM_ORDER), leere Familien weg.
+                FAM_ORDER = _HW_FAM_ORDER
                 buckets = {}
                 for x in raw:
                     label = str(x.get("label") or x.get("key"))
@@ -1124,7 +1306,14 @@ class DeckCoreService:
                         + (" (Quelle: %s)" % _srcname if _srcname else "") + ". Mehr/weniger Sensoren: " + _HWINFO_ENABLE_STEPS)
                 if _many:
                     note += " ⚠ Sehr viele erkannt — vorausgewählt sind nur die empfohlenen; hake bei Bedarf weitere an."
-                return {"available": True, "note": note, "groups": groups}
+                return {"available": True, "note": note, "groups": groups, "dashboard": True,
+                        "options": [
+                            {"key": "color_mode", "label": "Farben",
+                             "choices": [["source", "Quelle (GPU grün, CPU gelb …)"], ["theme", "Theme-gebunden"]],
+                             "default": (self._look.get("colorMode") or "source")},
+                            {"key": "curation", "label": "Umfang",
+                             "choices": [["essential", "Empfohlen (wichtigste)"], ["all", "Alle Sensoren"]],
+                             "default": "essential"}]}
             if iid == "obs":
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
@@ -1350,21 +1539,24 @@ class DeckCoreService:
                     unit = str(s.get("unit") or "").strip()
                     rnd = str(renders.get(str(key), "auto")).lower()
                     sm = _smart_classify(nm, unit)
-                    fn = {"id": "hw_" + _slug(key), "label": nm, "pool_cat": "HWiNFO",
-                          "action": {"type": "none"}, "monitor": {"type": "hwinfo", "sensor": key}, "states": [],
-                          "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"}}
+                    eff = sm["render"] if rnd == "auto" else rnd   # effektiver Render (auto = Klassifizierer-Wahl)
+                    fn = {"id": _hw_bid(s), "label": nm, "pool_cat": "HWiNFO",
+                          "action": {"type": "none"}, "monitor": _hw_monitor(s), "states": [],
+                          "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""),
+                                      "color": _hw_dcolor(sm, eff)}}
                     if rnd == "auto":
-                        fn["render"], fn["pool_cat"], fn["default"]["color"] = sm["render"], sm["cat"], sm["color"]
-                        if sm.get("opts"):
-                            fn["opts"] = sm["opts"]
-                    elif rnd == "graph":
-                        fn["render"] = "graph"
-                        if sm.get("opts"):
-                            fn["opts"] = sm["opts"]
-                    elif rnd == "gauge":
-                        fn["render"] = "gauge"
-                        fn["opts"] = sm["opts"] if sm.get("opts") else {"min": 0, "max": 100, "unit": unit}
-                    # rnd == 'value' → kein render-Feld (Standard-Zahl)
+                        fn["pool_cat"] = sm["cat"]
+                    if eff != "value":
+                        fn["render"] = eff
+                    opts = dict(sm["opts"]) if sm.get("opts") else None
+                    if eff in ("gauge", "bar") and not opts:   # erzwungener Gauge/Bar ohne Klassifizier-Bereich → Default
+                        opts = {"min": 0, "max": 100, "unit": unit, "color": "fam:" + sm["fam"]}
+                    if eff == "graph" and opts:                # Graph nutzt keine feste Farbe (SVG-Attribut) → Token raus
+                        opts.pop("color", None)
+                    if eff not in ("gauge", "bar", "graph"):   # value/stat: keine Widget-Opts
+                        opts = None
+                    if opts:
+                        fn["opts"] = opts
                     _u(fn, fn["pool_cat"])
             elif iid == "presentmon":
                 for mid in groups.get("metrics", []):
@@ -2828,18 +3020,18 @@ class DeckCoreService:
                 continue
             name = str(s.get("label") or key)
             unit = str(s.get("unit") or "").strip()
-            bid = "hw_" + _slug(key)
+            bid = _hw_bid(s)
             fn = {
                 "id": bid, "label": name, "pool_cat": "HWiNFO",
                 "action": {"type": "none"},
-                "monitor": {"type": "hwinfo", "sensor": key},
+                "monitor": _hw_monitor(s),
                 "states": [],
                 "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"},
             }
             if smart:
                 c = _smart_classify(name, unit)
                 fn["render"], fn["pool_cat"] = c["render"], c["cat"]
-                fn["default"]["color"] = c["color"]
+                fn["default"]["color"] = _hw_dcolor(c, c["render"])
                 if c.get("opts"):
                     fn["opts"] = c["opts"]
                 if c["cat"] not in cats_used:
@@ -2868,12 +3060,203 @@ class DeckCoreService:
                 self._buttons.append(fn); created += 1
             pool_by_id[pm["id"]] = fn; self._removed.discard(pm["id"])
         if smart:   # genutzte Familien-Kategorien in sinnvoller Reihenfolge in den Pool aufnehmen
-            for cat in ["⚡ Performance", "🟢 GPU", "🟡 CPU", "🔵 Wasserkühlung", "🧠 RAM & Board", "📊 Sensoren"]:
+            for cat in ["⚡ Performance"] + _HW_FAM_ORDER:
                 if (cat == "⚡ Performance" or cat in cats_used) and cat not in self._pool_categories:
                     self._pool_categories.append(cat)
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated,
                 "render": render, "curated": curated, "available_sensors": available_sensors}
+
+    # ── HWiNFO-Dashboard-Template (1-Klick): Übersichts-Deck + Kategorie-Ordner, hardware-agnostisch ──
+    # Headline-Slots = feste (Familie, Messart)-Reihenfolge fürs Übersichts-Deck → deterministisch, auch bei
+    # mehreren GPUs/Laufwerken/ähnlich benannten Sensoren.
+    _HW_HEADLINE_SLOTS = [
+        ("cpu", "temp"), ("cpu", "load"), ("gpu", "temp"), ("gpu", "load"),
+        ("gpu", "fill"), ("ram", "fill"), ("ram", "load"),
+        ("cpu", "power"), ("gpu", "power"), ("power", "power"),
+        ("fan", "fan"), ("water", "temp"), ("water", "flow"),
+    ]
+
+    def _hw_headlines(self, classified, limit: int = 14):
+        """Deterministische Auswahl der WICHTIGSTEN Sensoren fürs Übersichts-Deck: pro Slot der „primärste"
+        Kandidat (niedriger Primär-Score), bei Gleichstand der in der Original-Reihenfolge frühere. ``classified``
+        = Liste von (idx, s, nm, unit, c). Übersprungene gelöschte (``_removed``) tauchen nicht wieder auf."""
+        def score(nm: str):
+            n = nm.lower()
+            bad = 0
+            for k, w in (("#", 5), ("thread", 4), ("distance", 4), ("limit", 3), ("average", 2),
+                         ("avg", 2), (" min", 3), (" max", 3), ("per ", 2), ("offset", 3)):
+                if k in n:
+                    bad += w
+            if any(k in n for k in ("core ", "kern ", "p-core", "e-core")) and any(ch.isdigit() for ch in n):
+                bad += 4
+            return (bad, len(nm))
+        out, seen = [], set()
+        for fam, meas in self._HW_HEADLINE_SLOTS:
+            cands = [t for t in classified if t[4]["fam"] == fam and t[4]["measure"] == meas and t[1].get("key")]
+            if not cands:
+                continue
+            best = min(cands, key=lambda t: (score(t[2]), t[0]))   # (Primär-Score, Original-Index) = stabil
+            bid = _hw_bid(best[1])
+            if bid in seen or bid in self._removed:
+                continue
+            seen.add(bid)
+            out.append(best)
+            if len(out) >= limit:
+                break
+        return out
+
+    def build_hwinfo_dashboard(self, *, color_mode: str = "source", curation: str = "essential") -> dict:
+        """1-Klick: aus den freigegebenen HWiNFO-Sensoren ein geordnetes, hübsches Dashboard bauen — ein
+        „📊 System"-Übersichts-Deck (wichtige Sensoren als Gauges/Balken + Ordner-Öffner) und pro nicht-leerer
+        Kategorie ein Ordner-Deck (CPU/GPU/Mainboard/RAM/Strom/Lüfter/Wasser/Radiator/Speicher/Netzwerk).
+        Hardware-agnostisch (Lüfter ≠ Wasser; Wasser-/Radiator-Sektion nur bei echten Loop-Sensoren). Idempotent
+        + additiv: überschreibt KEINE User-Edits (``_regen_preserve``) und belebt bewusst gelöschte Kacheln NICHT
+        wieder (``_removed``). ``color_mode`` = 'source'|'theme', ``curation`` = 'essential'|'all'."""
+        data = self._hwinfo.sensors() or {}
+        if not data.get("available"):
+            return {"ok": False, "reason": "hwinfo_unavailable", "hint": _HWINFO_SETUP_HINT}
+        sensors = [s for s in (data.get("sensors") or []) if s.get("key")]
+        if not sensors:
+            return {"ok": False, "reason": "no_sensors"}
+        cm = "theme" if str(color_mode) == "theme" else "source"
+        self._look = _sanitize_look({**self._look, "colorMode": cm})   # Farb-Modus merken (persistent im Look)
+        everything = (str(curation) == "all")
+        # Klassifizieren (+ Original-Index für deterministische Tie-Breaks).
+        classified = []   # (idx, s, nm, unit, c)
+        for idx, s in enumerate(sensors):
+            nm = str(s.get("label") or s.get("key"))
+            unit = str(s.get("unit") or "").strip()
+            classified.append((idx, s, nm, unit, _smart_classify(nm, unit)))
+        # Total-Sensoren je Familie (für Belegungs-Balken: 0..Total statt Idle-Ableitung).
+        totals = {}
+        for idx, s, nm, unit, c in classified:
+            if unit.lower() in ("mb", "gb", "gib", "mib", "tb") and any(
+                    w in nm.lower() for w in ("total", "gesamt", "installed", "size", "capacity")):
+                totals.setdefault(c["fam"], s.get("value"))
+        # Buckets je Kategorie.
+        buckets = {}
+        for t in classified:
+            buckets.setdefault(t[4]["cat"], []).append(t)
+
+        def _sensor_fn(s, nm, unit, c):
+            eff = c["render"]
+            opts = dict(c["opts"]) if c.get("opts") else None
+            if c["measure"] == "fill" and unit != "%":   # absolute Belegung → Balken mit Total/Auto-Bereich
+                ar = _auto_range("fill", c["fam"], s.get("value"), totals.get(c["fam"]))
+                if ar:
+                    eff = "bar"
+                    opts = {**ar, "unit": unit, "color": "fam:" + c["fam"]}
+            fn = {"id": _hw_bid(s), "label": nm, "pool_cat": c["cat"],
+                  "action": {"type": "none"}, "monitor": _hw_monitor(s), "states": [],
+                  "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""),
+                              "color": _hw_dcolor(c, eff)}}
+            if eff != "value":
+                fn["render"] = eff
+            if eff in ("gauge", "bar") and not opts:
+                opts = {"min": 0, "max": 100, "unit": unit, "color": "fam:" + c["fam"]}
+            if eff == "graph" and opts:
+                opts.pop("color", None)
+            if eff not in ("gauge", "bar", "graph"):
+                opts = None
+            if opts:
+                fn["opts"] = opts
+            return fn
+
+        def _placer(deck):
+            deck["layout"] = self._sanitize_layout({"free": True, "cols": 6}, deck["layout"])
+            occ = set()
+            for it in deck["items"]:
+                if isinstance(it.get("x"), int) and isinstance(it.get("y"), int):
+                    for dx in range(max(1, int(it.get("w") or 1))):
+                        for dy in range(max(1, int(it.get("h") or 1))):
+                            occ.add((it["x"] + dx, it["y"] + dy))
+
+            def pack(w, h):
+                y = 0
+                while True:
+                    for x in range(6 - w + 1):
+                        if all((x + dx, y + dy) not in occ for dx in range(w) for dy in range(h)):
+                            for dx in range(w):
+                                for dy in range(h):
+                                    occ.add((x + dx, y + dy))
+                            return x, y
+                    y += 1
+
+            def tile(fn, pool_cat, w=1, h=1):
+                if fn["id"] in self._removed:   # bewusst gelöscht → NICHT auferwecken
+                    return False
+                self._pool_upsert(fn, pool_cat)
+                # Das Dashboard ist die Wahrheit für die DARSTELLUNG → render/opts frisch erzwingen (sonst behält
+                # _regen_preserve alte/stale Generator-Renders → inkonsistenter Mix). Label/Symbol/Farbe bleiben.
+                b = next((x for x in self._buttons if x.get("id") == fn["id"]), None)
+                if b is not None:
+                    if fn.get("render"):
+                        b["render"] = fn["render"]
+                    else:
+                        b.pop("render", None)
+                    if fn.get("opts"):
+                        b["opts"] = fn["opts"]
+                    else:
+                        b.pop("opts", None)
+                if any(i["button"] == fn["id"] for i in deck["items"]):
+                    return True   # schon platziert → nicht verschieben (idempotent)
+                x, y = pack(w, h)
+                it = {"button": fn["id"], "category": "", "style": {}, "hidden": False, "x": x, "y": y}
+                if w > 1:
+                    it["w"] = w
+                if h > 1:
+                    it["h"] = h
+                deck["items"].append(it)
+                return True
+            return tile
+
+        _SIZE = {"gauge": (2, 2), "bar": (2, 1), "graph": (2, 1), "stat": (1, 1)}
+
+        # 1) Kategorie-Ordner (nicht-leere, feste Reihenfolge).
+        ordered = [c for c in _HW_FAM_ORDER if c in buckets] + [c for c in buckets if c not in _HW_FAM_ORDER]
+        built = []   # (cat, deck_id)
+        n_decks = n_tiles = 0
+        for cat in ordered:
+            items = buckets[cat]
+            if not everything:   # Kuration: nur primäre (sonst alles, wenn keine als primär gelten — kleine Familie)
+                ess = [t for t in items if _hwinfo_essential(t[2], t[3])]
+                items = ess or items
+            if not items:
+                continue
+            did = self._named_folder(cat, cat.split(" ", 1)[0])
+            deck = self._deck(did)
+            if not deck:
+                continue
+            tile = _placer(deck)
+            placed_here = False
+            for idx, s, nm, unit, c in items:
+                fn = _sensor_fn(s, nm, unit, c)
+                w, h = _SIZE.get(fn.get("render"), (1, 1))
+                if tile(fn, c["cat"], w, h):
+                    n_tiles += 1
+                    placed_here = True
+            if placed_here or deck["items"]:
+                built.append((cat, did))
+                n_decks += 1
+
+        # 2) Übersichts-Deck „📊 System": Headlines + Ordner-Öffner je gebaute Kategorie.
+        ov_id = self._named_deck("📊 System", "📊", folder=False)
+        ov = self._deck(ov_id)
+        if ov is not None:
+            otile = _placer(ov)
+            for idx, s, nm, unit, c in self._hw_headlines(classified):
+                fn = _sensor_fn(s, nm, unit, c)
+                w, h = _SIZE.get(fn.get("render"), (1, 1))
+                otile(fn, c["cat"], w, h)
+            for cat, did in built:
+                d = self._deck(did)
+                if d:
+                    otile(self._folder_opener_def(d), "📁 Ordner", 1, 1)
+
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "overview": ov_id, "decks": n_decks, "tiles": n_tiles,
+                "categories": [c for c, _ in built], "color_mode": cm, "source": data.get("source")}
 
     def generate_obsbot_buttons(self, cameras: int = 2, only_funcs=None) -> dict:
         """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
@@ -3304,8 +3687,8 @@ class DeckCoreService:
                 self._pool_categories.append(pc)
         else:
             button.pop("pool_cat", None)
-        # Darstellung (render: graph|gauge|stat|text|clock|fader|readout; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "gauge", "stat", "text", "clock", "fader", "readout"):
+        # Darstellung (render: graph|gauge|bar|stat|text|clock|fader|readout; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
+        if button.get("render") not in ("graph", "gauge", "bar", "stat", "text", "clock", "fader", "readout"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))
@@ -3811,9 +4194,10 @@ class DeckCoreService:
         return val
 
     def _mon_hwinfo(self, mon: dict, btn: dict) -> Any:
-        # HWiNFO-Sensorwert (per Label-Key). Der Reader cached ALLE Sensoren ~1s → pro Button billig;
-        # der Wert landet via {value} im Titel, States können nach Schwellwert einfärben (gt/lt).
-        return self._hwinfo.value(mon.get("sensor", ""))
+        # HWiNFO-Sensorwert (per Key; ``group`` = robuster Fallback, falls sich die Sensor-Reihenfolge
+        # verschiebt). Der Reader cached ALLE Sensoren ~1s → pro Button billig; der Wert landet via {value}
+        # im Titel, States können nach Schwellwert einfärben (gt/lt).
+        return self._hwinfo.value(mon.get("sensor", ""), mon.get("group"))
 
     def _mon_weather(self, mon: dict, btn: dict) -> Any:
         # Wetter am (Auto-/manuellen) Standort als „⛅ 18°"-String (gecacht ~20 min, graceful → None).

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
-import { Clock, Gauge, Readout, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, Bar, Readout, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
@@ -832,10 +832,11 @@ export function TouchDeck() {
     const isGraph = render === 'graph'
     const isGauge = render === 'gauge'
     const isStat = render === 'stat'
+    const isBar = render === 'bar'
     const isClock = render === 'clock', isText = render === 'text', isReadout = render === 'readout'
     const isWidget = isClock || isText || isReadout
     const isFader = render === 'fader'
-    const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Fader)
+    const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat && !isBar   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Bar/Fader)
     const o = optsById[id] || {}
     const skin = o.skin || defSkin   // Kachel-Stil: Tasten-Override (opts.skin) vor globalem Default
     const statSty = isStat ? statStyle(v, o) : ''
@@ -853,8 +854,8 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat s-' + skin : '') + ((isWidget || isGauge || isStat || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat) ? 'var(--bg)' : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat s-' + skin : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={(isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat || isBar) ? 'var(--bg)' : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
@@ -868,6 +869,8 @@ export function TouchDeck() {
             </>
           ) : isGauge ? (
             <Gauge value={v.value} opts={o} />
+          ) : isBar ? (
+            <Bar value={v.value} opts={o} />
           ) : isStat ? (
             <span class="t-stat-v" style={statSty}>{v.title || (v.value != null ? String(v.value) : '—')}</span>
           ) : (

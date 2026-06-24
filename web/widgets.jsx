@@ -127,7 +127,7 @@ export function Gauge({ value, opts }) {
   const span = (max - min) || 1
   const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
   const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
-  const col = gaugeColor(t, o.color, o.crit)
+  const col = gaugeColor(t, resolveColor(o.color), o.crit)   // feste Farbe via resolveColor (Theme-/fam-Token möglich)
   const cx = 50, cy = 50, r = 38, A0 = 135, SW = 270
   const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)] }
   const arc = (a0, a1) => { const [x0, y0] = pol(a0), [x1, y1] = pol(a1); const lg = Math.abs(a1 - a0) > 180 ? 1 : 0
@@ -138,12 +138,36 @@ export function Gauge({ value, opts }) {
     <div class="t-gauge" style={`--acc:${col}`}>
       <svg class="t-gauge-svg" viewBox="0 0 100 74" preserveAspectRatio="xMidYMid meet">
         <path d={arc(A0, A0 + SW)} fill="none" stroke="#1a2230" stroke-width="9" stroke-linecap="round" />
-        {v !== null && <path d={arc(A0, A0 + SW * t)} fill="none" stroke={col} stroke-width="9" stroke-linecap="round"
-                             style={`filter:drop-shadow(0 0 4px ${col})`} />}
+        {v !== null && <path d={arc(A0, A0 + SW * t)} fill="none" stroke-width="9" stroke-linecap="round"
+                             style={`stroke:${col};filter:drop-shadow(0 0 4px ${col})`} />}
         {v !== null && <circle cx={tx.toFixed(2)} cy={ty.toFixed(2)} r="4.6" fill="#fff"
                                style={`filter:drop-shadow(0 0 6px ${col})`} />}
       </svg>
       <div class="t-gauge-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-gauge-u">{o.unit || ''}</span></div>
+    </div>
+  )
+}
+
+// Balken (render=bar): horizontaler (Standard) oder vertikaler Füll-Balken mit Wert+Einheit. Wertbereich aus
+// opts.min/max (Default 0..100), Einheit opts.unit, Ausrichtung opts.orient ('h' | 'v'). Farbe wie Gauge:
+// feste opts.color ODER Schwellwert grün→amber→rot, oberste 20% crit-rot (außer crit===false, z.B. Lüfter wo
+// hoch=gut). Skaliert via cqw. Reine Panel-Darstellung — physisches Stream Deck zeigt nur Titel/Wert.
+export function Bar({ value, opts }) {
+  const o = opts || {}
+  const min = Number.isFinite(+o.min) ? +o.min : 0
+  const max = Number.isFinite(+o.max) ? +o.max : 100
+  const span = (max - min) || 1
+  const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
+  const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
+  const col = gaugeColor(t, resolveColor(o.color), o.crit)   // feste Farbe via resolveColor (Theme-/fam-Token möglich)
+  const vert = o.orient === 'v'
+  const pct = (t * 100).toFixed(1) + '%'
+  const disp = v === null ? '–' : (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  const fillStyle = (vert ? `height:${pct}` : `width:${pct}`) + `;background:${col};box-shadow:0 0 6px ${col}`
+  return (
+    <div class={'t-bar' + (vert ? ' bar-vert' : '')} style={`--acc:${col}`}>
+      <div class="t-bar-track"><div class="t-bar-fill" style={fillStyle}></div></div>
+      <div class="t-bar-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-bar-u">{o.unit || ''}</span></div>
     </div>
   )
 }

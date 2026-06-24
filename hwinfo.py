@@ -16,6 +16,7 @@ SHM-/Registry-Sturm, wenn viele Sensor-Kacheln im selben Tick auswerten).
 from __future__ import annotations
 
 import logging
+import re
 import struct
 import time
 from typing import Optional
@@ -50,20 +51,34 @@ class HwinfoReader:
         self._ts = now
 
     def sensors(self) -> dict:
-        """{available, source, sensors:[{key,label,value,unit,sensor}]} — für Editor-Dropdown."""
+        """{available, source, sensors:[{key,label,value,unit,sensor,group,source}]} — für Editor-Dropdown.
+        ``key`` bleibt der eindeutige (display-)Schlüssel; ``group`` = HWiNFO-Sensorgruppe (Registry Sensor<N>),
+        treibt die robuste Wert-Auflösung in ``value()``."""
         self._refresh()
         return {
             "available": bool(self._cache), "source": self._source,
             "sensors": [{"key": k, "label": k, "value": self._cache[k]["value"],
-                         "unit": self._cache[k]["unit"], "sensor": self._cache[k]["sensor"]}
+                         "unit": self._cache[k]["unit"], "sensor": self._cache[k]["sensor"],
+                         "group": self._cache[k]["sensor"], "source": self._source}
                         for k in self._order],
         }
 
-    def value(self, key: str) -> Optional[float]:
-        """Aktueller Wert eines Sensors (per Label-Key) oder None."""
+    def value(self, key, group=None) -> Optional[float]:
+        """Aktueller Wert eines Sensors. Primär per (eindeutigem) Key — direkt + schnell + back-compat.
+        Findet er ihn nicht (Sensor-Reihenfolge verschoben), greift der robuste Fallback über
+        Gruppe + Basis-Label (so identifiziert ein Button seinen Sensor stabiler als nur über den Slug)."""
         self._refresh()
-        hit = self._cache.get(str(key or ""))
-        return hit["value"] if hit else None
+        k = str(key or "")
+        hit = self._cache.get(k)
+        if hit is not None:
+            return hit["value"]
+        if group:
+            base = re.sub(r"\s*\(\d+\)$", "", k)   # „Temperature (2)" → „Temperature"
+            g = str(group)
+            for hh in self._cache.values():
+                if hh.get("sensor") == g and hh.get("label") == base:
+                    return hh["value"]
+        return None
 
 
 def _uniq(key: str, data: dict) -> str:
@@ -99,7 +114,7 @@ def _read_shm():
             unit = c[268:284].split(b"\x00")[0].decode("latin-1", "ignore").strip()
             val = struct.unpack("<d", c[284:292])[0]
             key = _uniq(label, data)
-            data[key] = {"value": round(val, 2), "unit": unit, "sensor": ""}
+            data[key] = {"value": round(val, 2), "unit": unit, "sensor": "", "label": label}
             order.append(key)
         return data, order, "shm"
     except Exception as e:  # noqa: BLE001
@@ -146,7 +161,7 @@ def _read_registry():
         if not label or val is None:
             continue
         key = _uniq(label, data)
-        data[key] = {"value": round(val, 2), "unit": unit, "sensor": sensor}
+        data[key] = {"value": round(val, 2), "unit": unit, "sensor": sensor, "label": label}
         order.append(key)
     return data, order, "registry"
 

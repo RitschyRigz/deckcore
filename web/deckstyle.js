@@ -25,7 +25,30 @@ export function isThemeColor(c) {
 // Farbwert für einen CSS-`style`-String: Theme-Schlüsselwort → `var(--x)`, sonst die rohe Farbe (Hex)
 // unverändert. Leer/undefined → '' (Aufrufer setzt seinen eigenen Fallback, z.B. '#222').
 export function resolveColor(c) {
+  // Familien-Token (fam:gpu …) → --fam-*-CSS-Var (Quellen-Palette ODER Theme, je Farb-Modus, live umschaltbar).
+  if (typeof c === 'string' && c.startsWith('fam:')) return `var(--fam-${c.slice(4)})`
   return isThemeColor(c) ? `var(--${c})` : (c || '')
+}
+// Familien-Farb-Schlüssel (HWiNFO-Dashboard) — EINE Wahrheit für Palette-Editor + applyPalette + --fam-*-Defaults.
+export const FAM_KEYS = ['gpu', 'cpu', 'ram', 'board', 'power', 'fan', 'water', 'radiator', 'storage', 'net', 'other']
+// Quellen-Palette (Default) — muss zu service `_SMART` + deck.css `:root --fam-*` passen.
+export const FAM_PALETTE = {
+  gpu: '#35d07f', cpu: '#e0a92e', ram: '#1fc9b0', board: '#b07cf0', power: '#f5d423',
+  fan: '#5bb0ff', water: '#3a9bf0', radiator: '#37c6e0', storage: '#e0773a', net: '#7cc4f0', other: '#8aa0b8',
+}
+// Familien-Farben auf :root setzen — Modus 'source' nutzt die (ggf. editierte) Palette, 'theme' bindet jede
+// Familie an ein Theme-Schlüsselwort → die fam:-Kacheln folgen dem Theme. Live umschaltbar ohne Rebuild.
+const FAM_THEME = {
+  gpu: 'ok', cpu: 'warn', ram: 'accent2', board: 'accent', power: 'warn',
+  fan: 'accent', water: 'accent2', radiator: 'accent2', storage: 'warn', net: 'accent', other: 'off',
+}
+export function applyPalette(palette, mode) {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+  for (const k of FAM_KEYS) {
+    const val = mode === 'theme' ? `var(--${FAM_THEME[k]})` : ((palette && palette[k]) || FAM_PALETTE[k])
+    root.style.setProperty(`--fam-${k}`, val)
+  }
 }
 // Akzent-/Look-Farbe einer Kachel (Rahmen-Brackets + Icon-Glow = --acc). Explizite Farbe (Theme-Keyword →
 // var, sonst Hex) ODER — wenn KEINE gesetzt bzw. der alte „#222"-Sentinel — der THEME-Akzent. So folgt der
@@ -64,6 +87,7 @@ export function applyDeckLook(look) {
     root.style.setProperty('--press', resolveColor(lk.pressColor) || 'var(--accent2)')
     root.style.setProperty('--folder-w', lk.folder === false ? '0' : '2px')
     root.style.setProperty('--folder', resolveColor(lk.folderColor) || '#c8a44e')
+    applyPalette(lk.palette, lk.colorMode)   // Daten-Viz-Familienfarben (fam:*) mit anwenden (Quelle/Theme + Edits)
   } catch (e) { /* headless / kein DOM */ }
 }
 

@@ -4,6 +4,14 @@
    Theme-Variablen (--bg/--bg2/--bg3/--fg/--line/--accent/--accent2/--muted/--ok/--err ...)
    liefert die Host-App (z.B. RigzDeck: eigene base.css). */
 
+/* Familien-Farben (HWiNFO-Dashboard, fam:-Token → resolveColor → var(--fam-*)). Quellen-Palette als Default;
+   applyPalette() (deckstyle.js) überschreibt sie inline auf documentElement (Quellen-Palette ODER Theme). */
+:root {
+  --fam-gpu: #35d07f; --fam-cpu: #e0a92e; --fam-ram: #1fc9b0; --fam-board: #b07cf0; --fam-power: #f5d423;
+  --fam-fan: #5bb0ff; --fam-water: #3a9bf0; --fam-radiator: #37c6e0; --fam-storage: #e0773a;
+  --fam-net: #7cc4f0; --fam-other: #8aa0b8;
+}
+
 /* ===== Editor + Desktop-Vorschau (.sd-*) ===== */
 /* 🎛 Stream Deck — physische Tasten-Vorschau + Editor */
 .sd-key {
@@ -545,6 +553,20 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   white-space: nowrap; overflow: hidden; }
 /* Sensorname (Label) fest nach UNTEN → der Wert hat die Mitte für sich (kein Überlappen mehr). */
 .t-key.is-stat .t-key-label { position: absolute; left: 0; right: 0; bottom: 2px; }
+
+/* Balken/Bar (Füllstand) — reine Panel-Kachel, Wert skaliert via cqw. Horizontal (Standard) oder vertikal (bar-vert). */
+.t-key.is-bar, .sd-prev-key.is-bar { container-type: inline-size; padding: 6px; }
+.t-bar { position: relative; width: 100%; height: 100%; box-sizing: border-box;
+  display: flex; flex-direction: column; justify-content: center; gap: 5cqw; }
+.t-bar-track { position: relative; width: 100%; height: 26cqw; min-height: 9px; border-radius: 6px;
+  background: #1a2230; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .05); overflow: hidden; }
+.t-bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 6px; transition: width .25s ease; }
+.t-bar-v { text-align: center; font-weight: 700; color: #eef4ff; line-height: 1; text-shadow: 0 0 8px var(--acc); }
+.t-bar-u { font-size: .5em; font-weight: 600; color: #9fb0c6; margin-left: 1px; }
+/* Vertikal: Balken steht neben dem Wert, füllt von unten. */
+.t-bar.bar-vert { flex-direction: row; align-items: center; gap: 7cqw; }
+.t-bar.bar-vert .t-bar-track { width: 34cqw; min-width: 12px; height: 100%; }
+.t-bar.bar-vert .t-bar-fill { left: 0; bottom: 0; top: auto; width: 100%; height: 0; transition: height .25s ease; }
 
 /* Vertikaler Wave-Link-Fader (Schieberegler + VU-Säule) — reine Panel-Kachel.
    Größen in cqw skalieren mit der Kachel (braucht .cqsize am Key, s.o.). */

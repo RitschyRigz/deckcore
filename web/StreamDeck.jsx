@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
-import { Clock, Gauge, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, Bar, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Sparkline } from './TouchDeck.jsx'   // reine Verlaufskurve fürs WYSIWYG (zieht ihre Helfer mit; Panel unberührt)
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
 import { THEME_PRESETS, THEME_VARS } from './themes.js'
@@ -367,10 +367,13 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
   if (render === 'gauge') {
     return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
   }
+  if (render === 'bar') {
+    return <div class={keyClass(eff, base) + ' is-bar cqsize'} style="background:var(--bg)"><Bar value={v.value} opts={o} /></div>
+  }
   if (render === 'stat') {
     return <div class={keyClass(eff, base) + ' is-stat cqsize'} style="background:var(--bg)"><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
   }
-  const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
+  const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat' && render !== 'bar'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
     <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat s-' + skin : '')}
          style={isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (resolveColor(v.color) || 'var(--bg3)'))}>
@@ -1954,6 +1957,14 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${r.created || 0} neu · ${r.updated || 0} aktualisiert${r.removed ? ` · ${r.removed} entfernt` : ''}${r.hidden ? ` · ${r.hidden} ausgeblendet` : ''} → Pool` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
+  // 1-Klick HWiNFO-Dashboard (Übersicht + Kategorie-Ordner). Liest die Optionen oben (Farben/Umfang) + baut
+  // alles über die idempotente Builder-Route — überschreibt keine Edits, belebt gelöschte Kacheln nicht wieder.
+  const buildDash = () => {
+    setGenBusy(true); setMsg(null)
+    postJSON('/api/streamdeck/hwinfo/dashboard', { color_mode: opts.color_mode || 'source', curation: opts.curation || 'essential' })
+      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ „📊 System" + ${r.decks || 0} Ordner · ${r.tiles || 0} Kacheln` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
+      .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
+  }
   const st = status && status.state !== 'unknown' ? status : null
   if (it.custom) return (
     <div class="sd-int-panel">
@@ -2022,9 +2033,11 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
                 : <input class="sd-int-num" type="number" min="1" max="4" value={opts[op.key]} onInput={(e) => setOpts((o) => ({ ...o, [op.key]: Number(e.currentTarget.value) || op.default }))} />}
             </div>
           ))}
-          <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px">
+          <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px;flex-wrap:wrap">
+            {el.dashboard && <button class="btn small" disabled={genBusy} onClick={buildDash}
+                title={'Übersichts-Deck „📊 System" + Kategorie-Ordner (CPU/GPU/Mainboard/Strom/Lüfter/…) aus allen Sensoren — idempotent, überschreibt keine Edits'}>{genBusy ? '… baue' : '📊 Dashboard bauen'}</button>}
             <button class="btn small" disabled={genBusy} onClick={gen}>{genBusy ? '… wende an' : `✨ Anwenden (${totalSel()})`}</button>
-            <span class="muted" style="font-size:12px">angehakt = anlegen · abgehakt = entfernen</span>
+            <span class="muted" style="font-size:12px">{el.dashboard ? 'Dashboard = fertiges Layout · Anwenden = nur angehakte Sensoren in den Pool' : 'angehakt = anlegen · abgehakt = entfernen'}</span>
             {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
           </div>
         </>
@@ -2875,13 +2888,14 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
   const stateless = mType === 'none'
   const isWidget = render === 'text' || render === 'clock' || render === 'readout'
   const isGauge = render === 'gauge'
+  const isBar = render === 'bar'
   // Render-Wechsel: beim Sprung auf „Gauge" sinnvolle Grenzen SICHTBAR vorbefüllen (sonst leere Felder →
   // implizit 0..100, der Nutzer sieht nichts zum Anpassen). Einheit aus dem Titel-Template („{value} °C").
   // Die smarten Grenzen je Sensor setzt weiterhin der HWiNFO-Generator (_smart_classify) — hier nur der
   // manuelle Editor-Weg, bewusst ohne Klassifizier-Duplikat.
   const pickRender = (r) => {
     onRender(r)
-    if (r === 'gauge' && (opts || {}).min == null && (opts || {}).max == null) {
+    if ((r === 'gauge' || r === 'bar') && (opts || {}).min == null && (opts || {}).max == null) {
       const o = opts || {}
       const m = String((def || {}).title || '').match(/\{value\}\s*([°%]?[\w/]*)/)
       onOpts({ ...o, min: 0, max: 100, unit: o.unit || (m && m[1]) || undefined })
@@ -2908,6 +2922,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           <option value="clock">🕐 Uhr</option>
           <option value="fader">🎚 Fader (Wave Link / Windows-Lautstärke)</option>
           <option value="gauge">🎯 Gauge (Glow-Bogen)</option>
+          <option value="bar">📊 Balken (Füllstand)</option>
           <option value="stat">🔢 Stat (große Glow-Zahl)</option>
           <option value="readout">🪪 Status-Karte (Rahmen + Auto-Emoji)</option>
         </select>
@@ -2929,9 +2944,11 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
       </div>
       {isWidget ? (
         <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} />
-      ) : isGauge ? (
+      ) : (isGauge || isBar) ? (
         <>
-          <p class="muted sd-help">Radial-Gauge mit Glow-Bogen: der Überwachungs-Wert füllt den Bogen. <b>Min/Max</b> = Wertebereich, <b>Einheit</b> = Suffix (°C, %, …). Farbe automatisch grün→amber→rot nach Schwellwert, oder feste Farbe. Skaliert mit der Kachelgröße.</p>
+          <p class="muted sd-help">{isBar
+            ? <>Füll-Balken: der Überwachungs-Wert füllt den Balken von <b>Min</b> bis <b>Max</b>. <b>Einheit</b> = Suffix (°C, %, …). Farbe automatisch grün→amber→rot nach Schwellwert, oder feste Farbe. <b>Richtung</b> horizontal/vertikal. Skaliert mit der Kachelgröße.</>
+            : <>Radial-Gauge mit Glow-Bogen: der Überwachungs-Wert füllt den Bogen. <b>Min/Max</b> = Wertebereich, <b>Einheit</b> = Suffix (°C, %, …). Farbe automatisch grün→amber→rot nach Schwellwert, oder feste Farbe. Skaliert mit der Kachelgröße.</>}</p>
           <div class="reward-row sd-state" style="margin-top:8px;flex-wrap:wrap">
             <span class="muted conn-label">Bereich</span>
             <input class="so-delay" style="width:64px" type="number" placeholder="Min" value={(opts || {}).min ?? ''}
@@ -2946,6 +2963,16 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                      onChange={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.checked ? undefined : '#39d8ff' })} /> Schwellwert-Farbe</label>
             {(opts || {}).color && <input type="color" class="sd-color" value={(opts || {}).color}
                    onInput={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.value })} />}
+            {isBar && (
+              <>
+                <span class="muted conn-label" style="margin-left:6px">Richtung</span>
+                <select class="so-delay" value={(opts || {}).orient || 'h'}
+                        onChange={(e) => onOpts({ ...(opts || {}), orient: e.currentTarget.value === 'h' ? undefined : e.currentTarget.value })}>
+                  <option value="h">Horizontal</option>
+                  <option value="v">Vertikal</option>
+                </select>
+              </>
+            )}
           </div>
         </>
       ) : (

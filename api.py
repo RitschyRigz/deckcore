@@ -94,6 +94,14 @@ def build_streamdeck_router(
         body = {ids:[integration_id, …]}."""
         return JSONResponse(get_service(request).quickstart_apply((body or {}).get("ids") or []))
 
+    @r.post("/api/streamdeck/hwinfo/dashboard")
+    def streamdeck_hwinfo_dashboard(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """1-Klick HWiNFO-Dashboard: Übersichts-Deck + Kategorie-Ordner aus den freigegebenen Sensoren.
+        body = {color_mode:'source'|'theme', curation:'essential'|'all'}."""
+        b = body or {}
+        return JSONResponse(get_service(request).build_hwinfo_dashboard(
+            color_mode=str(b.get("color_mode") or "source"), curation=str(b.get("curation") or "essential")))
+
     @r.post("/api/integrations/{iid}")
     def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:
         """Integration an-/abschalten (Basis nicht abschaltbar). Reines Editor-Gating —
