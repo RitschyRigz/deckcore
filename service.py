@@ -408,7 +408,7 @@ _SCENE_ROLE_KW = (
     ("exclusive", ("vdo", "ninja", "gast", "guest", "co-host", "cohost", "remote")),
     ("start", ("start", "begin", "warte", "soon", "intro", "bald", "gleich")),
     ("end", ("end", "ende", "outro", "tschü", "tschau", "bye", "credits", "abspann")),
-    ("pause", ("brb", "coffee", "kaffee", "pause", "break", "bbl", "afk", "gleich zurück")),
+    ("pause", ("brb", "right back", "gleich zurück", "coffee", "kaffee", "pause", "break", "bbl", "afk")),
     ("recap", ("recap", "rückblick", "ruckblick", "zusammenfass", "replay", "highlight")),
     ("capture", ("game", "capture", "gameplay", "spiel", "konsole", "console", "switch",
                  "ps5", "ps4", "playstation", "xbox", "gaming", "ingame", "in-game")),
