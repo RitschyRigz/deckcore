@@ -837,6 +837,7 @@ export function TouchDeck() {
     const isWidget = isClock || isText || isReadout
     const isFader = render === 'fader'
     const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat && !isBar   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Bar/Fader)
+    const isViz = isGraph || isGauge || isStat || isBar   // Daten-Viz: nimmt jetzt am Look teil (Skin/Rahmen/Glow/--acc/BG) wie flache Tasten
     const o = optsById[id] || {}
     const skin = o.skin || defSkin   // Kachel-Stil: Tasten-Override (opts.skin) vor globalem Default
     const statSty = isStat ? statStyle(v, o) : ''
@@ -854,8 +855,8 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + (isFlat ? ' t-flat s-' + skin : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
-              style={(isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (isWidget ? 'transparent' : ((isGraph || isGauge || isStat || isBar) ? 'var(--bg)' : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
+              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (pressed === id ? ' pressed' : '')}
+              style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>

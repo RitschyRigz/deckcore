@@ -1308,12 +1308,17 @@ class DeckCoreService:
                     note += " ⚠ Sehr viele erkannt — vorausgewählt sind nur die empfohlenen; hake bei Bedarf weitere an."
                 return {"available": True, "note": note, "groups": groups, "dashboard": True,
                         "options": [
+                            {"key": "render_mode", "label": "Darstellung",
+                             "choices": [["graph", "📈 Graphen (Smart-Skala)"], ["smart", "🎯 Gemischt (mit Gauges/Balken)"]],
+                             "default": "graph"},
                             {"key": "color_mode", "label": "Farben",
                              "choices": [["source", "Quelle (GPU grün, CPU gelb …)"], ["theme", "Theme-gebunden"]],
                              "default": (self._look.get("colorMode") or "source")},
                             {"key": "curation", "label": "Umfang",
                              "choices": [["essential", "Empfohlen (wichtigste)"], ["all", "Alle Sensoren"]],
-                             "default": "essential"}]}
+                             "default": "essential"},
+                            {"key": "override_colors", "label": "Alte Farbwerte überschreiben",
+                             "type": "bool", "default": False}]}
             if iid == "obs":
                 sc = (self.obs_scenes() or {}).get("scenes") or []
                 if not sc:
@@ -3106,13 +3111,19 @@ class DeckCoreService:
                 break
         return out
 
-    def build_hwinfo_dashboard(self, *, color_mode: str = "source", curation: str = "essential") -> dict:
+    def build_hwinfo_dashboard(self, *, color_mode: str = "source", curation: str = "essential",
+                               render_mode: str = "graph", override_colors: bool = False) -> dict:
         """1-Klick: aus den freigegebenen HWiNFO-Sensoren ein geordnetes, hübsches Dashboard bauen — ein
-        „📊 System"-Übersichts-Deck (wichtige Sensoren als Gauges/Balken + Ordner-Öffner) und pro nicht-leerer
-        Kategorie ein Ordner-Deck (CPU/GPU/Mainboard/RAM/Strom/Lüfter/Wasser/Radiator/Speicher/Netzwerk).
+        „📊 System"-Übersichts-Deck (wichtige Sensoren + Ordner-Öffner) und pro nicht-leerer Kategorie ein
+        Ordner-Deck (CPU/GPU/Mainboard/RAM/Strom/Lüfter/Wasser/Radiator/Speicher/Netzwerk).
         Hardware-agnostisch (Lüfter ≠ Wasser; Wasser-/Radiator-Sektion nur bei echten Loop-Sensoren). Idempotent
         + additiv: überschreibt KEINE User-Edits (``_regen_preserve``) und belebt bewusst gelöschte Kacheln NICHT
-        wieder (``_removed``). ``color_mode`` = 'source'|'theme', ``curation`` = 'essential'|'all'."""
+        wieder (``_removed``). ``color_mode`` = 'source'|'theme', ``curation`` = 'essential'|'all'.
+        ``render_mode`` = 'graph' (Stock: die Smart-Klassifizierung MIT min/max-Skala + krit. Zonen bleibt 1:1,
+        nur Gauges/Balken werden als Verlaufs-Graph gezeichnet — Wert im Titel) | 'smart' (Original-Mix
+        Gauge/Balken/Graph/Stat je Messart). ``override_colors`` = True überschreibt zusätzlich die (sonst per
+        ``_regen_preserve`` bewahrte) ``default.color`` bestehender Kacheln mit der frischen Familien-Farbe —
+        opt-in „alte Farbwerte überschreiben" (Default False = User-Farben bleiben)."""
         data = self._hwinfo.sensors() or {}
         if not data.get("available"):
             return {"ok": False, "reason": "hwinfo_unavailable", "hint": _HWINFO_SETUP_HINT}
@@ -3122,6 +3133,7 @@ class DeckCoreService:
         cm = "theme" if str(color_mode) == "theme" else "source"
         self._look = _sanitize_look({**self._look, "colorMode": cm})   # Farb-Modus merken (persistent im Look)
         everything = (str(curation) == "all")
+        rmode = "smart" if str(render_mode) == "smart" else "graph"   # Stock = Smart-Skala, Gauges/Balken aber als Graph
         # Klassifizieren (+ Original-Index für deterministische Tie-Breaks).
         classified = []   # (idx, s, nm, unit, c)
         for idx, s in enumerate(sensors):
@@ -3140,13 +3152,17 @@ class DeckCoreService:
             buckets.setdefault(t[4]["cat"], []).append(t)
 
         def _sensor_fn(s, nm, unit, c):
+            # Smart-Klassifizierung (Skala/Bereich/Farbe/Kategorie/krit. Zone) BLEIBT 1:1. Im Stock-Modus 'graph'
+            # werden danach nur die Gauge-/Balken-Kacheln auf Graph umgestellt — die min/max-Skala wandert in den Verlauf.
             eff = c["render"]
             opts = dict(c["opts"]) if c.get("opts") else None
-            if c["measure"] == "fill" and unit != "%":   # absolute Belegung → Balken mit Total/Auto-Bereich
+            if c["measure"] == "fill" and unit != "%":   # absolute Belegung → Total-/Auto-Bereich (wie smart)
                 ar = _auto_range("fill", c["fam"], s.get("value"), totals.get(c["fam"]))
                 if ar:
                     eff = "bar"
                     opts = {**ar, "unit": unit, "color": "fam:" + c["fam"]}
+            if rmode == "graph" and eff in ("gauge", "bar"):   # „keine Gauges, sondern Graphen" — Skala bleibt erhalten
+                eff = "graph"
             fn = {"id": _hw_bid(s), "label": nm, "pool_cat": c["cat"],
                   "action": {"type": "none"}, "monitor": _hw_monitor(s), "states": [],
                   "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""),
@@ -3156,7 +3172,7 @@ class DeckCoreService:
             if eff in ("gauge", "bar") and not opts:
                 opts = {"min": 0, "max": 100, "unit": unit, "color": "fam:" + c["fam"]}
             if eff == "graph" and opts:
-                opts.pop("color", None)
+                opts.pop("color", None)   # Graph färbt per SVG-Stroke (default.color); Skala min/max/crit BLEIBT in opts
             if eff not in ("gauge", "bar", "graph"):
                 opts = None
             if opts:
@@ -3199,6 +3215,11 @@ class DeckCoreService:
                         b["opts"] = fn["opts"]
                     else:
                         b.pop("opts", None)
+                    if override_colors:   # opt-in: alte (bewahrte) Farbe FRISCH erzwingen → Familien-Farbe statt User-Blau
+                        fcol = (fn.get("default") or {}).get("color")
+                        if fcol is not None:
+                            b.setdefault("default", {})["color"] = fcol
+                            b.pop("color", None)   # evtl. Legacy-Top-Level-Farbe weg → default.color ist die Wahrheit
                 if any(i["button"] == fn["id"] for i in deck["items"]):
                     return True   # schon platziert → nicht verschieben (idempotent)
                 x, y = pack(w, h)

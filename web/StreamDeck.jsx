@@ -345,7 +345,7 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
   }
   if (render === 'graph') {
     return (
-      <div class={keyClass(eff, base) + ' is-graph cqsize'} style="background:var(--bg)">
+      <div class={keyClass(eff, base) + ' is-graph cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}>
         {v.title ? <span class="t-key-title">{v.title}</span> : null}
         <Sparkline data={_previewHist[uid]} color={v.color} opts={o} uid={uid} />
       </div>
@@ -365,13 +365,13 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
     return <div class={keyClass(eff, base) + ' t-widget is-readout cqsize'} style="background:transparent"><Readout v={v} opts={o} skin={skin} /></div>
   }
   if (render === 'gauge') {
-    return <div class={keyClass(eff, base) + ' is-gauge cqsize'} style="background:var(--bg)"><Gauge value={v.value} opts={o} /></div>
+    return <div class={keyClass(eff, base) + ' is-gauge cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><Gauge value={v.value} opts={o} /></div>
   }
   if (render === 'bar') {
-    return <div class={keyClass(eff, base) + ' is-bar cqsize'} style="background:var(--bg)"><Bar value={v.value} opts={o} /></div>
+    return <div class={keyClass(eff, base) + ' is-bar cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><Bar value={v.value} opts={o} /></div>
   }
   if (render === 'stat') {
-    return <div class={keyClass(eff, base) + ' is-stat cqsize'} style="background:var(--bg)"><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
+    return <div class={keyClass(eff, base) + ' is-stat cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
   }
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat' && render !== 'bar'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
@@ -1961,7 +1961,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
   // alles über die idempotente Builder-Route — überschreibt keine Edits, belebt gelöschte Kacheln nicht wieder.
   const buildDash = () => {
     setGenBusy(true); setMsg(null)
-    postJSON('/api/streamdeck/hwinfo/dashboard', { color_mode: opts.color_mode || 'source', curation: opts.curation || 'essential' })
+    postJSON('/api/streamdeck/hwinfo/dashboard', { color_mode: opts.color_mode || 'source', curation: opts.curation || 'essential', render_mode: opts.render_mode || 'graph', override_colors: !!opts.override_colors })
       .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ „📊 System" + ${r.decks || 0} Ordner · ${r.tiles || 0} Kacheln` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
@@ -2026,11 +2026,16 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
           ))}
           {(el.options || []).map((op) => (
             <div key={op.key} class="sd-int-gen" style="margin-top:10px">
-              <span class="muted" style="font-size:12px">{op.label}:</span>
-              {op.choices
-                ? <select class="sd-pool-cat" value={opts[op.key]} onChange={(e) => setOpts((o) => ({ ...o, [op.key]: e.currentTarget.value }))}>
-                    {op.choices.map((ch) => <option value={ch[0]}>{ch[1]}</option>)}</select>
-                : <input class="sd-int-num" type="number" min="1" max="4" value={opts[op.key]} onInput={(e) => setOpts((o) => ({ ...o, [op.key]: Number(e.currentTarget.value) || op.default }))} />}
+              {op.type === 'bool'
+                ? <label class="sd-int-chk sd-int-chk-x" title="An = beim Bauen die alten (bewahrten) Farbwerte mit der frischen Familien-Farbe überschreiben">
+                    <input type="checkbox" checked={!!opts[op.key]} onChange={(e) => setOpts((o) => ({ ...o, [op.key]: e.currentTarget.checked }))} /> {op.label}</label>
+                : <>
+                    <span class="muted" style="font-size:12px">{op.label}:</span>
+                    {op.choices
+                      ? <select class="sd-pool-cat" value={opts[op.key]} onChange={(e) => setOpts((o) => ({ ...o, [op.key]: e.currentTarget.value }))}>
+                          {op.choices.map((ch) => <option value={ch[0]}>{ch[1]}</option>)}</select>
+                      : <input class="sd-int-num" type="number" min="1" max="4" value={opts[op.key]} onInput={(e) => setOpts((o) => ({ ...o, [op.key]: Number(e.currentTarget.value) || op.default }))} />}
+                  </>}
             </div>
           ))}
           <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px;flex-wrap:wrap">
@@ -2889,6 +2894,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
   const isWidget = render === 'text' || render === 'clock' || render === 'readout'
   const isGauge = render === 'gauge'
   const isBar = render === 'bar'
+  const isViz = isGauge || isBar || render === 'graph' || render === 'stat'   // Daten-Viz: Look (Stil/Rahmen/Glow/BG) wie normale Tasten editierbar
   // Render-Wechsel: beim Sprung auf „Gauge" sinnvolle Grenzen SICHTBAR vorbefüllen (sonst leere Felder →
   // implizit 0..100, der Nutzer sieht nichts zum Anpassen). Einheit aus dem Titel-Template („{value} °C").
   // Die smarten Grenzen je Sensor setzt weiterhin der HWiNFO-Generator (_smart_classify) — hier nur der
@@ -2931,7 +2937,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 onChange={(e) => onOpts({ ...(opts || {}), size: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
           {Object.keys(SIZE_LABELS).map((k) => <option value={k}>{SIZE_LABELS[k]}</option>)}
         </select>
-        {(!render || render === 'value' || render === 'fader') && (
+        {(!render || render === 'value' || render === 'fader' || isViz) && (
           <>
             <span class="muted conn-label" style="margin-left:8px">Stil</span>
             <select class="so-delay" value={(opts || {}).skin || ''}
@@ -2939,6 +2945,16 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                     onChange={(e) => onOpts({ ...(opts || {}), skin: e.currentTarget.value || undefined })}>
               {TILE_SKIN_OPTS.map(([v, l]) => <option value={v}>{l}</option>)}
             </select>
+          </>
+        )}
+        {isViz && (
+          <>
+            <span class="muted conn-label" style="margin-left:8px">Hintergrund</span>
+            <label class="muted" style="display:flex;align-items:center;gap:4px" title="Aus = folgt dem Theme (--bg); an = feste Farbe für diese Kachel">
+              <input type="checkbox" checked={!(opts || {}).bg}
+                     onChange={(e) => onOpts({ ...(opts || {}), bg: e.currentTarget.checked ? undefined : '#10131a' })} /> Theme</label>
+            {(opts || {}).bg && <input type="color" class="sd-color" value={(opts || {}).bg}
+                   onInput={(e) => onOpts({ ...(opts || {}), bg: e.currentTarget.value })} />}
           </>
         )}
       </div>
