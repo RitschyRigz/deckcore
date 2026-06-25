@@ -36,6 +36,11 @@ export const FAM_PALETTE = {
   gpu: '#35d07f', cpu: '#e0a92e', ram: '#1fc9b0', board: '#b07cf0', power: '#f5d423',
   fan: '#5bb0ff', water: '#3a9bf0', radiator: '#37c6e0', storage: '#e0773a', net: '#7cc4f0', other: '#8aa0b8',
 }
+// Anzeigenamen der Familien (Daten-Viz-Farb-Editor) — Reihenfolge folgt FAM_KEYS; muss zu service `_FAM_CAT` passen.
+export const FAM_LABELS = {
+  gpu: 'GPU', cpu: 'CPU', ram: 'RAM', board: 'Mainboard', power: 'Strom', fan: 'Lüfter',
+  water: 'Wasser', radiator: 'Radiator', storage: 'Festplatten', net: 'Netzwerk', other: 'Sonstige',
+}
 // Familien-Farben auf :root setzen — Modus 'source' nutzt die (ggf. editierte) Palette, 'theme' bindet jede
 // Familie an ein Theme-Schlüsselwort → die fam:-Kacheln folgen dem Theme. Live umschaltbar ohne Rebuild.
 const FAM_THEME = {

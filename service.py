@@ -288,6 +288,20 @@ def _sanitize_opts(o) -> dict:
         out["crit"] = bool(o.get("crit"))              # Kritisch-Rot (oberste 20%) ein/aus (False = z.B. Lüfter/Pumpe, hoch=gut)
     if o.get("orient") in ("h", "v"):
         out["orient"] = o["orient"]                     # Balken-Ausrichtung (horizontal/vertikal)
+    # Graph (Sparkline) — jedes Element einzeln: Linie/Füllung/Punkt/Eckwerte an-aus, eigene Farben
+    # (Theme-Keyword / fam:-Token / Hex), Linienstärke. Alle optional → fehlt = Default (Element an, Farbe folgt color).
+    for k in ("line", "fill", "dot", "labels"):
+        if k in o:
+            out[k] = bool(o.get(k))
+    for k in ("lineColor", "fillColor", "dotColor"):
+        if _is_color(o.get(k)):
+            out[k] = o[k]
+    try:
+        if o.get("lineWidth") not in (None, ""):
+            lw = float(o["lineWidth"])
+            out["lineWidth"] = 0.5 if lw < 0.5 else (6.0 if lw > 6 else lw)
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -695,8 +709,16 @@ def _smart_classify(name: str, unit: str, group: str = "") -> dict:
     cat, famkey = _FAM_CAT[fam]
     color = _SMART.get(famkey, _SMART["other"])   # Hex (Back-Compat fürs `color`-Feld); Kacheln nutzen das Token
     coltok = "fam:" + famkey                        # Familien-Token → Frontend löst zur Palette/zum Theme auf
-    ret = lambda render, opts: {"render": render, "color": color, "cat": cat, "fam": famkey,   # noqa: E731
-                                "component": comp, "measure": meas, "opts": opts}
+
+    def ret(render, opts):
+        # Graph/Stat tragen die Familienfarbe jetzt AUCH als `fam:`-Token in den Opts (wie Gauge/Bar) → das
+        # Frontend löst sie live zur Palette/zum Theme auf (theme-follow). Gauge/Bar setzen ihre Farbe schon
+        # selbst in opts; hier nur die zuvor farblosen Graph/Stat ergänzen.
+        o = dict(opts) if opts else {}
+        if render in ("graph", "stat"):
+            o.setdefault("color", coltok)
+        return {"render": render, "color": color, "cat": cat, "fam": famkey,
+                "component": comp, "measure": meas, "opts": (o or None)}
     if meas == "temp":
         is_f = ("f" in u)
         lo, hi, crit = _hw_range("temp", fam, is_f)
@@ -720,7 +742,7 @@ def _smart_classify(name: str, unit: str, group: str = "") -> dict:
         return ret("graph", {"crit": False})
     if meas == "fill":                                    # Belegung: % → Balken; absolut (GB/MB) → Graph
         if u == "%":                                      #   (der Dashboard-Builder hebt absolute auf Balken+Total)
-            return ret("bar", {"min": 0, "max": 100, "unit": "%", "crit": True, "color": color})
+            return ret("bar", {"min": 0, "max": 100, "unit": "%", "crit": True, "color": coltok})
         return ret("graph", {"crit": False})
     return ret("stat", None)                              # Rest → Stat-Zahl
 
@@ -796,6 +818,13 @@ def _hw_dcolor(c: dict, render: str) -> str:
     umschaltbar, via style/--acc). Graph/Stat brauchen eine konkrete Farbe (SVG-Attribute / Alpha-Suffix)
     → Familien-Hex. EINE Wahrheit für Smart-Import / Integration / Dashboard."""
     return ("fam:" + c["fam"]) if render in ("gauge", "bar") else c["color"]
+
+
+# Opts-Keys, die der NUTZER besitzt (Kachel-Stil / Hintergrund / Graph-Element-Look) — beim Dashboard-Rebuild
+# (der render/opts sonst AUTORITATIV frisch erzwingt) erhalten, damit ein erneutes „Bauen" handgesetzte Farben/
+# Stärken nicht wegwirft. Strukturelle Keys (min/max/crit/color/unit/orient) bleiben Generator-Wahrheit.
+_HW_OPT_COSMETIC = ("skin", "bg", "size", "font", "line", "lineColor", "lineWidth",
+                    "fill", "fillColor", "dot", "dotColor", "labels")
 
 
 # HWiNFO kann (v.a. via Shared Memory) HUNDERTE Sensoren liefern → der Auto-Import kuratiert ab hier.
@@ -1649,9 +1678,9 @@ class DeckCoreService:
                     opts = dict(sm["opts"]) if sm.get("opts") else None
                     if eff in ("gauge", "bar") and not opts:   # erzwungener Gauge/Bar ohne Klassifizier-Bereich → Default
                         opts = {"min": 0, "max": 100, "unit": unit, "color": "fam:" + sm["fam"]}
-                    if eff == "graph" and opts:                # Graph nutzt keine feste Farbe (SVG-Attribut) → Token raus
-                        opts.pop("color", None)
-                    if eff not in ("gauge", "bar", "graph"):   # value/stat: keine Widget-Opts
+                    if eff in ("graph", "stat"):               # Graph/Stat: Familien-Token in opts → theme-follow
+                        opts = {**(opts or {}), "color": "fam:" + sm["fam"]}
+                    elif eff not in ("gauge", "bar"):          # value: keine Widget-Opts
                         opts = None
                     if opts:
                         fn["opts"] = opts
@@ -3287,9 +3316,9 @@ class DeckCoreService:
                 fn["render"] = eff
             if eff in ("gauge", "bar") and not opts:
                 opts = {"min": 0, "max": 100, "unit": unit, "color": "fam:" + c["fam"]}
-            if eff == "graph" and opts:
-                opts.pop("color", None)   # Graph färbt per SVG-Stroke (default.color); Skala min/max/crit BLEIBT in opts
-            if eff not in ("gauge", "bar", "graph"):
+            if eff in ("graph", "stat"):   # Graph/Stat: Familien-Token in opts → theme-follow (Frontend löst live auf)
+                opts = {**(opts or {}), "color": "fam:" + c["fam"]}
+            elif eff not in ("gauge", "bar"):
                 opts = None
             if opts:
                 fn["opts"] = opts
@@ -3328,7 +3357,15 @@ class DeckCoreService:
                     else:
                         b.pop("render", None)
                     if fn.get("opts"):
-                        b["opts"] = fn["opts"]
+                        merged = dict(fn["opts"])          # Generator-Wahrheit (Skala/Familienfarbe/Render) als Basis …
+                        old = b.get("opts") or {}
+                        for k in _HW_OPT_COSMETIC:         # … User-Kosmetik (Stil/BG/Graph-Element-Look) über den Rebuild bewahren
+                            if k in old:
+                                merged[k] = old[k]
+                        if override_colors:                # opt-in: handgesetzte Element-Farben weg → zurück auf Familien-Token
+                            for k in ("lineColor", "fillColor", "dotColor"):
+                                merged.pop(k, None)
+                        b["opts"] = merged
                     else:
                         b.pop("opts", None)
                     if override_colors:   # opt-in: alte (bewahrte) Farbe FRISCH erzwingen → Familien-Farbe statt User-Blau

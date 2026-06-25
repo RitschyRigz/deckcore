@@ -179,16 +179,25 @@ function FrametimeSpark({ data, pct, color }) {
 
 // Mini-Verlaufskurve (Sparkline) aus einer Zahlenreihe — autoskaliert auf Min/Max der Daten.
 // Politur: Fläche unter der Kurve gefüllt, Live-Punkt am aktuellen Wert, Min/Max-Werte in den Ecken.
-// Stat-Kachelfarbe: Kategoriefarbe (v.color), bei festem Bereich + oberste 20% (crit) → ROT. Sonst CSS-Gold.
-function statStyle(v, o) {
-  let sc = (v.color && !isDim(v.color)) ? v.color : null
-  if (o && Number.isFinite(+o.min) && Number.isFinite(+o.max) && o.crit !== false && v.value != null && v.value !== '') {
+// Stat-Kachelfarbe: opts.color (fam:-Token/Theme/Hex) bevorzugt, sonst die Tasten-Farbe (v.color); bei festem
+// Bereich + oberste 20% (crit) → ROT. Sonst CSS-Gold. Farbe via resolveColor (löst fam:/Theme live auf → Stat
+// folgt dem Theme), Glow-Alpha via color-mix (funktioniert mit CSS-Var; früher brach `${sc}88` bei Tokens).
+export function statStyle(v, o) {
+  o = o || {}
+  let sc = o.color || ((v.color && !isDim(v.color)) ? v.color : null)
+  if (Number.isFinite(+o.min) && Number.isFinite(+o.max) && o.crit !== false && v.value != null && v.value !== '') {
     const t = (+v.value - +o.min) / ((+o.max - +o.min) || 1)
     if (t >= 0.8) sc = '#ff5252'
   }
-  return sc ? `color:${sc};text-shadow:0 0 9px ${sc}88,0 0 2px ${sc}` : ''
+  if (!sc) return ''
+  const c = resolveColor(sc)
+  return `color:${c};text-shadow:0 0 9px color-mix(in srgb, ${c} 53%, transparent),0 0 2px ${c}`
 }
 
+// Mini-Verlaufskurve. Jedes Element EINZELN einstellbar (opts, alle optional → Default = an, Farbe folgt der Basis):
+//   line/lineColor/lineWidth · fill/fillColor · dot/dotColor · labels (Min/Max-Eckwerte) · color (Basis-/Familienfarbe).
+// Farben via resolveColor → fam:-Token / Theme-Keyword lösen sich LIVE auf (theme-follow); SVG-tauglich über style
+// (stroke/stop-color) statt Attribut. Basis-Farbe = lineColor → opts.color (Familien-Token) → color-Prop (Tasten-Farbe).
 export function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const arr = data || []
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
@@ -210,34 +219,46 @@ export function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const py = (v) => Math.max(1, Math.min(H - 1, H - ((v - lo) / (hi - lo)) * H))   // bei fester Skala in der Kachel halten
   const path = smoothPath(arr.map((v, i) => [px(i), py(v)]))   // weiche Bezier-Kurve statt kantiger Geraden
   const lx = px(n - 1), ly = py(arr[n - 1])
-  const c = isDim(color) ? '#39d8ff' : color
+  // Eine Farbe auflösen (fam:/Theme → var(); Hex bleibt). Dim-Sentinel (#222 …) oder leer → null → Fallback greift.
+  const asColor = (x) => { if (!x) return null; const r = resolveColor(x); if (!r) return null; return (r[0] === '#' && isDim(r)) ? null : r }
+  const lineC = asColor(o.lineColor) || asColor(o.color) || asColor(color) || '#39d8ff'
+  const fillC = asColor(o.fillColor) || lineC
+  const dotC = asColor(o.dotColor) || lineC
+  const showLine = o.line !== false, showFill = o.fill !== false, showDot = o.dot !== false, showLabels = o.labels !== false
+  const lw = (Number.isFinite(+o.lineWidth) && +o.lineWidth > 0) ? +o.lineWidth : 2
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
   // Kritischer Bereich = oberste 20% (nur bei fester Skala + crit !== false): rote Zone + Linie wird darin rot.
   const crit = fixed && o.crit !== false
   const critY = crit ? py(lo + (hi - lo) * 0.8) : 0
   const curCrit = crit && arr[n - 1] >= lo + (hi - lo) * 0.8
-  const cid = 'crit_' + String(uid || 'x').replace(/[^a-z0-9_]/gi, '')
+  const sid = String(uid || 'x').replace(/[^a-z0-9_]/gi, '')
+  const cid = 'crit_' + sid, gid = 'gfill_' + sid
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        {crit && <defs><clipPath id={cid}><rect x="0" y="0" width={W} height={critY.toFixed(1)} /></clipPath></defs>}
+        <defs>
+          {showFill && <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={`stop-color:${fillC};stop-opacity:0.32`} />
+            <stop offset="1" style={`stop-color:${fillC};stop-opacity:0`} />
+          </linearGradient>}
+          {crit && <clipPath id={cid}><rect x="0" y="0" width={W} height={critY.toFixed(1)} /></clipPath>}
+        </defs>
         {crit && <rect x="0" y="0" width={W} height={critY.toFixed(1)} fill="#ff4d4d" opacity="0.1" />}
-        <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={c} opacity="0.16" stroke="none" />
-        <path d={path} fill="none" stroke={c} stroke-width="2"
-              stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
-              style={`filter:drop-shadow(0 0 2.5px ${c})`} />
-        {crit && <path d={path} fill="none" stroke="#ff5252" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
-              vector-effect="non-scaling-stroke" clip-path={`url(#${cid})`} style="filter:drop-shadow(0 0 2.5px #ff5252)" />}
+        {showFill && <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={`url(#${gid})`} stroke="none" />}
+        {showLine && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+              style={`stroke:${lineC};stroke-width:${lw};filter:drop-shadow(0 0 2.5px ${lineC})`} />}
+        {showLine && crit && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+              clip-path={`url(#${cid})`} style={`stroke:#ff5252;stroke-width:${lw};filter:drop-shadow(0 0 2.5px #ff5252)`} />}
         {crit && <line x1="0" y1={critY.toFixed(1)} x2={W} y2={critY.toFixed(1)} stroke="#ff5252" stroke-width="0.5"
               stroke-dasharray="2 2" opacity="0.5" vector-effect="non-scaling-stroke" />}
       </svg>
-      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${curCrit ? '#ff5252' : c};box-shadow:0 0 6px ${curCrit ? '#ff5252' : c}`} />
-      {pct && pct.fps_1pct_low
+      {showDot && <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${curCrit ? '#ff5252' : dotC};box-shadow:0 0 6px ${curCrit ? '#ff5252' : dotC}`} />}
+      {showLabels && (pct && pct.fps_1pct_low
         ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↓ {Math.round(pct.fps_1pct_low)}</span>
-        : <span class="t-graph-lbl t-graph-max">{fmt(dmax)}</span>}
-      {pct && pct.fps_avg
+        : <span class="t-graph-lbl t-graph-max">{fmt(dmax)}</span>)}
+      {showLabels && (pct && pct.fps_avg
         ? <span class="t-graph-lbl t-graph-min">Ø {Math.round(pct.fps_avg)}</span>
-        : <span class="t-graph-lbl t-graph-min">{fmt(dmin)}</span>}
+        : <span class="t-graph-lbl t-graph-min">{fmt(dmin)}</span>)}
     </div>
   )
 }

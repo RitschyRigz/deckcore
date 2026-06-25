@@ -449,6 +449,20 @@ body[data-frame="off"] .sd-prev-key.t-flat:not(.has-img) { background: transpare
 body[data-frame="off"] .t-key.t-flat::before, body[data-frame="off"] .t-key.t-flat::after,
 body[data-frame="off"] .sd-prev-key.t-flat::before, body[data-frame="off"] .sd-prev-key.t-flat::after { display: none !important; }
 body[data-frame="off"] .t-key.t-flat .t-key-icon { font-size: calc(50px * var(--sd-font)); }
+/* … und die Daten-Viz-Kacheln (Graph/Gauge/Balken/Stat): Karte/Hintergrund + Stil-Verzierung weg (nur Inhalt bleibt). */
+body[data-frame="off"] .t-key.is-graph, body[data-frame="off"] .t-key.is-gauge,
+body[data-frame="off"] .t-key.is-bar, body[data-frame="off"] .t-key.is-stat,
+body[data-frame="off"] .sd-prev-key.is-graph, body[data-frame="off"] .sd-prev-key.is-gauge,
+body[data-frame="off"] .sd-prev-key.is-bar, body[data-frame="off"] .sd-prev-key.is-stat {
+  background: transparent !important; box-shadow: none !important; clip-path: none !important; }
+body[data-frame="off"] .t-key.is-graph::before, body[data-frame="off"] .t-key.is-graph::after,
+body[data-frame="off"] .t-key.is-gauge::before, body[data-frame="off"] .t-key.is-gauge::after,
+body[data-frame="off"] .t-key.is-bar::before, body[data-frame="off"] .t-key.is-bar::after,
+body[data-frame="off"] .t-key.is-stat::before, body[data-frame="off"] .t-key.is-stat::after,
+body[data-frame="off"] .sd-prev-key.is-graph::before, body[data-frame="off"] .sd-prev-key.is-graph::after,
+body[data-frame="off"] .sd-prev-key.is-gauge::before, body[data-frame="off"] .sd-prev-key.is-gauge::after,
+body[data-frame="off"] .sd-prev-key.is-bar::before, body[data-frame="off"] .sd-prev-key.is-bar::after,
+body[data-frame="off"] .sd-prev-key.is-stat::before, body[data-frame="off"] .sd-prev-key.is-stat::after { display: none !important; }
 .t-key.noframe:active, .t-key.noframe.pressed { box-shadow: none; transform: scale(.9); }
 .t-key.noframe .t-key-icon { font-size: calc(56px * var(--sd-font)); }
 .t-key.noframe .t-key-img { width: 88%; height: 88%; }

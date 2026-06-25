@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
-import { Sparkline } from './TouchDeck.jsx'   // reine Verlaufskurve fürs WYSIWYG (zieht ihre Helfer mit; Panel unberührt)
+import { Sparkline, statStyle } from './TouchDeck.jsx'   // Verlaufskurve + Stat-Farbe fürs WYSIWYG (Panel unberührt)
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
 import { THEME_PRESETS, THEME_VARS } from './themes.js'
 
@@ -371,7 +371,7 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
     return <div class={keyClass(eff, base) + ' is-bar cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><Bar value={v.value} opts={o} /></div>
   }
   if (render === 'stat') {
-    return <div class={keyClass(eff, base) + ' is-stat cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><span class="t-stat-v">{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
+    return <div class={keyClass(eff, base) + ' is-stat cqsize s-' + skin} style={`--acc:${accentVar(v.color)};background:${o.bg ? resolveColor(o.bg) : 'var(--bg)'}`}><span class="t-stat-v" style={statStyle(v, o)}>{v.title || (v.value != null ? String(v.value) : '—')}</span></div>
   }
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat' && render !== 'bar'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
@@ -596,6 +596,8 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
 // im GETEILTEN Editor → Cockpit UND RigzDeck. Wirkt sofort live (applyDeckLook) + persistiert via /look-Route.
 function GlobalLookEditor({ look, onReload }) {
   const lk = { ...LOOK_DEFAULT, ...(look || {}) }
+  const pal = { ...FAM_PALETTE, ...(lk.palette || {}) }   // Daten-Viz-Familienfarben (Quelle-Modus): Default + Edits
+  const famMode = lk.colorMode || 'source'
   const save = (patch) => {
     applyDeckLook({ ...lk, ...patch })
     postJSON('/api/streamdeck/look', patch).then(() => onReload && onReload()).catch(() => {})
@@ -631,9 +633,27 @@ function GlobalLookEditor({ look, onReload }) {
             <input type="checkbox" checked={lk.frame !== false} onChange={(e) => save({ frame: e.currentTarget.checked })} /> an
           </label>
         </div>
+        <div style={fld}>Daten-Viz-Farben
+          <select class="so-delay" value={famMode} onChange={(e) => save({ colorMode: e.currentTarget.value })}
+                  title="Familienfarben der Sensor-Kacheln (GPU/CPU/RAM/…): eigene Palette ODER an das aktive Theme binden">
+            <option value="source">Eigene Palette</option>
+            <option value="theme">Ans Theme binden</option>
+          </select>
+        </div>
       </div>
+      {famMode !== 'theme' && (
+        <div class="sd-dt-grid">
+          {FAM_KEYS.map((k) => (
+            <label class="sd-dt-row" key={k} title={k}>
+              <input type="color" value={pal[k]} onInput={(e) => save({ palette: { ...pal, [k]: e.currentTarget.value } })} />
+              <span>{FAM_LABELS[k] || k}</span>
+            </label>
+          ))}
+        </div>
+      )}
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
-        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
+        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").
+        Die <b>Daten-Viz-Farben</b> färben die Sensor-Kacheln je Familie (Gauge/Balken/Graph/Stat) — „Ans Theme binden" lässt sie dem Theme folgen.</p>
     </div>
   )
 }
@@ -2992,6 +3012,47 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 </select>
               </>
             )}
+          </div>
+        </>
+      ) : render === 'graph' ? (
+        <>
+          <p class="muted sd-help">Verlaufskurve des Überwachungs-Werts. Jedes Element einzeln: <b>Linie</b> (Farbe/Stärke), <b>Füllung</b>, <b>Punkt</b>, <b>Eckwerte</b>. Jede Farbe leer (∅) = folgt der Familien-/Tasten-Farbe und dem Theme. <b>Bereich</b> Min/Max nagelt die Skala (sonst Auto-Zoom); <b>Kritisch</b> = oberste 20 % rot.</p>
+          <div class="reward-row sd-state" style="margin-top:8px;flex-wrap:wrap">
+            <span class="muted conn-label">Bereich</span>
+            <input class="so-delay" style="width:64px" type="number" placeholder="Min" value={(opts || {}).min ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), min: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted">…</span>
+            <input class="so-delay" style="width:64px" type="number" placeholder="Max" value={(opts || {}).max ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), max: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <input class="so-delay" style="width:60px" placeholder="Einheit" value={(opts || {}).unit || ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), unit: e.currentTarget.value || undefined })} />
+            <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:6px" title="Oberste 20 % der Skala werden rot (nur bei festem Bereich). Aus z. B. bei Lüfter/Pumpe, wo hoch = gut.">
+              <input type="checkbox" checked={(opts || {}).crit !== false}
+                     onChange={(e) => onOpts({ ...(opts || {}), crit: e.currentTarget.checked ? undefined : false })} /> Kritisch-Zone</label>
+          </div>
+          <div class="reward-row sd-state" style="flex-wrap:wrap">
+            <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" checked={(opts || {}).line !== false}
+                   onChange={(e) => onOpts({ ...(opts || {}), line: e.currentTarget.checked ? undefined : false })} /> 📈 Linie</label>
+            <ColorField value={(opts || {}).lineColor || ''} onChange={(c) => onOpts({ ...(opts || {}), lineColor: c || undefined })} />
+            <span class="muted" style="font-size:11px">Stärke</span>
+            <input class="so-delay" style="width:56px" type="number" step="0.5" min="0.5" max="6" placeholder="2" value={(opts || {}).lineWidth ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), lineWidth: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+          </div>
+          <div class="reward-row sd-state" style="flex-wrap:wrap">
+            <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" checked={(opts || {}).fill !== false}
+                   onChange={(e) => onOpts({ ...(opts || {}), fill: e.currentTarget.checked ? undefined : false })} /> 🌊 Füllung</label>
+            <ColorField value={(opts || {}).fillColor || ''} onChange={(c) => onOpts({ ...(opts || {}), fillColor: c || undefined })} />
+            <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:8px"><input type="checkbox" checked={(opts || {}).dot !== false}
+                   onChange={(e) => onOpts({ ...(opts || {}), dot: e.currentTarget.checked ? undefined : false })} /> 🔘 Punkt</label>
+            <ColorField value={(opts || {}).dotColor || ''} onChange={(c) => onOpts({ ...(opts || {}), dotColor: c || undefined })} />
+            <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:8px" title="Min/Max-Werte in den Ecken"><input type="checkbox" checked={(opts || {}).labels !== false}
+                   onChange={(e) => onOpts({ ...(opts || {}), labels: e.currentTarget.checked ? undefined : false })} /> 🔢 Eckwerte</label>
+          </div>
+          <div class="reward-row sd-state" style="margin-top:8px">
+            <span class="muted conn-label" title="Symbol/Titel/Basis-Farbe — Titel mit {value} zeigt die Zahl; das physische Stream Deck nutzt diese Farbe.">Standard</span>
+            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} />
+            <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''} onInput={(v) => onDefault({ title: v })} />
+            <ColorField value={def.color} onChange={(color) => onDefault({ color: color || undefined })} />
           </div>
         </>
       ) : (
