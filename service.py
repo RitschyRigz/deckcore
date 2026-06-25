@@ -3241,13 +3241,13 @@ class DeckCoreService:
             for d in list(self._decks):
                 lbl = str(d.get("label") or "")
                 if (lbl in _hw_labels and d.get("folder")) or lbl == "📊 System":
-                    _kill_folder(d)
-            for d in self._decks:                   # hw_*-Kacheln aus allen verbliebenen Decks lösen
-                d["items"] = [it for it in d.get("items", []) if not str(it.get("button") or "").startswith("hw_")]
-            for d in list(self._decks):             # jetzt leere Kategorie-Ordner (z.B. nach Strip) wegräumen
-                if d.get("folder") and str(d.get("label") or "") in _hw_labels and not d.get("items"):
-                    _kill_folder(d)
-            self._buttons = [b for b in self._buttons if not str(b.get("id") or "").startswith("hw_")]
+                    _kill_folder(d)   # NUR die auto-generierten HWiNFO-Decks (Ordner + Übersicht)
+            # ⚠ NUR verwaiste hw_*-Pool-Buttons entfernen (auf KEINEM verbliebenen Deck mehr) — ein handgebautes
+            # User-Deck (z.B. „HWINFO") behält seine Kacheln + deren Buttons. (Früher wurden hw_* aus ALLEN Decks
+            # gestrippt → User-Decks zerschossen.)
+            _still_used = {str(it.get("button") or "") for d in self._decks for it in d.get("items", [])}
+            self._buttons = [b for b in self._buttons
+                             if not str(b.get("id") or "").startswith("hw_") or str(b.get("id") or "") in _still_used]
             # Sperre lösen für hw_*-Kacheln UND die Ordner-Öffner → der Build legt Kacheln UND Öffner frisch an.
             self._removed = {r for r in self._removed if not str(r).startswith("hw_") and r not in _killed}
         # Klassifizieren (+ Original-Index für deterministische Tie-Breaks).
