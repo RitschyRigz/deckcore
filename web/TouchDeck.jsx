@@ -78,7 +78,7 @@ function _accumHist(hist, buttons) {
 // High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
 // sampelt im ms-Bereich; die Anzeige liest gröber). Zeigt einen klaren Hinweis, wenn keine Daten
 // (kein Spiel / PresentMon fehlt) — nie stumm leer.
-function FastGraph({ kind, color }) {
+function FastGraph({ kind, color, opts }) {
   const [data, setData] = useState([])
   const [pct, setPct] = useState(null)
   const [fps, setFps] = useState(0)
@@ -106,9 +106,9 @@ function FastGraph({ kind, color }) {
   if (kind === 'frametime') {
     // Backend liefert fixe ~32–60 Hz (Median je Loop, grobe Spikes durchgereicht) → kürzeres Fenster
     // (100 Samples ≈ 3 s) läuft RTSS-artig zügig durch, fps-unabhängig, gleichmäßiges Scrollen.
-    return <FrametimeSpark data={data.slice(-100)} pct={pct} color={isDim(color) ? '#39d8ff' : color} />
+    return <FrametimeSpark data={data.slice(-100)} pct={pct} color={isDim(color) ? '#39d8ff' : color} opts={opts} />
   }
-  return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} />
+  return <Sparkline data={downsample(data, 240)} color={isDim(color) ? '#37e0a3' : color} minSpan={kind === 'fps' ? 40 : 0} pct={pct} opts={opts} />
 }
 
 // Spike-erhaltende Render-Verdichtung (Max je Bucket): eine SVG-Linie braucht nie mehr Punkte als die Kachel
@@ -131,7 +131,8 @@ function dsMaxBucket(arr, target) {
 // (60/120/144 fps), Flächen-Glow, scharfe Per-Frame-Linie, rote Glow-Beams bei echten Spikes (>2.2× Baseline) +
 // 1%-low/avg-Readout aus echten PresentMon-Perzentilen. Quelle = pmConsumeFrames (jeder Frame erfasst),
 // Anzeige-Ring = 60-Hz-Fixrate (schlimmster Frame je Loop) → Spikes erhalten + gleichmäßiges Scrollen.
-function FrametimeSpark({ data, pct, color }) {
+function FrametimeSpark({ data, pct, color, opts }) {
+  const o = opts || {}
   const arr = (data || []).filter((v) => v > 0)
   if (arr.length < 2) return <div class="t-spark t-spark-wait" />
   const sorted = arr.slice().sort((a, b) => a - b)
@@ -143,7 +144,12 @@ function FrametimeSpark({ data, pct, color }) {
   const scale = Math.max(base * 4, 0.1)
   const px = (i) => (i / (n - 1)) * W
   const py = (v) => H - Math.max(0, Math.min(1, v / scale)) * (H - 2) - 1
-  const c = color || '#39d8ff'
+  // Pro-Element-Farben/Stärke wie die Sparkline (PresentMon-Graphen sind so einstellbar wie HWiNFO-Graphen).
+  const lineC = vizColor(o.lineColor) || vizColor(o.color) || vizColor(color) || '#39d8ff'
+  const fillC = vizColor(o.fillColor) || lineC
+  const dotC = vizColor(o.dotColor) || lineC
+  const showLine = o.line !== false, showFill = o.fill !== false, showDot = o.dot !== false
+  const lw = (Number.isFinite(+o.lineWidth) && +o.lineWidth > 0) ? +o.lineWidth : 1.3
   const line = disp.map((v, i) => px(i).toFixed(1) + ',' + py(v).toFixed(1)).join(' ')
   const refs = [[16.67, '60'], [8.33, '120'], [6.94, '144']].filter(([ms]) => ms < scale * 0.96)   // fixe ms-Linien, nur wenn im Bild
   const beams = []
@@ -154,23 +160,23 @@ function FrametimeSpark({ data, pct, color }) {
     }
   }
   const lx = px(n - 1), ly = py(disp[n - 1])
-  const gid = 'ftg_' + (c.replace('#', '') || 'x')
+  const gid = 'ftg_' + String(fillC).replace(/[^a-z0-9]/gi, '')
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <defs><linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stop-color={c} stop-opacity="0.30" /><stop offset="1" stop-color={c} stop-opacity="0" />
-        </linearGradient></defs>
-        <polygon points={`0,${H} ${line} ${W},${H}`} fill={`url(#${gid})`} />
+        {showFill && <defs><linearGradient id={gid} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" style={`stop-color:${fillC};stop-opacity:0.30`} /><stop offset="1" style={`stop-color:${fillC};stop-opacity:0`} />
+        </linearGradient></defs>}
+        {showFill && <polygon points={`0,${H} ${line} ${W},${H}`} fill={`url(#${gid})`} />}
         {refs.map(([ms, lbl]) => <line key={lbl} x1="0" y1={py(ms).toFixed(1)} x2={W} y2={py(ms).toFixed(1)}
               stroke="#6c84a0" stroke-width="0.5" stroke-dasharray="1.5 3" opacity="0.4" vector-effect="non-scaling-stroke" />)}
         {beams.map((s) => <line key={s.k} x1={s.x.toFixed(1)} y1={H} x2={s.x.toFixed(1)} y2={s.y.toFixed(1)}
               stroke="#ff5d5d" stroke-width={(0.6 + s.inten).toFixed(1)} opacity={(0.18 + s.inten * 0.4).toFixed(2)}
               vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 ${(1 + s.inten * 2.5).toFixed(0)}px #ff5d5d)`} />)}
-        <polyline points={line} fill="none" stroke={c} stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"
-                  vector-effect="non-scaling-stroke" style={`filter:drop-shadow(0 0 2px ${c})`} />
+        {showLine && <polyline points={line} fill="none" stroke-linejoin="round" stroke-linecap="round"
+                  vector-effect="non-scaling-stroke" style={`stroke:${lineC};stroke-width:${lw};filter:drop-shadow(0 0 2px ${lineC})`} />}
       </svg>
-      <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${c};box-shadow:0 0 6px ${c}`} />
+      {showDot && <span class="t-graph-dot" style={`left:${lx.toFixed(1)}%;top:${(ly / H * 100).toFixed(1)}%;background:${dotC};box-shadow:0 0 6px ${dotC}`} />}
       {refs.map(([ms, lbl]) => <span key={lbl} class="t-graph-ref" style={`top:${(py(ms) / H * 100).toFixed(1)}%`}>{lbl}</span>)}
       {pct && pct.frametime_1pct ? <span class="t-graph-lbl t-graph-max" style="color:#ff8a8a">1%↑ {pct.frametime_1pct}ms</span> : null}
     </div>
@@ -219,11 +225,10 @@ export function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const py = (v) => Math.max(1, Math.min(H - 1, H - ((v - lo) / (hi - lo)) * H))   // bei fester Skala in der Kachel halten
   const path = smoothPath(arr.map((v, i) => [px(i), py(v)]))   // weiche Bezier-Kurve statt kantiger Geraden
   const lx = px(n - 1), ly = py(arr[n - 1])
-  // Eine Farbe auflösen (fam:/Theme → var(); Hex bleibt). Dim-Sentinel (#222 …) oder leer → null → Fallback greift.
-  const asColor = (x) => { if (!x) return null; const r = resolveColor(x); if (!r) return null; return (r[0] === '#' && isDim(r)) ? null : r }
-  const lineC = asColor(o.lineColor) || asColor(o.color) || asColor(color) || '#39d8ff'
-  const fillC = asColor(o.fillColor) || lineC
-  const dotC = asColor(o.dotColor) || lineC
+  // Pro-Element-Farben (geteilter vizColor: fam:/Theme → var(); Hex bleibt; dim/leer → Fallback).
+  const lineC = vizColor(o.lineColor) || vizColor(o.color) || vizColor(color) || '#39d8ff'
+  const fillC = vizColor(o.fillColor) || lineC
+  const dotC = vizColor(o.dotColor) || lineC
   const showLine = o.line !== false, showFill = o.fill !== false, showDot = o.dot !== false, showLabels = o.labels !== false
   const lw = (Number.isFinite(+o.lineWidth) && +o.lineWidth > 0) ? +o.lineWidth : 2
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
@@ -290,6 +295,10 @@ function isDim(hex) {
   const n = parseInt(m[1], 16)
   return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 70
 }
+
+// Eine Viz-Farbe auflösen (geteilt von Sparkline + FrametimeSpark): fam:/Theme-Token → var(); Hex bleibt.
+// Dim-Sentinel (#222 …) oder leer → null, damit der Aufrufer auf seine Standardfarbe zurückfällt.
+function vizColor(x) { if (!x) return null; const r = resolveColor(x); if (!r) return null; return (r[0] === '#' && isDim(r)) ? null : r }
 
 // Catmull-Rom → kubische Bezier: weiche Kurve durch die Punkte (statt kantiger Geraden).
 function smoothPath(pts) {
@@ -886,7 +895,7 @@ export function TouchDeck() {
             <>
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
               {['fps', 'frametime'].includes((monById[id] || {}).type)
-                ? <FastGraph kind={(monById[id] || {}).type} color={v.color} />
+                ? <FastGraph kind={(monById[id] || {}).type} color={v.color} opts={o} />
                 : <Sparkline data={histRef.current[id]} color={v.color} opts={o} uid={id} />}
             </>
           ) : isGauge ? (

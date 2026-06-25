@@ -403,6 +403,9 @@ def _scene_suggest_def(bid: str, name: str) -> dict:
 # Szenen-Rollen rein per Stichwort im NAMEN (mehrsprachig, generisch — KEINE festen Szenennamen, kein
 # Hardcoding). Reihenfolge = Spezifität (erster Treffer gewinnt).
 _SCENE_ROLE_KW = (
+    # „exclusive" ZUERST: On-Demand-Szenen (VDO Ninja-Gast-Cam o.ä.) kommen nur im Bedarfsfall vor → sie
+    # dürfen NIE als wahrscheinlich-nächste vorgeschlagen werden. Vor „chat" prüfen (sonst fängt „cam"/„ninja cam").
+    ("exclusive", ("vdo", "ninja", "gast", "guest", "co-host", "cohost", "remote")),
     ("start", ("start", "begin", "warte", "soon", "intro", "bald", "gleich")),
     ("end", ("end", "ende", "outro", "tschü", "tschau", "bye", "credits", "abspann")),
     ("pause", ("brb", "coffee", "kaffee", "pause", "break", "bbl", "afk", "gleich zurück")),
@@ -443,12 +446,13 @@ def _default_scene_flow(names: list) -> dict:
             cand = cap + pause + recap + end
         elif r == "capture":
             cand = chat + pause + recap + end
-        elif r in ("recap", "other"):
+        elif r in ("recap", "exclusive", "other"):     # exclusive (VDO/Gast): eigener Rückweg zu den Haupt-Szenen
             cand = main or [x for x in names]
         else:                                          # pause/end: Rücksprung bzw. Schluss → kein Vorwärts-Default
             cand = []
+        # On-Demand-Szenen (exclusive) NIE als Vorschlag bei IRGENDWEM (sie kommen nur im Bedarfsfall).
         seen: set = set()
-        nxt[n] = [x for x in cand if x != n and not (x in seen or seen.add(x))]
+        nxt[n] = [x for x in cand if x != n and roles.get(x) != "exclusive" and not (x in seen or seen.add(x))]
     return {"map": {k: v for k, v in nxt.items() if v}, "return": pause}
 
 
@@ -3213,10 +3217,24 @@ class DeckCoreService:
             pool_by_id[bid] = fn; self._removed.discard(bid)
             if deck and bid not in item_by_id:
                 deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False})
-        # Ordner erreichbar machen: Öffner-Button im Pool sicherstellen (in „📁 Ordner" ankreuzbar/platzierbar).
+        # Ordner erreichbar machen: Öffner-Button im Pool. Er ZEIGT die aktive OBS-Szene (obs_scene-Monitor +
+        # Titel {value}) — wie ein normaler Szenen-Button — und öffnet beim Tippen den Ordner. Funktion + Live-
+        # Anzeige werden frisch erzwungen (sonst klebt via _regen_preserve ein alter statischer Titel); nur ein
+        # selbst vergebenes Label bleibt erhalten.
         if deck:
-            op = self._folder_opener_def(deck)
-            self._pool_upsert(op, "📁 Ordner")
+            opid = "folder_" + _slug(deck["id"])
+            op = {"id": opid, "label": deck.get("label") or "Szenen", "pool_cat": "📁 Ordner",
+                  "action": {"type": "open_deck", "deck": deck_id, "mode": "radial"},
+                  "monitor": {"type": "obs_scene"}, "states": [],
+                  "default": {"icon": "🎬", "title": "{value}", "color": "accent"}}
+            ex = next((b for b in self._buttons if b.get("id") == opid), None)
+            if ex is not None:
+                if ex.get("label"):
+                    op["label"] = ex["label"]
+                self._buttons[self._buttons.index(ex)] = op
+            else:
+                self._buttons.append(op)
+            self._removed.discard(opid)
         # Standard-Ablauf nur seeden, wenn noch KEINER existiert (User-Edits NIE überschreiben).
         seeded = False
         if not (self._scene_flow.get("map")):

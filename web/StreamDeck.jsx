@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, applyPalette, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Sparkline, statStyle } from './TouchDeck.jsx'   // Verlaufskurve + Stat-Farbe fürs WYSIWYG (Panel unberührt)
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
@@ -598,8 +598,6 @@ function DeckBar({ decks, active, defaultDeck, dfAvailable, onSelect, onReload }
 // im GETEILTEN Editor → Cockpit UND RigzDeck. Wirkt sofort live (applyDeckLook) + persistiert via /look-Route.
 function GlobalLookEditor({ look, onReload }) {
   const lk = { ...LOOK_DEFAULT, ...(look || {}) }
-  const pal = { ...FAM_PALETTE, ...(lk.palette || {}) }   // Daten-Viz-Familienfarben (Quelle-Modus): Default + Edits
-  const famMode = lk.colorMode || 'source'
   const save = (patch) => {
     applyDeckLook({ ...lk, ...patch })
     postJSON('/api/streamdeck/look', patch).then(() => onReload && onReload()).catch(() => {})
@@ -635,80 +633,60 @@ function GlobalLookEditor({ look, onReload }) {
             <input type="checkbox" checked={lk.frame !== false} onChange={(e) => save({ frame: e.currentTarget.checked })} /> an
           </label>
         </div>
-        <div style={fld}>Daten-Viz-Farben
-          <select class="so-delay" value={famMode} onChange={(e) => save({ colorMode: e.currentTarget.value })}
-                  title="Familienfarben der Sensor-Kacheln (GPU/CPU/RAM/…): eigene Palette ODER an das aktive Theme binden">
-            <option value="source">Eigene Palette</option>
-            <option value="theme">Ans Theme binden</option>
-          </select>
-        </div>
       </div>
-      {famMode !== 'theme' && (
-        <div class="sd-dt-grid">
-          {FAM_KEYS.map((k) => (
-            <label class="sd-dt-row" key={k} title={k}>
-              <input type="color" value={pal[k]} onInput={(e) => save({ palette: { ...pal, [k]: e.currentTarget.value } })} />
-              <span>{FAM_LABELS[k] || k}</span>
-            </label>
-          ))}
-        </div>
-      )}
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
-        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").
-        Die <b>Daten-Viz-Farben</b> färben die Sensor-Kacheln je Familie (Gauge/Balken/Graph/Stat) — „Ans Theme binden" lässt sie dem Theme folgen.</p>
+        können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
     </div>
   )
 }
 
-// „Logische Szenen": 1-Klick-Generator (Ordner „🎬 Szenen" mit scene_suggest-Buttons) + Ablauf-Editor.
-// Der Ablauf-Graph (von-Szene → wahrscheinlich-nächste + Rücksprung-Szenen) treibt das Hervorheben:
-// wahrscheinlich-nächste leuchten/blinken, aktive markiert, Rest ausgegraut (klickbar). Generisch (deckcore).
-function SceneFlowCard({ onReload }) {
+// „Logische Szenen" — Teil der OBS-Integration (NICHT global): baut aus den oben ANGEKREUZTEN Szenen einen
+// Smart-Ordner „🎬 Szenen" (scene_suggest: wahrscheinlich-nächste leuchten/blinken, aktive markiert, Rest
+// ausgegraut+klickbar; Öffner zeigt die aktive Szene). Darunter der Ablauf-Editor für genau diese Szenen.
+function SceneFlowPanel({ scenes, onReload }) {
   const [open, setOpen] = useState(false)
-  const [data, setData] = useState(null)   // {scene_flow:{map,return}, scenes}
+  const [flow, setFlow] = useState(null)   // {map, return}
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const list = scenes || []
   const loadFlow = () => getJSON('/api/streamdeck/scene_flow')
-    .then(setData).catch(() => setData({ scene_flow: { map: {}, return: [] }, scenes: [] }))
-  useEffect(() => { if (open && !data) loadFlow() }, [open])
-  const flow = (data && data.scene_flow) || { map: {}, return: [] }
-  const scenes = (data && data.scenes) || []
-  const rets = new Set(flow.return || [])
+    .then((d) => setFlow((d && d.scene_flow) || { map: {}, return: [] })).catch(() => setFlow({ map: {}, return: [] }))
+  useEffect(() => { if (open && !flow) loadFlow() }, [open])
+  const f = flow || { map: {}, return: [] }
+  const rets = new Set(f.return || [])
   const build = () => {
+    if (!list.length) { setMsg('Erst oben Szenen ankreuzen.'); return }
     setBusy(true); setMsg('')
-    postJSON('/api/streamdeck/scene_flow/build', {}).then((r) => {
-      setMsg(r && r.ok ? `✓ Ordner „🎬 Szenen" gebaut (${r.scenes} Szenen${r.flow_seeded ? ' + Standard-Ablauf' : ''})`
-                       : 'Fehlgeschlagen — ist OBS verbunden?')
-      setData(null); loadFlow(); onReload && onReload()
-    }).catch(() => setMsg('Fehlgeschlagen — ist OBS verbunden?')).finally(() => setBusy(false))
+    postJSON('/api/streamdeck/scene_flow/build', { scenes: list }).then((r) => {
+      setMsg(r && r.ok ? `✓ Ordner „🎬 Szenen" (${r.scenes} Szenen${r.flow_seeded ? ' + Standard-Ablauf' : ''})` : 'Fehlgeschlagen')
+      setFlow(null); loadFlow(); onReload && onReload()
+    }).catch(() => setMsg('Fehlgeschlagen')).finally(() => setBusy(false))
   }
   const save = (nextMap, nextRet) => {
-    const sf = { map: nextMap !== undefined ? nextMap : (flow.map || {}), return: nextRet !== undefined ? nextRet : (flow.return || []) }
-    setData({ ...(data || {}), scene_flow: sf })
-    postJSON('/api/streamdeck/scene_flow', { scene_flow: sf }).then(() => onReload && onReload()).catch(() => {})
+    const sf = { map: nextMap !== undefined ? nextMap : (f.map || {}), return: nextRet !== undefined ? nextRet : (f.return || []) }
+    setFlow(sf); postJSON('/api/streamdeck/scene_flow', { scene_flow: sf }).then(() => onReload && onReload()).catch(() => {})
   }
   const toggleNext = (from, to) => {
-    const cur = (flow.map || {})[from] || []
+    const cur = (f.map || {})[from] || []
     const nx = cur.includes(to) ? cur.filter((x) => x !== to) : [...cur, to]
-    const m = { ...(flow.map || {}) }; if (nx.length) m[from] = nx; else delete m[from]
+    const m = { ...(f.map || {}) }; if (nx.length) m[from] = nx; else delete m[from]
     save(m, undefined)
   }
-  const toggleReturn = (sc) => save(undefined, rets.has(sc) ? (flow.return || []).filter((x) => x !== sc) : [...(flow.return || []), sc])
+  const toggleReturn = (sc) => save(undefined, rets.has(sc) ? (f.return || []).filter((x) => x !== sc) : [...(f.return || []), sc])
   return (
-    <div class="card" style="max-width:1100px;margin-bottom:8px">
-      <div class="reward-row" style="align-items:center;gap:10px;flex-wrap:wrap">
-        <span class="kv-k" style="min-width:150px">🎬 Logische Szenen</span>
-        <button class="btn small" disabled={busy} onClick={build}>{busy ? '… baue' : '🎬 Logisches Szenen-Deck bauen'}</button>
-        <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Ablauf schließen' : '🔀 Ablauf bearbeiten'}</button>
+    <div style="margin-top:12px;border-top:0.5px solid var(--line);padding-top:12px">
+      <div class="sd-int-grp-h"><span>🎬 Logisches Szenen-Deck <span class="muted">— die oben angekreuzten Szenen als Smart-Ordner</span></span></div>
+      <div class="reward-row" style="align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <button class="btn small" disabled={busy} onClick={build}>{busy ? '… baue' : `🎬 Logisches Szenen-Deck erstellen (${list.length})`}</button>
+        <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Ablauf ▴' : '🔀 Ablauf bearbeiten ▾'}</button>
         {msg && <span class="muted" style="font-size:12px">{msg}</span>}
       </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">Baut den Ordner „🎬 Szenen": die <b>wahrscheinlich-nächsten</b> Szenen
-        leuchten + blinken, die aktive ist markiert, der Rest ist ausgegraut (bleibt klickbar). „Bauen" legt einen sinnvollen
-        Standard-Ablauf an; unten feintunst du, welche Szene auf welche folgt. Pausen-Szenen (BRB/Coffee) springen zur vorherigen zurück.</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Wahrscheinlich-nächste Szenen leuchten + blinken, die aktive ist markiert, der Rest ist
+        ausgegraut (bleibt klickbar). Pausen-Szenen (BRB/Coffee) springen zur vorherigen zurück. Der Ordner-Öffner zeigt die aktive Szene.</p>
       {open && (
-        <div style="margin-top:10px">
-          {!scenes.length && <p class="muted">Keine OBS-Szenen geladen — erst „🎬 …bauen" (holt die Szenen aus OBS).</p>}
-          {scenes.map((sc) => (
+        <div style="margin-top:8px">
+          {!list.length && <p class="muted">Erst oben Szenen ankreuzen.</p>}
+          {list.map((sc) => (
             <div key={sc} class="sd-sf-row">
               <div class="sd-sf-from">
                 <b>{sc}</b>
@@ -719,8 +697,8 @@ function SceneFlowCard({ onReload }) {
               </div>
               <div class="sd-sf-next">
                 <span class="muted" style="font-size:11px">danach wahrscheinlich:</span>
-                {scenes.filter((x) => x !== sc).map((to) => {
-                  const on = ((flow.map || {})[sc] || []).includes(to)
+                {list.filter((x) => x !== sc).map((to) => {
+                  const on = ((f.map || {})[sc] || []).includes(to)
                   return <button key={to} class={'sd-sf-chip' + (on ? ' on' : '')} onClick={() => toggleNext(sc, to)}>{on ? '▶ ' : ''}{to}</button>
                 })}
               </div>
@@ -1887,7 +1865,6 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
     <div class="card" style="max-width:1100px">
       <h3 class="section-h" style="margin-top:0">🔌 Kategorien <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
       <Quickstart onReload={onReload} />
-      <SceneFlowCard onReload={onReload} />
       <div class="conn-toolbar" style="margin-bottom:8px">
         <span class="sd-int-search"><input value={search} placeholder="🔍 Kategorie suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
         <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Status prüfen'}</button>
@@ -2020,6 +1997,41 @@ function AudioMixerControl({ onReload }) {
   )
 }
 
+// Familien-Farben der HWiNFO-Viz-Kacheln (Gauge/Balken/Graph/Stat) — gehört in die HWiNFO-Integration,
+// NICHT global (wer kein HWiNFO nutzt, hat damit nichts zu tun). Der Modus Quelle/Theme ist die vorhandene
+// „Farben"-Dashboard-Option (mode-Prop); hier nur die Farbe je Familie. Setzt --fam-* live (applyPalette,
+// ohne den restlichen Look zu verändern) + persistiert look.palette via /look.
+function FamilyPaletteEditor({ mode }) {
+  const [pal, setPal] = useState(null)
+  useEffect(() => {
+    getJSON('/api/streamdeck/registry')
+      .then((d) => setPal({ ...FAM_PALETTE, ...(((d || {}).look || {}).palette || {}) }))
+      .catch(() => setPal({ ...FAM_PALETTE }))
+  }, [])
+  if (mode === 'theme') {
+    return <p class="muted" style="font-size:12px;margin:10px 0 0">🎨 Familien-Farben: aktuell <b>Theme-gebunden</b> (Option „Farben" = Theme). Auf „Quelle" stellen, um eigene Farben je Familie zu setzen.</p>
+  }
+  if (!pal) return null
+  const setColor = (k, v) => {
+    const np = { ...pal, [k]: v }; setPal(np)
+    applyPalette(np, 'source')                                  // live: nur --fam-*-Vars (Look unberührt)
+    postJSON('/api/streamdeck/look', { palette: np }).catch(() => {})
+  }
+  return (
+    <div style="margin-top:10px;border-top:0.5px solid var(--line);padding-top:10px">
+      <div class="sd-int-grp-h"><span>🎨 Familien-Farben <span class="muted">— Farbe je Sensor-Familie (Gauge/Balken/Graph/Stat)</span></span></div>
+      <div class="sd-dt-grid">
+        {FAM_KEYS.map((k) => (
+          <label class="sd-dt-row" key={k} title={k}>
+            <input type="color" value={pal[k]} onInput={(e) => setColor(k, e.currentTarget.value)} />
+            <span>{FAM_LABELS[k] || k}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolCategories, resolved, options }) {
   const [el, setEl] = useState(null)
   const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
@@ -2134,6 +2146,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
                   </>}
             </div>
           ))}
+          {it.id === 'hwinfo' && el.dashboard && <FamilyPaletteEditor mode={opts.color_mode} />}
           <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px;flex-wrap:wrap">
             {el.dashboard && <button class="btn small" disabled={genBusy} onClick={() => buildDash(false)}
                 title={'Übersichts-Deck „📊 System" + Kategorie-Ordner (CPU/GPU/Mainboard/Strom/Lüfter/…) — idempotent, additiv, überschreibt keine Edits'}>{genBusy ? '… baue' : '📊 Dashboard bauen'}</button>}
@@ -2147,6 +2160,7 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       )}
       {it.id === 'obs' && it.enabled && (
         <div style="margin-top:12px">
+          <SceneFlowPanel scenes={Object.keys(checked.scenes || {}).filter((n) => (checked.scenes || {})[n])} onReload={onReload} />
           {(options.obs_self_managed !== false) ? (
             <>
               {st && st.state === 'off' && !obsOpen && (
