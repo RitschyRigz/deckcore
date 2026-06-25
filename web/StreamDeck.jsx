@@ -63,6 +63,7 @@ const MONITOR_LABELS = {
   frametime: 'Frametime in ms — fängt Spikes (PresentMon)',
   obs_source_visible: 'Ist eine OBS-Quelle sichtbar? (an/aus)',
   obs_scene: 'Welche OBS-Szene ist aktiv? (Szenenname)',
+  scene_suggest: 'Logischer Szenen-Hinweis (aktiv / wahrscheinlich-nächste / inaktiv)',
   displayfusion_profile: 'Welches DisplayFusion-Profil ist aktiv? (Profilname)',
   winaudio_default: 'Ist dieses Gerät das Windows-Standard-Ausgabegerät? (an/aus)',
   winaudio_volume: 'Windows-Lautstärke (0..100) — Master-Regler + VU',
@@ -89,6 +90,7 @@ const MONITOR_INFO = {
   sse_field: { text: 'Wert aus dem Live-Event-Feld. Bei true/false „ist wahr/an", sonst „= gleich" + Wert.', values: null, bool: false },
   obs_source_visible: { text: 'Liefert AN (sichtbar) oder AUS (ausgeblendet). Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
   obs_scene: { text: 'Liefert den Namen der aktiven OBS-Szene. Nutze „= gleich" + Szenenname → der Button hebt sich hervor, wenn SEINE Szene gerade aktiv ist.', values: null, bool: false },
+  scene_suggest: { text: 'Hebt diese Szene je nach Ablauf hervor: liefert „current" (gerade aktiv), „suggested" (laut Szenen-Ablauf wahrscheinlich als Nächstes → leuchtet/blinkt) oder „idle" (unpassend → ausgegraut, bleibt klickbar). Den Ablauf bearbeitest du unter „🔌 Kategorien → 🎬 Logische Szenen". Buttons entstehen per „🎬 Logisches Szenen-Deck bauen".', values: ['current', 'suggested', 'idle'], bool: false },
   displayfusion_profile: { text: 'Liefert den Namen des zuletzt geladenen DisplayFusion-Profils. Nutze „= gleich" + Profilname → der Button leuchtet, wenn SEIN Profil aktiv ist.', values: null, bool: false },
   winaudio_default: { text: 'Liefert AN, wenn das gewählte Gerät gerade das Windows-Standard-Ausgabegerät ist. Nutze „ist wahr/an" (z. B. grün, wenn aktiv) und „ist falsch/aus".', values: null, bool: true },
   winaudio_volume: { text: 'Liefert die Windows-Master-Lautstärke (0..100) des Standard-Ausgabegeräts. Am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU). {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
@@ -375,7 +377,7 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
   }
   const isFlat = !v.image && render !== 'graph' && render !== 'fader' && render !== 'gauge' && render !== 'stat' && render !== 'bar'   // dunkle Flat-Kachel + Akzent-Glow (wie Panel)
   return (
-    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat s-' + skin : '')}
+    <div class={keyClass(eff, base) + (v.image ? ' has-img' : '') + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '')}
          style={isFlat ? `--acc:${accentVar(v.color)}` : ('background:' + (resolveColor(v.color) || 'var(--bg3)'))}>
       {v.image ? <img class="sd-prev-img" src={v.image} alt="" />
         : <IconView icon={v.icon} cls="sd-prev-icon" fallback={<span class="sd-prev-icon">•</span>} />}
@@ -654,6 +656,78 @@ function GlobalLookEditor({ look, onReload }) {
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
         können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").
         Die <b>Daten-Viz-Farben</b> färben die Sensor-Kacheln je Familie (Gauge/Balken/Graph/Stat) — „Ans Theme binden" lässt sie dem Theme folgen.</p>
+    </div>
+  )
+}
+
+// „Logische Szenen": 1-Klick-Generator (Ordner „🎬 Szenen" mit scene_suggest-Buttons) + Ablauf-Editor.
+// Der Ablauf-Graph (von-Szene → wahrscheinlich-nächste + Rücksprung-Szenen) treibt das Hervorheben:
+// wahrscheinlich-nächste leuchten/blinken, aktive markiert, Rest ausgegraut (klickbar). Generisch (deckcore).
+function SceneFlowCard({ onReload }) {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState(null)   // {scene_flow:{map,return}, scenes}
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const loadFlow = () => getJSON('/api/streamdeck/scene_flow')
+    .then(setData).catch(() => setData({ scene_flow: { map: {}, return: [] }, scenes: [] }))
+  useEffect(() => { if (open && !data) loadFlow() }, [open])
+  const flow = (data && data.scene_flow) || { map: {}, return: [] }
+  const scenes = (data && data.scenes) || []
+  const rets = new Set(flow.return || [])
+  const build = () => {
+    setBusy(true); setMsg('')
+    postJSON('/api/streamdeck/scene_flow/build', {}).then((r) => {
+      setMsg(r && r.ok ? `✓ Ordner „🎬 Szenen" gebaut (${r.scenes} Szenen${r.flow_seeded ? ' + Standard-Ablauf' : ''})`
+                       : 'Fehlgeschlagen — ist OBS verbunden?')
+      setData(null); loadFlow(); onReload && onReload()
+    }).catch(() => setMsg('Fehlgeschlagen — ist OBS verbunden?')).finally(() => setBusy(false))
+  }
+  const save = (nextMap, nextRet) => {
+    const sf = { map: nextMap !== undefined ? nextMap : (flow.map || {}), return: nextRet !== undefined ? nextRet : (flow.return || []) }
+    setData({ ...(data || {}), scene_flow: sf })
+    postJSON('/api/streamdeck/scene_flow', { scene_flow: sf }).then(() => onReload && onReload()).catch(() => {})
+  }
+  const toggleNext = (from, to) => {
+    const cur = (flow.map || {})[from] || []
+    const nx = cur.includes(to) ? cur.filter((x) => x !== to) : [...cur, to]
+    const m = { ...(flow.map || {}) }; if (nx.length) m[from] = nx; else delete m[from]
+    save(m, undefined)
+  }
+  const toggleReturn = (sc) => save(undefined, rets.has(sc) ? (flow.return || []).filter((x) => x !== sc) : [...(flow.return || []), sc])
+  return (
+    <div class="card" style="max-width:1100px;margin-bottom:8px">
+      <div class="reward-row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="kv-k" style="min-width:150px">🎬 Logische Szenen</span>
+        <button class="btn small" disabled={busy} onClick={build}>{busy ? '… baue' : '🎬 Logisches Szenen-Deck bauen'}</button>
+        <button class="btn ghost small" onClick={() => setOpen((o) => !o)}>{open ? 'Ablauf schließen' : '🔀 Ablauf bearbeiten'}</button>
+        {msg && <span class="muted" style="font-size:12px">{msg}</span>}
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Baut den Ordner „🎬 Szenen": die <b>wahrscheinlich-nächsten</b> Szenen
+        leuchten + blinken, die aktive ist markiert, der Rest ist ausgegraut (bleibt klickbar). „Bauen" legt einen sinnvollen
+        Standard-Ablauf an; unten feintunst du, welche Szene auf welche folgt. Pausen-Szenen (BRB/Coffee) springen zur vorherigen zurück.</p>
+      {open && (
+        <div style="margin-top:10px">
+          {!scenes.length && <p class="muted">Keine OBS-Szenen geladen — erst „🎬 …bauen" (holt die Szenen aus OBS).</p>}
+          {scenes.map((sc) => (
+            <div key={sc} class="sd-sf-row">
+              <div class="sd-sf-from">
+                <b>{sc}</b>
+                <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:11px"
+                       title="Pausen-Szene (BRB/Coffee …): schlägt automatisch die Szene vor, in der du vorher warst (Rücksprung).">
+                  <input type="checkbox" checked={rets.has(sc)} onChange={() => toggleReturn(sc)} /> ↩ Rücksprung-Szene
+                </label>
+              </div>
+              <div class="sd-sf-next">
+                <span class="muted" style="font-size:11px">danach wahrscheinlich:</span>
+                {scenes.filter((x) => x !== sc).map((to) => {
+                  const on = ((flow.map || {})[sc] || []).includes(to)
+                  return <button key={to} class={'sd-sf-chip' + (on ? ' on' : '')} onClick={() => toggleNext(sc, to)}>{on ? '▶ ' : ''}{to}</button>
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1813,6 +1887,7 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
     <div class="card" style="max-width:1100px">
       <h3 class="section-h" style="margin-top:0">🔌 Kategorien <span class="muted" style="font-weight:400;font-size:13px">— wähle eine, hake an was du brauchst, generiere</span></h3>
       <Quickstart onReload={onReload} />
+      <SceneFlowCard onReload={onReload} />
       <div class="conn-toolbar" style="margin-bottom:8px">
         <span class="sd-int-search"><input value={search} placeholder="🔍 Kategorie suchen…" onInput={(e) => setSearch(e.currentTarget.value)} /></span>
         <button class="btn ghost small" disabled={probing} onClick={() => loadStatus(true)}>{probing ? '… prüfe' : '🔄 Status prüfen'}</button>

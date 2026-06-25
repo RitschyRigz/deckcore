@@ -180,6 +180,43 @@ def build_streamdeck_router(
         """Globalen Deck-Look setzen (Kachel-Stil-Default / Druck-Bestaetigung / Ordner-Rahmen)."""
         return JSONResponse(get_service(request).set_look(body or {}))
 
+    @r.get("/api/streamdeck/scene_flow")
+    def streamdeck_scene_flow_get(request: Request) -> JSONResponse:
+        """„Logischer" Szenen-Ablauf (map + Rücksprung-Szenen) + verfügbare OBS-Szenen (für den Editor)."""
+        svc = get_service(request)
+        scenes: list = []
+        if obs_scenes is not None:
+            try:
+                scenes = obs_scenes() or []
+            except Exception:  # noqa: BLE001
+                scenes = []
+        return JSONResponse({"scene_flow": svc.scene_flow(), "scenes": [str(s) for s in scenes]})
+
+    @r.post("/api/streamdeck/scene_flow")
+    def streamdeck_scene_flow_set(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Szenen-Ablauf-Graph KOMPLETT setzen ({map, return} bzw. {scene_flow:{…}})."""
+        b = body or {}
+        return JSONResponse(get_service(request).set_scene_flow(b.get("scene_flow") or b))
+
+    @r.post("/api/streamdeck/scene_flow/build")
+    def streamdeck_scene_flow_build(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """„Logisches Szenen-Deck" bauen (Ordner + smart-Buttons + Default-Ablauf). Szenen via obs_scenes-Hook."""
+        svc = get_service(request)
+        scenes = (body or {}).get("scenes")
+        if not scenes:
+            if obs_scenes is None:
+                raise HTTPException(status_code=503, detail="Keine OBS-Quelle konfiguriert.")
+            try:
+                scenes = obs_scenes() or []
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=503, detail=f"OBS nicht erreichbar: {e}")
+        if not scenes:
+            raise HTTPException(status_code=503, detail="Keine OBS-Szenen gefunden (ist OBS verbunden?).")
+        res = svc.build_scene_flow_deck(scenes)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "build fehlgeschlagen"))
+        return JSONResponse(res)
+
     @r.post("/api/streamdeck/deck/populate_obs_scenes")
     def streamdeck_deck_populate_scenes(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Pro OBS-Szene einen Szenen-Wechsel-Button im Ziel-Deck (idempotent). Szenenquelle =

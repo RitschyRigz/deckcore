@@ -385,6 +385,91 @@ def _obs_scene_def(bid: str, name: str, active_color: str = "ok", idle_color: st
             "default": {"icon": "🎬", "title": name, "color": idle_color}}
 
 
+def _scene_suggest_def(bid: str, name: str) -> dict:
+    """„Logischer" Szenen-Button: wechselt zur Szene UND hebt sich kontextabhängig hervor (scene_suggest-
+    Monitor liefert current/suggested/idle aus aktueller Szene + Ablauf-Graph + Verlauf). Wahrscheinlich-
+    nächste Szenen leuchten + blinken (suggested), die aktive ist markiert (current), der Rest ist
+    ausgegraut (default = Inaktiv-Farbe) — aber IMMER klickbar (States sperren nie)."""
+    return {"id": bid, "label": name, "_scene": name,
+            "action": {"type": "obs", "obs_action": "scene", "scene": name},
+            "monitor": {"type": "scene_suggest", "scene": name},
+            "states": [
+                {"when": {"op": "eq", "value": "current"}, "icon": "📺", "title": name, "color": "live"},
+                {"when": {"op": "eq", "value": "suggested"}, "icon": "▶", "title": name, "color": "accent", "blink": True},
+            ],
+            "default": {"icon": "🎬", "title": name, "color": "off"}}
+
+
+# Szenen-Rollen rein per Stichwort im NAMEN (mehrsprachig, generisch — KEINE festen Szenennamen, kein
+# Hardcoding). Reihenfolge = Spezifität (erster Treffer gewinnt).
+_SCENE_ROLE_KW = (
+    ("start", ("start", "begin", "warte", "soon", "intro", "bald", "gleich")),
+    ("end", ("end", "ende", "outro", "tschü", "tschau", "bye", "credits", "abspann")),
+    ("pause", ("brb", "coffee", "kaffee", "pause", "break", "bbl", "afk", "gleich zurück")),
+    ("recap", ("recap", "rückblick", "ruckblick", "zusammenfass", "replay", "highlight")),
+    ("capture", ("game", "capture", "gameplay", "spiel", "konsole", "console", "switch",
+                 "ps5", "ps4", "playstation", "xbox", "gaming", "ingame", "in-game")),
+    ("chat", ("chat", "talk", "just chatting", "irl", "cam", "face", "webcam", "reden")),
+)
+
+
+def _scene_role(name: str) -> str:
+    s = (name or "").lower()
+    for role, kws in _SCENE_ROLE_KW:
+        if any(w in s for w in kws):
+            return role
+    return "other"
+
+
+def _default_scene_flow(names: list) -> dict:
+    """Sinnvoller Standard-Ablauf-Graph aus den Szenen-NAMEN (Schlagwort-Heuristik, generisch).
+    ``map``: von-Szene → wahrscheinlich-nächste Szenen; ``return``: Pausen-Szenen (BRB/Coffee …),
+    die per Verlauf zur vorherigen Szene zurückspringen. Rein als editierbarer Default gedacht."""
+    names = [str(n) for n in (names or []) if str(n).strip()]
+    roles = {n: _scene_role(n) for n in names}
+    by: dict[str, list] = {}
+    for n in names:
+        by.setdefault(roles[n], []).append(n)
+    chat, cap = by.get("chat", []), by.get("capture", [])
+    pause, end = by.get("pause", []), by.get("end", [])
+    recap = by.get("recap", [])
+    main = chat + cap                                  # die „Haupt"-Szenen des Streams
+    nxt: dict[str, list] = {}
+    for n in names:
+        r = roles[n]
+        if r == "start":
+            cand = chat or main
+        elif r == "chat":
+            cand = cap + pause + recap + end
+        elif r == "capture":
+            cand = chat + pause + recap + end
+        elif r in ("recap", "other"):
+            cand = main or [x for x in names]
+        else:                                          # pause/end: Rücksprung bzw. Schluss → kein Vorwärts-Default
+            cand = []
+        seen: set = set()
+        nxt[n] = [x for x in cand if x != n and not (x in seen or seen.add(x))]
+    return {"map": {k: v for k, v in nxt.items() if v}, "return": pause}
+
+
+def _sanitize_scene_flow(o) -> dict:
+    """Ablauf-Graph säubern: ``map`` = {Szenenname: [Szenennamen]}, ``return`` = [Szenennamen]
+    (nur nicht-leere Strings; import-/eingabe-sicher)."""
+    o = o if isinstance(o, dict) else {}
+    out_map: dict[str, list] = {}
+    raw_map = o.get("map") if isinstance(o.get("map"), dict) else {}
+    for k, v in raw_map.items():
+        ks = str(k).strip()
+        if not ks or not isinstance(v, (list, tuple)):
+            continue
+        tos = [str(x).strip() for x in v if str(x).strip()]
+        if tos:
+            out_map[ks] = tos
+    rets = ([str(x).strip() for x in o.get("return") if str(x).strip()]
+            if isinstance(o.get("return"), (list, tuple)) else [])
+    return {"map": out_map, "return": rets}
+
+
 def _winaudio_master_def(bid: str) -> dict:
     """Windows-Lautstärke-Fader (Ziehen=Lautstärke, Tippen=Mute, Live-VU). WELCHES Gerät der Fader
     regelt, wählt man danach an der Aktion. Wird von populate_winaudio_volume UND dem Integrationen-Tab
@@ -1080,6 +1165,8 @@ class DeckCoreService:
         self._sse_cache: dict[str, Any] = {}      # topic → letztes Payload
         self._poll_cache: dict[str, Any] = {}     # button-id → (value, last_fetch_ts)
         self._obs_scene_cache: tuple = (None, 0.0)  # (aktive Szene, ts) — von einer obs_scene-Hülle genutzt
+        self._scene_flow: dict = {"map": {}, "return": []}  # „logischer" Szenen-Ablauf (von→nächste, Rücksprung-Szenen)
+        self._scene_hist: list = []                 # zuletzt gesehene aktive Szenen (für scene_suggest „vorherige Szene")
         self._df_active_cache: tuple = (None, 0.0)  # (aktives DisplayFusion-Profil, ts) — geteilt
         self._proc_cache: dict[str, Any] = {}     # process → (status_dict, monotonic) — für Hüllen-Prozess-Monitore
         # Direkter OBS-Client (generische Kern-Capability) — verbindet erst beim ersten echten Zugriff.
@@ -1161,6 +1248,7 @@ class DeckCoreService:
         M("displayfusion_profile", self._mon_displayfusion_profile)
         M("obs_scene", self._mon_obs_scene)
         M("obs_source_visible", self._mon_obs_source_visible)
+        M("scene_suggest", self._mon_scene_suggest)
         M("hwinfo", self._mon_hwinfo)
         M("weather", self._mon_weather)
         M("fps", self._mon_fps)
@@ -2025,6 +2113,7 @@ class DeckCoreService:
                         self._pool_categories = [s for s in (str(x).strip() for x in raw["pool_categories"])
                                                  if s and not (s in _seen or _seen.add(s))]
                     self._look = _sanitize_look(raw.get("look"))   # globaler Deck-Look (Stil/Druck/Ordner)
+                    self._scene_flow = _sanitize_scene_flow(raw.get("scene_flow"))   # „logischer" Szenen-Ablauf
                     # Legacy-Top-Level (v1): EIN globales Layout + EINE globale Kategorie-Liste.
                     if isinstance(raw.get("layout"), dict):
                         legacy_layout = raw["layout"]
@@ -2151,7 +2240,8 @@ class DeckCoreService:
             self._runtime.mkdir(parents=True, exist_ok=True)
             payload = json.dumps({"buttons": self._buttons, "tick_seconds": round(self._tick, 2),
                                   "decks": self._decks, "pool_categories": self._pool_categories,
-                                  "removed": sorted(self._removed), "look": self._look},
+                                  "removed": sorted(self._removed), "look": self._look,
+                                  "scene_flow": self._scene_flow},
                                  ensure_ascii=False, indent=2)
             self._file.write_text(payload, encoding="utf-8")
             self._snapshot(payload)
@@ -2180,7 +2270,8 @@ class DeckCoreService:
         return json.loads(json.dumps({
             "buttons": self._buttons, "tick_seconds": round(self._tick, 2),
             "decks": self._decks, "pool_categories": self._pool_categories,
-            "removed": sorted(self._removed), "look": self._look}))
+            "removed": sorted(self._removed), "look": self._look,
+            "scene_flow": self._scene_flow}))
 
     def import_state(self, data: dict) -> dict:
         """Config aus einem Backup ZURÜCKSPIELEN (überschreibt Buttons/Decks/Pool-Kategorien/Tick). Sichert vorher den alten Stand."""
@@ -2193,6 +2284,7 @@ class DeckCoreService:
         self._pool_categories = [s for s in (str(x).strip() for x in (data.get("pool_categories") or [])) if s]
         self._removed = {str(x) for x in (data.get("removed") or [])}
         self._look = _sanitize_look(data.get("look"))
+        self._scene_flow = _sanitize_scene_flow(data.get("scene_flow"))
         self._tick = _clamp_tick(data.get("tick_seconds", self._tick), self._tick)
         self._save()
         self._load()          # normalisieren: Default-Deck garantieren, Decks sanitizen, Defaults additiv seeden
@@ -2588,6 +2680,17 @@ class DeckCoreService:
         self._look = _sanitize_look({**self._look, **(patch or {})})
         self._save(); self._publish_cfg()
         return {"ok": True, "look": dict(self._look)}
+
+    def scene_flow(self) -> dict:
+        """„Logischer" Szenen-Ablauf (für scene_suggest): von-Szene → wahrscheinlich-nächste + Rücksprung-Szenen."""
+        return {"map": {k: list(v) for k, v in (self._scene_flow.get("map") or {}).items()},
+                "return": list(self._scene_flow.get("return") or [])}
+
+    def set_scene_flow(self, flow) -> dict:
+        """Szenen-Ablauf-Graph KOMPLETT setzen (der Editor verwaltet das Ganze). Wirkt sofort (scene_suggest)."""
+        self._scene_flow = _sanitize_scene_flow(flow)
+        self._save(); self._schedule_recompute()
+        return {"ok": True, "scene_flow": self.scene_flow()}
 
     # ── Pro Deck: Layout / Kategorien / Items (Platzierung) ──────────────
     def set_deck_layout(self, deck_id: str, patch: dict) -> dict:
@@ -3078,6 +3181,50 @@ class DeckCoreService:
             pool_by_id[bid] = fn; self._removed.discard(bid)
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated}
+
+    def build_scene_flow_deck(self, scenes=None) -> dict:
+        """„Logisches Szenen-Deck": Ordner „🎬 Szenen" mit kontext-hervorgehobenen Szenen-Buttons
+        (scene_suggest → wahrscheinlich-nächste leuchten/blinken, aktive markiert, Rest ausgegraut).
+        Legt — falls noch KEINER existiert — einen Standard-Ablauf-Graph aus den Szenen-Namen an
+        (Schlagwort-Heuristik, editierbar). Idempotent (id ``sceneflow_<slug>``), User-Kosmetik bleibt."""
+        names = [str(s) for s in (scenes if scenes is not None
+                                  else (self.obs_scenes() or {}).get("scenes") or []) if str(s).strip()]
+        if not names:
+            return {"ok": False, "reason": "no_scenes"}
+        deck_id = self._named_folder("🎬 Szenen", "🎬")
+        deck = self._deck(deck_id)
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        used = set(pool_by_id.keys())
+        item_by_id = {it["button"]: it for it in deck["items"]} if deck else {}
+        created = updated = 0
+        for name in names:
+            bid = "sceneflow_" + _slug(name)
+            # Slug-Kollision (zwei Szenen → gleicher Slug) eindeutig machen, bestehenden DERSELBEN Szene wiederverwenden.
+            if bid in pool_by_id and pool_by_id[bid].get("_scene") != name:
+                base = bid; n = 2
+                while bid in used:
+                    bid = f"{base}_{n}"; n += 1
+            fn = _scene_suggest_def(bid, name)
+            ex = pool_by_id.get(bid)
+            if ex is not None:
+                fn = _regen_preserve(ex, fn); self._buttons[self._buttons.index(ex)] = fn; updated += 1
+            else:
+                self._buttons.append(fn); used.add(bid); created += 1
+            pool_by_id[bid] = fn; self._removed.discard(bid)
+            if deck and bid not in item_by_id:
+                deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False})
+        # Ordner erreichbar machen: Öffner-Button im Pool sicherstellen (in „📁 Ordner" ankreuzbar/platzierbar).
+        if deck:
+            op = self._folder_opener_def(deck)
+            self._pool_upsert(op, "📁 Ordner")
+        # Standard-Ablauf nur seeden, wenn noch KEINER existiert (User-Edits NIE überschreiben).
+        seeded = False
+        if not (self._scene_flow.get("map")):
+            self._scene_flow = _default_scene_flow(names)
+            seeded = True
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "created": created, "updated": updated,
+                "scenes": len(names), "flow_seeded": seeded}
 
     def generate_displayfusion_buttons(self, only=None) -> dict:
         """Pro DisplayFusion-Profil einen Lade-Button NUR im Pool (KEINE Deck-Platzierung). Idempotent.
@@ -4170,7 +4317,7 @@ class DeckCoreService:
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
-                          "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
+                          "scene_suggest", "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         # Integrations-Gating (P2): ein Cap-Typ erscheint im Editor nur, wenn er KEINER Integration
@@ -4358,6 +4505,48 @@ class DeckCoreService:
         self._obs_scene_cache = (val, now)
         return val
 
+    def _scene_suggest_state(self, target: str, cur) -> str:
+        """Zustand EINER Szene-Kachel im „logischen" Deck: ``current`` (ist aktiv) · ``suggested``
+        (laut Ablauf-Graph bzw. Rücksprung wahrscheinlich-nächste) · ``idle`` (sonst → ausgegraut).
+        Pflegt nebenbei den Szenen-Verlauf (für den Rücksprung „vorherige Szene")."""
+        cur = str(cur or "").strip()
+        # Verlauf nur bei echtem Wechsel anhängen (alle Szenen-Kacheln lesen pro Tick denselben Wert → dedupe).
+        if cur and (not self._scene_hist or self._scene_hist[-1] != cur):
+            self._scene_hist.append(cur)
+            if len(self._scene_hist) > 12:
+                self._scene_hist = self._scene_hist[-12:]
+        t = str(target or "").strip().lower()
+        c = cur.lower()
+        if not c or not t:
+            return "idle"
+        if t == c:
+            return "current"
+        flow = self._scene_flow or {}
+        rets = {str(s).strip().lower() for s in (flow.get("return") or [])}
+        # Rücksprung: aktive Szene ist eine Pausen-/Rücksprung-Szene → die letzte Nicht-Pausen-Szene davor
+        # (aus dem Verlauf) ist die wahrscheinliche Rückkehr. Trifft das DIESE Kachel → suggested.
+        if c in rets:
+            for prev in reversed(self._scene_hist[:-1]):
+                ps = str(prev).strip().lower()
+                if ps not in rets:
+                    if t == ps:
+                        return "suggested"
+                    break   # jüngste Nicht-Pausen-Szene gefunden, ist es nicht → unten der Graph entscheidet
+        # Vorwärts-Vorschläge aus dem Ablauf-Graph (case-insensitiv; gilt auch für Pausen-Szenen, falls definiert).
+        for frm, tos in (flow.get("map") or {}).items():
+            if str(frm).strip().lower() == c:
+                if any(t == str(x).strip().lower() for x in (tos or [])):
+                    return "suggested"
+                break
+        return "idle"
+
+    def _mon_scene_suggest(self, mon: dict, btn: dict) -> Any:
+        # „Logischer" Szenen-Hinweis: aktive Szene über den (host-überschreibbaren) obs_scene-Monitor lesen
+        # → current/suggested/idle. Cockpit liefert die Szene aus seinem obs_control-Snapshot (Override).
+        target = mon.get("scene") or btn.get("_scene") or ""
+        cur = self._mon_obs_scene(mon, btn)
+        return self._scene_suggest_state(target, cur)
+
     def _mon_obs_source_visible(self, mon: dict, btn: dict) -> Any:
         # Sichtbarkeit einer OBS-Quelle als Statuslicht (true=sichtbar). Pro-Button-Cache wie
         # poll-Monitore (Default 3s), damit nicht jeder Tick OBS abfragt.
@@ -4533,6 +4722,7 @@ class DeckCoreService:
                     "image": st.get("image", ""),
                     "color": _col(st.get("color"), "accent"),
                     "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
+                    **({"blink": True} if st.get("blink") else {}),   # Zustand pulsieren lassen (z.B. scene_suggest)
                 }
         return {
             "label": btn.get("label", btn.get("id")),
@@ -4541,6 +4731,7 @@ class DeckCoreService:
             "image": default.get("image", ""),
             "color": _col(default.get("color"), "off" if has_states else "accent"),
             "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
+            **({"blink": True} if default.get("blink") else {}),
         }
 
     def _eff_interval(self, btn: dict) -> float:

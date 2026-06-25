@@ -467,6 +467,12 @@ body[data-frame="off"] .sd-prev-key.is-stat::before, body[data-frame="off"] .sd-
 .t-key.noframe .t-key-icon { font-size: calc(56px * var(--sd-font)); }
 .t-key.noframe .t-key-img { width: 88%; height: 88%; }
 
+/* „Blink"/Puls für hervorgehobene Zustände (z.B. scene_suggest = wahrscheinlich-nächste Szene): sanftes
+   Pulsieren von Helligkeit/Glow, zieht den Blick. Rein kosmetisch — das physische Plugin ignoriert resolved.blink. */
+@keyframes sd-blink { 0%, 100% { opacity: 1; filter: brightness(1); } 50% { opacity: .58; filter: brightness(1.45); } }
+.t-key.blink, .sd-prev-key.blink { animation: sd-blink 1.05s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .t-key.blink, .sd-prev-key.blink { animation: none; } }
+
 /* ===== Ordner (open_deck) — Navigation + Radial-Menü ===== */
 /* Ordner-Kennzeichnung auf einer Kachel: Akzent-Innenrahmen + kleines Eck-Badge. */
 /* Ordner-Markierung: gedämpftes „Windows-Ordner"-Gelb als Innen-Rahmen. Als OUTLINE (nicht inset-shadow)
@@ -693,6 +699,15 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-glyph-cell .dc-glyph { font-size: 24px; }
 .sd-glyph-empty { color: var(--muted); text-align: center; padding: 26px; }
 .sd-glyph-foot { font-size: 11.5px; line-height: 1.4; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); }
+
+/* ── Szenen-Ablauf-Editor („Logische Szenen") ── */
+.sd-sf-row { border-top: 1px solid var(--line); padding: 8px 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.sd-sf-from { min-width: 160px; display: flex; flex-direction: column; gap: 3px; color: var(--fg); }
+.sd-sf-next { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; flex: 1; }
+.sd-sf-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--muted); cursor: pointer; transition: border-color .1s, color .1s, box-shadow .1s; }
+.sd-sf-chip:hover { border-color: var(--accent); color: var(--fg); }
+.sd-sf-chip.on { border-color: var(--accent); color: var(--fg); box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent); }
 
 /* ── Per-Deck-Theme-Editor (geteilter Deck-Editor) ── */
 .sd-deck-theme { margin: 10px 0 4px; padding-top: 10px; border-top: 1px dashed var(--line); }
