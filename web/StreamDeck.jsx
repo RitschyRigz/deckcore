@@ -1959,10 +1959,11 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
   }
   // 1-Klick HWiNFO-Dashboard (Übersicht + Kategorie-Ordner). Liest die Optionen oben (Farben/Umfang) + baut
   // alles über die idempotente Builder-Route — überschreibt keine Edits, belebt gelöschte Kacheln nicht wieder.
-  const buildDash = () => {
+  const buildDash = (clean) => {
+    if (clean && !confirm('Clean-Build: löscht zuerst die alten HWiNFO-Decks (📊 System + Kategorie-Ordner) und alle Sensor-Kacheln, dann frisch bauen. Eigene Decks/Buttons bleiben. Fortfahren?')) return
     setGenBusy(true); setMsg(null)
-    postJSON('/api/streamdeck/hwinfo/dashboard', { color_mode: opts.color_mode || 'source', curation: opts.curation || 'essential', render_mode: opts.render_mode || 'graph', override_colors: !!opts.override_colors })
-      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ „📊 System" + ${r.decks || 0} Ordner · ${r.tiles || 0} Kacheln` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
+    postJSON('/api/streamdeck/hwinfo/dashboard', { color_mode: opts.color_mode || 'source', curation: opts.curation || 'essential', render_mode: opts.render_mode || 'graph', override_colors: !!opts.override_colors, clean: !!clean })
+      .then((r) => { setMsg(r.ok ? { ok: true, t: `✓ ${clean ? '🧹 frisch: ' : ''}„📊 System" + ${r.decks || 0} Ordner · ${r.tiles || 0} Kacheln` } : { ok: false, t: r.reason || 'Fehler' }); if (r.ok) onReload && onReload() })
       .catch((e) => setMsg({ ok: false, t: String(e.message || e) })).then(() => setGenBusy(false))
   }
   const st = status && status.state !== 'unknown' ? status : null
@@ -2039,8 +2040,10 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
             </div>
           ))}
           <div class="sd-int-gen" style="margin-top:14px;border-top:0.5px solid var(--line);padding-top:12px;flex-wrap:wrap">
-            {el.dashboard && <button class="btn small" disabled={genBusy} onClick={buildDash}
-                title={'Übersichts-Deck „📊 System" + Kategorie-Ordner (CPU/GPU/Mainboard/Strom/Lüfter/…) aus allen Sensoren — idempotent, überschreibt keine Edits'}>{genBusy ? '… baue' : '📊 Dashboard bauen'}</button>}
+            {el.dashboard && <button class="btn small" disabled={genBusy} onClick={() => buildDash(false)}
+                title={'Übersichts-Deck „📊 System" + Kategorie-Ordner (CPU/GPU/Mainboard/Strom/Lüfter/…) — idempotent, additiv, überschreibt keine Edits'}>{genBusy ? '… baue' : '📊 Dashboard bauen'}</button>}
+            {el.dashboard && <button class="btn small" disabled={genBusy} onClick={() => buildDash(true)}
+                title={'Löscht ZUERST die alten HWiNFO-Decks (📊 System + Kategorie-Ordner) + alle Sensor-Kacheln, dann frisch bauen — gegen Überbleibsel nach einem „Alle"-Import. Eigene Decks/Buttons bleiben.'}>{genBusy ? '… baue' : '🧹 Clean-Build'}</button>}
             <button class="btn small" disabled={genBusy} onClick={gen}>{genBusy ? '… wende an' : `✨ Anwenden (${totalSel()})`}</button>
             <span class="muted" style="font-size:12px">{el.dashboard ? 'Dashboard = fertiges Layout · Anwenden = nur angehakte Sensoren in den Pool' : 'angehakt = anlegen · abgehakt = entfernen'}</span>
             {msg && <span class={'msg small ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}

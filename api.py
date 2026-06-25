@@ -98,11 +98,12 @@ def build_streamdeck_router(
     def streamdeck_hwinfo_dashboard(request: Request, body: dict = Body(...)) -> JSONResponse:
         """1-Klick HWiNFO-Dashboard: Übersichts-Deck + Kategorie-Ordner aus den freigegebenen Sensoren.
         body = {color_mode:'source'|'theme', curation:'essential'|'all', render_mode:'graph'|'smart',
-        override_colors:bool}."""
+        override_colors:bool, clean:bool}."""
         b = body or {}
         return JSONResponse(get_service(request).build_hwinfo_dashboard(
             color_mode=str(b.get("color_mode") or "source"), curation=str(b.get("curation") or "essential"),
-            render_mode=str(b.get("render_mode") or "graph"), override_colors=bool(b.get("override_colors"))))
+            render_mode=str(b.get("render_mode") or "graph"), override_colors=bool(b.get("override_colors")),
+            clean=bool(b.get("clean"))))
 
     @r.post("/api/integrations/{iid}")
     def integrations_set(iid: str, request: Request, body: dict = Body(...)) -> JSONResponse:

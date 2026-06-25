@@ -563,16 +563,44 @@ _SMART = {"gpu": "#35d07f", "cpu": "#e0a92e", "ram": "#1fc9b0", "board": "#b07cf
           "net": "#7cc4f0", "other": "#8aa0b8"}
 # Kategorie-Reihenfolge — EINE Wahrheit für Smart-Import, Integrations-Gruppierung und Dashboard.
 _HW_FAM_ORDER = ["🟢 GPU", "🟡 CPU", "🧠 RAM", "🧩 Mainboard", "🔌 Strom",
-                 "🌀 Lüfter", "💧 Wasserkühlung", "🔆 Radiator", "💾 Speicher", "🌐 Netzwerk", "📊 Sensoren"]
+                 "🌀 Lüfter", "💧 Wasserkühlung", "🔆 Radiator", "💾 Festplatten", "🌐 Netzwerk", "📊 Sensoren"]
 _FAM_CAT = {"gpu": ("🟢 GPU", "gpu"), "cpu": ("🟡 CPU", "cpu"), "ram": ("🧠 RAM", "ram"),
             "board": ("🧩 Mainboard", "board"), "power": ("🔌 Strom", "power"), "fan": ("🌀 Lüfter", "fan"),
             "water": ("💧 Wasserkühlung", "water"), "radiator": ("🔆 Radiator", "radiator"),
-            "storage": ("💾 Speicher", "storage"), "net": ("🌐 Netzwerk", "net"), "other": ("📊 Sensoren", "other")}
+            "storage": ("💾 Festplatten", "storage"), "net": ("🌐 Netzwerk", "net"), "other": ("📊 Sensoren", "other")}
 
 
-def _hw_component(n: str) -> str:
-    """Komponente NUR aus dem (kleingeschriebenen) Namen — mehrsprachig, Reihenfolge = Spezifität."""
-    has = lambda *ws: any(w in n for w in ws)   # noqa: E731
+def _hw_component(n: str, group: str = "") -> str:
+    """Komponente aus HWiNFO-GRUPPE (stärkstes Signal) + Name — mehrsprachig, Reihenfolge = Spezifität.
+    Die Gruppe trennt, was der Name allein nicht kann: Drive-Raten/Wasser-Temps haben generische Namen
+    (Identität steckt in „Drive: …"/„Aqua …"), und iGPU/NPU/FPS-Overlays/WHEA sind Nebenkomponenten, die
+    NICHT in die kuratierten Familien gehören (→ ``other`` = 📊 Sensoren, nur unter „Alle" sichtbar)."""
+    n = (n or "").lower()
+    g = (group or "").lower()
+    has = lambda *ws: any(w in n for w in ws)    # noqa: E731
+    ghas = lambda *ws: any(w in g for w in ws)   # noqa: E731
+    # 1) Gruppe zuerst (eindeutig, wo der Name generisch ist).
+    if ghas("igpu", "npu", "rtss", "presentmon", "whea", "hardware error"):
+        return "other"   # bewusst NICHT-kuriert: integrierte GPU / NPU / FPS-Overlay / WHEA
+    if ghas("dgpu", "geforce", "radeon", "nvidia"):
+        return "gpu"
+    if g.startswith("drive") or ghas("s.m.a.r.t"):
+        return "storage"
+    if ghas("dimm", "zeitangaben", "memory timing"):
+        return "ram"
+    if g.startswith("system:"):
+        return "ram"   # „System: <Board>" trägt physikalischen/virtuellen Speicher + Page File
+    if ghas("netzwerk", "network", "ethernet", "wi-fi", "wlan"):
+        return "net"
+    if ghas("aqua", "octo", "quadro", "highflow", "d5 next", "farbwerk", "mps", "corsair", "nzxt", "kraken"):
+        return "water"   # Wasserkühlungs-Controller (Lüfter darauf → _smart_classify routet via Messart trotzdem auf 🌀)
+    if ghas("nuvoton", "nct", "(intel pch)", "superio", "it86", "it87"):
+        return "board"
+    if g.startswith("cpu ") or ghas("core ultra", "ryzen", ": dts", "c-state", "enhanced", "processor"):
+        return "cpu"
+    if ghas("gpu"):
+        return "gpu"
+    # 2) Name-Fallback (gruppen-lose Aufrufe / Sensoren ohne Gruppe).
     if has("gpu", "grafik", "graphics", "vram", "geforce", "radeon", "video"):
         return "gpu"
     if has("cpu", "kern", "core", "prozessor", "package", "paket", "ryzen", "ccd", "tctl", "tdie", "tjmax"):
@@ -639,13 +667,14 @@ def _hw_range(meas: str, fam: str, is_f: bool) -> tuple:
     return (0, 100, True)
 
 
-def _smart_classify(name: str, unit: str) -> dict:
+def _smart_classify(name: str, unit: str, group: str = "") -> dict:
     """→ {render, color, cat, fam, component, measure, opts}. `color` = Familien-Hex (Back-Compat),
-    `fam` = Token-Schlüssel (für ``fam:<fam>``). `opts` = None bei Stat."""
+    `fam` = Token-Schlüssel (für ``fam:<fam>``). `opts` = None bei Stat. ``group`` = HWiNFO-Sensorgruppe
+    (schärft die Komponente: Drive/Wasser/DIMM/iGPU/NPU sind über den Namen allein nicht trennbar)."""
     n = (name or "").lower()
     u = (unit or "").lower().strip()
     has = lambda *ws: any(w in n for w in ws)   # noqa: E731
-    comp = _hw_component(n)
+    comp = _hw_component(n, group)
     meas = _hw_measure(n, u)
     is_pumpish = has("wasser", "water", "coolant", "kühl", "kuhl", "loop", "mora", "aio", "pump", "pumpe", "durchfluss")
     is_rad = has("radiator")
@@ -782,24 +811,87 @@ _HWINFO_SETUP_HINT = ("HWiNFO nicht erreichbar oder keine Sensoren freigegeben. 
                       + _HWINFO_ENABLE_STEPS)
 
 
-def _hwinfo_essential(name: str, unit: str) -> bool:
-    """Generische Heuristik (KEIN Hardware-Name): ist das ein „primärer" Sensor fürs Auto-Starter-Deck?
-    Primär = Haupt-Kennzahl (Temp/Last/Takt/Leistung/Belegung/Lüfter/Durchfluss) UND keine Pro-Instanz-/
-    Detail-Variante (Core #5, Thread 7, VRM-Phase, „Distance to TjMax", Throttling/Residency). Wird NUR
-    bei sehr vielen Sensoren genutzt; kleine (vom User kuratierte) Listen werden nie gefiltert."""
-    n = (name or "").lower()
+def _label_has_subindex(nl: str, base: str) -> bool:
+    """True, wenn auf ``base`` (z.B. ``temperatur``) direkt eine Ziffer folgt (ggf. nach einem Leerzeichen) →
+    nummerierter Sub-Sensor (``Laufwerkstemperatur 2``), den die Kuration auslässt. ``(2)`` (= 2. Gerät) NICHT."""
+    i = nl.find(base)
+    if i < 0:
+        return False
+    rest = nl[i + len(base):].lstrip(" ")
+    return bool(rest) and rest[0].isdigit()
+
+
+def _hwinfo_essential(name: str, unit: str, group: str = "") -> bool:
+    """Kuratierte Allow-Liste: ist das ein Wert, den ein „normaler" User aufs Dashboard will? Genau die
+    Kern-Kennzahlen je Komponente (CPU/GPU/RAM/Festplatte/Lüfter/Wasser) — Temp, Last, Takt, Leistung,
+    Belegung, Lüfter-/Pumpen-Drehzahl, Durchfluss, Drive-Lese-/Schreibrate. RAUS: Pro-Instanz-/Detail-Werte
+    (Per-Core/Thread, Effizienz, Verhältnis, C-States, PCIe-Fehler, Per-Rail-Leistung, Spannungen, Timings,
+    virtueller Speicher, Page File, Drive-Lebensdauer) UND Nebenkomponenten (iGPU/NPU/FPS-Overlay/WHEA).
+    Gruppen-bewusst (Drive-/Wasser-/DIMM-/iGPU-Identität steckt in der Gruppe), mehrsprachig (DE+EN). Wird NUR
+    bei „Empfohlen"/sehr vielen Sensoren genutzt; „Alle"/kleine User-Listen bleiben ungefiltert."""
+    nl = (name or "").strip().lower()
     u = (unit or "").lower().strip()
-    if "#" in n:
+    g = (group or "").lower()
+    comp = _hw_component(nl, group)
+    m = _hw_measure(nl, u)
+    has = lambda *ws: any(w in nl for w in ws)   # noqa: E731
+    # Nebenkomponenten/Overlays komplett raus (Gruppe ODER → ``other``).
+    if any(k in g for k in ("igpu", "npu", "rtss", "presentmon", "whea", "hardware error", "zeitangaben")):
         return False
-    if any(k in n for k in ("thread", "phase", "distance to", "tjmax", "throttl", "residency")):
+    if comp == "other":
         return False
-    if any(k in n for k in ("core ", "kern ", "p-core", "e-core", "ccd")) and any(c.isdigit() for c in n):
-        return False
-    if u.startswith("°") or u in ("c", "f", "grad", "celsius", "fahrenheit", "%", "w", "watt",
-                                  "rpm", "u/min", "mhz", "ghz", "l/h", "lph"):
+    # Lüfter-/Pumpen-Drehzahlen (RPM) sind immer Kern-Werte.
+    if m == "fan":
         return True
-    if u in ("mb", "gb", "gib", "mib") and any(k in n for k in ("used", "belegt", "usage", "commit")):
-        return True
+    if comp == "cpu":
+        if m == "load" and has("gesamt", "total") and "cpu" in nl and not has("effizien", "efficiency", "thread"):
+            return True
+        if m == "temp" and has("paket", "package", "tctl", "tdie") and "(" not in nl:
+            return True
+        if m == "clock" and has("durchschnitt", "average") and "effektiv" in nl:
+            return True
+        if m == "power" and has("gesamt-leistung", "gesamtleistung", "package power", "total power", "cpu power"):
+            return True
+        return False
+    if comp == "gpu":
+        if m == "temp" and (has("gpu-temp", "gpu temp") or has("sperrschicht", "junction", "hot spot", "hotspot")):
+            return True
+        if m == "power" and nl in ("gpu leistung", "gpu-leistung", "gpu power"):
+            return True
+        if m == "clock" and nl in ("gpu-takt", "gpu takt", "gpu speicher-takt", "gpu-speicher-takt", "gpu clock", "gpu memory clock"):
+            return True
+        if m == "load" and has("kernlast", "core load", "gpu load", "utiliz") and not has("speicher", "memory", "controller"):
+            return True
+        if m in ("load", "fill") and has("speichernutzung", "memory usage", "memory used"):
+            return True
+        return False
+    if comp == "ram":
+        if m == "load" and has("physikalischen speicher", "physical memory") and "virtuel" not in nl:
+            return True
+        if m == "temp" and has("spd", "dimm"):
+            return True
+        return False
+    if comp == "storage":
+        if m == "temp" and has("laufwerkstemperatur", "drive temp", "festplattentemp") and not _label_has_subindex(nl, "temperatur"):
+            return True
+        if m == "load" and has("gesamtaktivität", "total activity"):
+            return True
+        if m == "rate" and has("leserate", "schreibrate", "read rate", "write rate"):
+            return True
+        return False
+    if comp == "water":
+        if m in ("temp", "flow"):
+            return True
+        return False
+    if comp == "board":
+        # Mainboard-Health-Trias: Board-Temp + VRM/MOSFET-Temp + Chipsatz-Temp (je primäre, keine Spannungs-/
+        # Nummern-Duplikate). Board-„CPU"-Temp bewusst raus (redundant zur echten CPU-Paket-Temp).
+        if m == "temp" and not _label_has_subindex(nl, "temperatur") and (
+                has("hauptplatine", "motherboard", "mainboard", "system temp", "system-temp")
+                or has("mos", "vrm", "mosfet", "vcore-mos", "vrm temp")
+                or has("pch", "chipsatz", "chipset")):
+            return True
+        return False
     return False
 
 
@@ -1296,9 +1388,10 @@ class DeckCoreService:
                     unit = str(x.get("unit") or "")
                     it = {"id": str(x.get("key")), "label": "%s (%s%s)" % (label, x.get("value"), unit),
                           "render": "auto", "renders": RND}
+                    grp = str(x.get("group") or x.get("sensor") or "")
                     if _many:
-                        it["recommend"] = _hwinfo_essential(label, unit)
-                    buckets.setdefault(_smart_classify(label, unit)["cat"], []).append(it)
+                        it["recommend"] = _hwinfo_essential(label, unit, grp)
+                    buckets.setdefault(_smart_classify(label, unit, grp)["cat"], []).append(it)
                 ordered = [c for c in FAM_ORDER if c in buckets] + [c for c in buckets if c not in FAM_ORDER]
                 groups = [{"key": "fam_" + _slug(cat), "label": cat, "items": buckets[cat]} for cat in ordered]
                 _srcname = {"shm": "Shared Memory", "registry": "Registry/Gadget"}.get(str(s.get("source") or ""), "")
@@ -1543,7 +1636,7 @@ class DeckCoreService:
                     nm = str(s.get("label") or key)
                     unit = str(s.get("unit") or "").strip()
                     rnd = str(renders.get(str(key), "auto")).lower()
-                    sm = _smart_classify(nm, unit)
+                    sm = _smart_classify(nm, unit, str(s.get("group") or s.get("sensor") or ""))
                     eff = sm["render"] if rnd == "auto" else rnd   # effektiver Render (auto = Klassifizierer-Wahl)
                     fn = {"id": _hw_bid(s), "label": nm, "pool_cat": "HWiNFO",
                           "action": {"type": "none"}, "monitor": _hw_monitor(s), "states": [],
@@ -3012,7 +3105,7 @@ class DeckCoreService:
         available_sensors = len(sensors)
         curated = available_sensors > _HW_AUTO_CAP
         if curated:
-            ess = [s for s in sensors if _hwinfo_essential(str(s.get("label") or ""), str(s.get("unit") or ""))]
+            ess = [s for s in sensors if _hwinfo_essential(str(s.get("label") or ""), str(s.get("unit") or ""), str(s.get("group") or s.get("sensor") or ""))]
             sensors = (ess or sensors)[:_HW_AUTO_CAP]
         cats_used: list[str] = []
         if not smart and "HWiNFO" not in self._pool_categories:
@@ -3034,7 +3127,7 @@ class DeckCoreService:
                 "default": {"icon": "📊", "title": "{value}" + (" " + unit if unit else ""), "color": "#222"},
             }
             if smart:
-                c = _smart_classify(name, unit)
+                c = _smart_classify(name, unit, str(s.get("group") or s.get("sensor") or ""))
                 fn["render"], fn["pool_cat"] = c["render"], c["cat"]
                 fn["default"]["color"] = _hw_dcolor(c, c["render"])
                 if c.get("opts"):
@@ -3112,7 +3205,8 @@ class DeckCoreService:
         return out
 
     def build_hwinfo_dashboard(self, *, color_mode: str = "source", curation: str = "essential",
-                               render_mode: str = "graph", override_colors: bool = False) -> dict:
+                               render_mode: str = "graph", override_colors: bool = False,
+                               clean: bool = False) -> dict:
         """1-Klick: aus den freigegebenen HWiNFO-Sensoren ein geordnetes, hübsches Dashboard bauen — ein
         „📊 System"-Übersichts-Deck (wichtige Sensoren + Ordner-Öffner) und pro nicht-leerer Kategorie ein
         Ordner-Deck (CPU/GPU/Mainboard/RAM/Strom/Lüfter/Wasser/Radiator/Speicher/Netzwerk).
@@ -3123,7 +3217,10 @@ class DeckCoreService:
         nur Gauges/Balken werden als Verlaufs-Graph gezeichnet — Wert im Titel) | 'smart' (Original-Mix
         Gauge/Balken/Graph/Stat je Messart). ``override_colors`` = True überschreibt zusätzlich die (sonst per
         ``_regen_preserve`` bewahrte) ``default.color`` bestehender Kacheln mit der frischen Familien-Farbe —
-        opt-in „alte Farbwerte überschreiben" (Default False = User-Farben bleiben)."""
+        opt-in „alte Farbwerte überschreiben" (Default False = User-Farben bleiben). ``clean`` = True macht einen
+        „Clean-Build": löscht ZUERST die alten HWiNFO-Decks (Übersicht + Kategorie-Ordner) + alle ``hw_*``-Kacheln
+        (Pool/Decks) + deren ``_removed``-Sperre, baut dann frisch — fixt das Überbleibsel-Problem nach einem
+        „Alle"-Import (additiver Build entfernt sonst nichts). User-Decks/-Buttons bleiben unberührt."""
         data = self._hwinfo.sensors() or {}
         if not data.get("available"):
             return {"ok": False, "reason": "hwinfo_unavailable", "hint": _HWINFO_SETUP_HINT}
@@ -3134,12 +3231,31 @@ class DeckCoreService:
         self._look = _sanitize_look({**self._look, "colorMode": cm})   # Farb-Modus merken (persistent im Look)
         everything = (str(curation) == "all")
         rmode = "smart" if str(render_mode) == "smart" else "graph"   # Stock = Smart-Skala, Gauges/Balken aber als Graph
+        if clean:   # „Clean-Build": alte HWiNFO-Decks (Übersicht + Kategorie-Ordner) + hw_*-Kacheln weg → frisch bauen
+            # Aktuelle UND frühere (umbenannte) Kategorie-Labels — sonst bleiben Alt-Ordner wie „💾 Speicher" stehen.
+            _hw_labels = set(_HW_FAM_ORDER) | {"💾 Speicher", "📊 Sensoren", "🔌 Strom"}
+            _killed = set()   # Öffner-ids der gelöschten Kategorie-Decks (folder_<slug>) — müssen aus _removed raus
+            def _kill_folder(d):
+                _killed.add("folder_" + _slug(str(d.get("id") or "")))
+                self.delete_deck(d.get("id"))   # delete_deck → _prune_dangling_openers legt den Öffner sonst in _removed
+            for d in list(self._decks):
+                lbl = str(d.get("label") or "")
+                if (lbl in _hw_labels and d.get("folder")) or lbl == "📊 System":
+                    _kill_folder(d)
+            for d in self._decks:                   # hw_*-Kacheln aus allen verbliebenen Decks lösen
+                d["items"] = [it for it in d.get("items", []) if not str(it.get("button") or "").startswith("hw_")]
+            for d in list(self._decks):             # jetzt leere Kategorie-Ordner (z.B. nach Strip) wegräumen
+                if d.get("folder") and str(d.get("label") or "") in _hw_labels and not d.get("items"):
+                    _kill_folder(d)
+            self._buttons = [b for b in self._buttons if not str(b.get("id") or "").startswith("hw_")]
+            # Sperre lösen für hw_*-Kacheln UND die Ordner-Öffner → der Build legt Kacheln UND Öffner frisch an.
+            self._removed = {r for r in self._removed if not str(r).startswith("hw_") and r not in _killed}
         # Klassifizieren (+ Original-Index für deterministische Tie-Breaks).
         classified = []   # (idx, s, nm, unit, c)
         for idx, s in enumerate(sensors):
             nm = str(s.get("label") or s.get("key"))
             unit = str(s.get("unit") or "").strip()
-            classified.append((idx, s, nm, unit, _smart_classify(nm, unit)))
+            classified.append((idx, s, nm, unit, _smart_classify(nm, unit, str(s.get("group") or s.get("sensor") or ""))))
         # Total-Sensoren je Familie (für Belegungs-Balken: 0..Total statt Idle-Ableitung).
         totals = {}
         for idx, s, nm, unit, c in classified:
@@ -3240,9 +3356,9 @@ class DeckCoreService:
         n_decks = n_tiles = 0
         for cat in ordered:
             items = buckets[cat]
-            if not everything:   # Kuration: nur primäre (sonst alles, wenn keine als primär gelten — kleine Familie)
-                ess = [t for t in items if _hwinfo_essential(t[2], t[3])]
-                items = ess or items
+            if not everything:   # Kuration „Empfohlen": NUR die kuratierten — Kategorie ohne Treffer (other/net/strom)
+                items = [t for t in items if _hwinfo_essential(t[2], t[3], str(t[1].get("group") or t[1].get("sensor") or ""))]
+                # wird unten via „if not items: continue" ganz übersprungen (kein 📊-Sensoren-/Netzwerk-Müll mehr).
             if not items:
                 continue
             did = self._named_folder(cat, cat.split(" ", 1)[0])
@@ -3266,7 +3382,11 @@ class DeckCoreService:
         ov = self._deck(ov_id)
         if ov is not None:
             otile = _placer(ov)
-            for idx, s, nm, unit, c in self._hw_headlines(classified):
+            # Headlines bei „Empfohlen" NUR aus dem kuratierten Pool (sonst zieht die Score-Heuristik Müll wie
+            # „Kern-Effizienz"/„Page File Used" rein, weil der kürzere Name bei Score-Gleichstand gewinnt).
+            hl_pool = classified if everything else [
+                t for t in classified if _hwinfo_essential(t[2], t[3], str(t[1].get("group") or t[1].get("sensor") or ""))]
+            for idx, s, nm, unit, c in self._hw_headlines(hl_pool):
                 fn = _sensor_fn(s, nm, unit, c)
                 w, h = _SIZE.get(fn.get("render"), (1, 1))
                 otile(fn, c["cat"], w, h)
