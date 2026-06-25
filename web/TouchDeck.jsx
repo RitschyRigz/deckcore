@@ -525,7 +525,7 @@ function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOn
 // Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
 // getippten Ordner-Button) auf. Reines Overlay — schließt bei Tap auf den Hintergrund oder nach
 // einer ausgeführten Aktion. Ein Ordner-Button IM Radial öffnet wieder ein Radial (eine Ebene).
-function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
+function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, onClose }) {
   const [shown, setShown] = useState(false)
   useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
   const items = (deck && deck.items || []).filter((it) => !it.hidden)
@@ -557,11 +557,18 @@ function RadialMenu({ deck, vis, actionById, anchor, onTap, onClose }) {
           const rx = Math.round(Math.cos(ang) * R), ry = Math.round(Math.sin(ang) * R)
           const id = it.button
           const v = vis[id] || {}
+          const o = (optsById && optsById[id]) || {}
           const folder = (actionById[id] || {}).type === 'open_deck'
+          // Wie im Hauptdeck/Editor: Tasten OHNE Bild sind flache Kacheln mit Akzent-Glow + Kachel-Stil (s-<skin>)
+          // statt eines flachen Vollfarb-Hintergrunds. So sehen Radial-Buttons identisch zur Vorschau aus.
+          const skin = o.skin || defSkin || 'brackets'
+          const isFlat = !v.image
           return (
             <button key={id}
-                    class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')}
-                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};background:${resolveColor(v.color) || '#222'}`}
+                    class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')
+                           + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '')}
+                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};`
+                           + (isFlat ? `--acc:${accentVar(v.color)}` : `background:${resolveColor(v.color) || '#222'}`)}
                     onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
               <KeyImg image={v.image} icon={v.icon} />
               <span class="t-key-label">{v.label || id}</span>
@@ -980,7 +987,7 @@ export function TouchDeck() {
       <button class={'t-sysbtn' + (sysMenu ? ' open' : '')} title="System" aria-label="System"
               onClick={(e) => { e.stopPropagation(); setSysMenu((v) => !v) }}>☰</button>
       {overlay && overlayDeck && (
-        <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById}
+        <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById} optsById={optsById} defSkin={defSkin}
                     anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />
       )}
     </div>

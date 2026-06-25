@@ -212,7 +212,7 @@ def build_streamdeck_router(
                 raise HTTPException(status_code=503, detail=f"OBS nicht erreichbar: {e}")
         if not scenes:
             raise HTTPException(status_code=503, detail="Keine OBS-Szenen gefunden (ist OBS verbunden?).")
-        res = svc.build_scene_flow_deck(scenes)
+        res = svc.build_scene_flow_deck(scenes, label=(body or {}).get("label") or "🎬 Szenen")
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "build fehlgeschlagen"))
         return JSONResponse(res)

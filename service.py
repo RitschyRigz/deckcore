@@ -385,17 +385,21 @@ def _obs_scene_def(bid: str, name: str, active_color: str = "ok", idle_color: st
             "default": {"icon": "🎬", "title": name, "color": idle_color}}
 
 
+_SCENE_SUGGEST_BLUE = "#4ea1ff"   # festes Blau für „wahrscheinlich nächste" (Ampel-Logik, theme-unabhängig)
+
+
 def _scene_suggest_def(bid: str, name: str) -> dict:
     """„Logischer" Szenen-Button: wechselt zur Szene UND hebt sich kontextabhängig hervor (scene_suggest-
-    Monitor liefert current/suggested/idle aus aktueller Szene + Ablauf-Graph + Verlauf). Wahrscheinlich-
-    nächste Szenen leuchten + blinken (suggested), die aktive ist markiert (current), der Rest ist
-    ausgegraut (default = Inaktiv-Farbe) — aber IMMER klickbar (States sperren nie)."""
+    Monitor liefert current/suggested/return/idle aus aktueller Szene + Ablauf-Graph + Verlauf). Ampel-Logik:
+    aktive Szene = GRÜN (current), wahrscheinlich-nächste = BLAU + blinkt (suggested), die Rücksprung-Szene =
+    ROT + blinkt (return, nur wenn aus einer Pausen-Szene gewählt), der Rest ausgegraut — aber IMMER klickbar."""
     return {"id": bid, "label": name, "_scene": name,
             "action": {"type": "obs", "obs_action": "scene", "scene": name},
             "monitor": {"type": "scene_suggest", "scene": name},
             "states": [
-                {"when": {"op": "eq", "value": "current"}, "icon": "📺", "title": name, "color": "live"},
-                {"when": {"op": "eq", "value": "suggested"}, "icon": "▶", "title": name, "color": "accent", "blink": True},
+                {"when": {"op": "eq", "value": "current"}, "icon": "📺", "title": name, "color": "ok"},
+                {"when": {"op": "eq", "value": "suggested"}, "icon": "▶", "title": name, "color": _SCENE_SUGGEST_BLUE, "blink": True},
+                {"when": {"op": "eq", "value": "return"}, "icon": "↩", "title": name, "color": "err", "blink": True},
             ],
             "default": {"icon": "🎬", "title": name, "color": "off"}}
 
@@ -3186,16 +3190,18 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "created": created, "updated": updated, "total": created + updated}
 
-    def build_scene_flow_deck(self, scenes=None) -> dict:
-        """„Logisches Szenen-Deck": Ordner „🎬 Szenen" mit kontext-hervorgehobenen Szenen-Buttons
-        (scene_suggest → wahrscheinlich-nächste leuchten/blinken, aktive markiert, Rest ausgegraut).
-        Legt — falls noch KEINER existiert — einen Standard-Ablauf-Graph aus den Szenen-Namen an
-        (Schlagwort-Heuristik, editierbar). Idempotent (id ``sceneflow_<slug>``), User-Kosmetik bleibt."""
+    def build_scene_flow_deck(self, scenes=None, label: str = "🎬 Szenen") -> dict:
+        """„Logisches Szenen-Deck": Ordner ``label`` (Default „🎬 Szenen") mit kontext-hervorgehobenen Szenen-
+        Buttons (scene_suggest → wahrscheinlich-nächste blau/blinken, aktive grün, Rücksprung rot, Rest ausgegraut).
+        ``scenes`` = NUR diese Szenen ins Deck (z.B. Solo- vs. Dual-Auswahl); None = alle aus OBS. Mehrere Decks
+        mit verschiedenen Labels möglich. Legt — falls noch KEINER existiert — einen Standard-Ablauf an (Heuristik,
+        editierbar). Idempotent (id ``sceneflow_<slug>``), User-Kosmetik bleibt."""
+        label = str(label or "🎬 Szenen").strip() or "🎬 Szenen"
         names = [str(s) for s in (scenes if scenes is not None
                                   else (self.obs_scenes() or {}).get("scenes") or []) if str(s).strip()]
         if not names:
             return {"ok": False, "reason": "no_scenes"}
-        deck_id = self._named_folder("🎬 Szenen", "🎬")
+        deck_id = self._named_folder(label, "🎬")
         deck = self._deck(deck_id)
         pool_by_id = {b.get("id"): b for b in self._buttons}
         used = set(pool_by_id.keys())
@@ -4524,9 +4530,9 @@ class DeckCoreService:
         return val
 
     def _scene_suggest_state(self, target: str, cur) -> str:
-        """Zustand EINER Szene-Kachel im „logischen" Deck: ``current`` (ist aktiv) · ``suggested``
-        (laut Ablauf-Graph bzw. Rücksprung wahrscheinlich-nächste) · ``idle`` (sonst → ausgegraut).
-        Pflegt nebenbei den Szenen-Verlauf (für den Rücksprung „vorherige Szene")."""
+        """Zustand EINER Szene-Kachel im „logischen" Deck: ``current`` (ist aktiv → grün) · ``return`` (die
+        Rücksprung-Szene, wenn aus einer Pausen-Szene → rot) · ``suggested`` (laut Ablauf-Graph wahrscheinlich-
+        nächste → blau) · ``idle`` (sonst → ausgegraut). Pflegt nebenbei den Szenen-Verlauf (für den Rücksprung)."""
         cur = str(cur or "").strip()
         # Verlauf nur bei echtem Wechsel anhängen (alle Szenen-Kacheln lesen pro Tick denselben Wert → dedupe).
         if cur and (not self._scene_hist or self._scene_hist[-1] != cur):
@@ -4542,13 +4548,13 @@ class DeckCoreService:
         flow = self._scene_flow or {}
         rets = {str(s).strip().lower() for s in (flow.get("return") or [])}
         # Rücksprung: aktive Szene ist eine Pausen-/Rücksprung-Szene → die letzte Nicht-Pausen-Szene davor
-        # (aus dem Verlauf) ist die wahrscheinliche Rückkehr. Trifft das DIESE Kachel → suggested.
+        # (aus dem Verlauf) ist die wahrscheinliche Rückkehr. Trifft das DIESE Kachel → return (rot).
         if c in rets:
             for prev in reversed(self._scene_hist[:-1]):
                 ps = str(prev).strip().lower()
                 if ps not in rets:
                     if t == ps:
-                        return "suggested"
+                        return "return"
                     break   # jüngste Nicht-Pausen-Szene gefunden, ist es nicht → unten der Graph entscheidet
         # Vorwärts-Vorschläge aus dem Ablauf-Graph (case-insensitiv; gilt auch für Pausen-Szenen, falls definiert).
         for frm, tos in (flow.get("map") or {}).items():
