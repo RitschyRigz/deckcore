@@ -393,15 +393,16 @@ def _scene_suggest_def(bid: str, name: str) -> dict:
     Monitor liefert current/suggested/return/idle aus aktueller Szene + Ablauf-Graph + Verlauf). Ampel-Logik:
     aktive Szene = GRÜN (current), wahrscheinlich-nächste = BLAU + blinkt (suggested), die Rücksprung-Szene =
     ROT + blinkt (return, nur wenn aus einer Pausen-Szene gewählt), der Rest ausgegraut — aber IMMER klickbar."""
-    return {"id": bid, "label": name, "_scene": name,
+    ic = _scene_icon(name)   # passendes Glyph je Szene (Gamepad/Chat/Coffee/Cam/…) — Symbol = Szenen-Identität,
+    return {"id": bid, "label": name, "_scene": name,   # die FARBE (grün/blau/rot) trägt den Zustand, kein „Pfeil überall".
             "action": {"type": "obs", "obs_action": "scene", "scene": name},
             "monitor": {"type": "scene_suggest", "scene": name},
             "states": [
-                {"when": {"op": "eq", "value": "current"}, "icon": "📺", "title": name, "color": "ok"},
-                {"when": {"op": "eq", "value": "suggested"}, "icon": "▶", "title": name, "color": _SCENE_SUGGEST_BLUE, "blink": True},
-                {"when": {"op": "eq", "value": "return"}, "icon": "↩", "title": name, "color": "err", "blink": True},
+                {"when": {"op": "eq", "value": "current"}, "icon": ic, "title": name, "color": "ok"},
+                {"when": {"op": "eq", "value": "suggested"}, "icon": ic, "title": name, "color": _SCENE_SUGGEST_BLUE, "blink": True},
+                {"when": {"op": "eq", "value": "return"}, "icon": ic, "title": name, "color": "err", "blink": True},
             ],
-            "default": {"icon": "🎬", "title": name, "color": "off"}}
+            "default": {"icon": ic, "title": name, "color": "off"}}
 
 
 # Szenen-Rollen rein per Stichwort im NAMEN (mehrsprachig, generisch — KEINE festen Szenennamen, kein
@@ -426,6 +427,33 @@ def _scene_role(name: str) -> str:
         if any(w in s for w in kws):
             return role
     return "other"
+
+
+# Passendes Symbol je Szene aus der Glyph-Bibliothek (g:<name>, siehe web/icons.jsx) — Stichwort-getrieben,
+# Rolle als Fallback. Generisch (keine festen Szenennamen); jedes Symbol im Editor überschreibbar. Reihenfolge
+# = Spezifität (erster Treffer gewinnt). Muss zu vorhandenen GLYPHS-Keys passen.
+_SCENE_ICON_KW = (
+    (("coffee", "kaffee"), "g:coffee"),
+    (("recap", "replay", "rückblick", "ruckblick", "highlight", "mp4", "clip"), "g:film"),
+    (("vdo", "ninja", "handycam", "webcam", "guest", "gast", "cam"), "g:video"),
+    (("game", "gaming", "konsole", "console", "ps5", "ps4", "xbox", "switch", "ingame", "in-game", "spiel", "capture"), "g:gamepad"),
+    (("chat", "talk", "irl", "reden", "face"), "g:message-circle"),
+    (("mic", "voice", "podcast", "audio", "sound", " ton"), "g:sliders"),
+    (("brb", "right back", "afk", "pause", "break", "bbl"), "g:pause"),
+    (("start", "begin", "soon", "intro", "bald", "warte"), "g:rocket"),
+    (("end", "ende", "outro", "bye", "credits", "abspann"), "g:flag"),
+)
+_SCENE_ICON_ROLE = {"start": "g:rocket", "chat": "g:message-circle", "capture": "g:gamepad",
+                    "pause": "g:pause", "recap": "g:film", "end": "g:flag", "exclusive": "g:video"}
+
+
+def _scene_icon(name: str, role: str = "") -> str:
+    """Glyph (g:<name>) das zur Szene passt: erst Stichwörter, sonst die Rolle, sonst ein neutraler Monitor."""
+    n = (name or "").lower()
+    for kws, ic in _SCENE_ICON_KW:
+        if any(w in n for w in kws):
+            return ic
+    return _SCENE_ICON_ROLE.get(role or _scene_role(name), "g:monitor")
 
 
 def _default_scene_flow(names: list) -> dict:
@@ -3217,7 +3245,11 @@ class DeckCoreService:
             fn = _scene_suggest_def(bid, name)
             ex = pool_by_id.get(bid)
             if ex is not None:
-                fn = _regen_preserve(ex, fn); self._buttons[self._buttons.index(ex)] = fn; updated += 1
+                # Der Generator besitzt die Visuals (3 Zustände/Farben/Symbole/blink) → frisch erzwingen, damit
+                # neue Auto-Symbole + Ampel-Farben greifen; nur ein selbst vergebenes Label (≠ Szenenname) bleibt.
+                if ex.get("label") and ex.get("label") != name:
+                    fn["label"] = ex["label"]
+                self._buttons[self._buttons.index(ex)] = fn; updated += 1
             else:
                 self._buttons.append(fn); used.add(bid); created += 1
             pool_by_id[bid] = fn; self._removed.discard(bid)
