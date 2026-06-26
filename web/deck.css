@@ -640,7 +640,7 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* Bild-Emote im Fader-Symbolslot (statt Emoji) — fügt sich wie v.image bei normalen Buttons ein. */
 .t-fader-img { font-size: 0; }
 .t-fader-img img { width: calc(var(--f-icon) * 1.5); height: calc(var(--f-icon) * 1.5); object-fit: contain; display: block; margin: 1px auto 0;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 80%, transparent)); }
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 55%, transparent)); }
 /* Mute = ausgegraut wie inaktive Buttons (Graustufe + abgedunkelt, Glow weg). */
 .t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
 .t-fader.muted .t-fader-knob { background: #9aa1ad; box-shadow: none; }
@@ -652,6 +652,14 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* „Nur Symbol"-Modus: App-Icon statt Titel oben im Fader. */
 .t-fader-name-img { height: calc(var(--f-icon) * 1.55); max-height: 40px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--fill, var(--acc))); }
 .t-fader-name-emo { font-size: calc(var(--f-icon) * 1.18); line-height: 1.1; }
+/* „Icon-Ring"-Stil (.s-ring) am Fader: Glow-Kreis um das Symbol — wie bei normalen Tasten (dort sitzt das
+   Icon mittig; beim Fader sitzt das Symbol unten). Ring in der Symbolfarbe (--fill). Der Ring liefert den
+   Glow → der eigene Icon-Glow wird hier abgeschaltet (kein Doppel-Glow). */
+.t-fader.s-ring .t-fader-icon { width: 1.7em; height: 1.7em; box-sizing: border-box; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; margin: 2px auto 0;
+  border: 2px solid var(--fill, var(--acc, var(--accent2)));
+  box-shadow: 0 0 9px var(--fill, var(--acc, var(--accent2))), inset 0 0 6px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 22%, transparent); }
+.t-fader.s-ring .t-fader-glyph, .t-fader.s-ring .t-fader-img img { filter: none; }
 
 /* ===== 🎨 SVG-Glyph-Symbole (icon = "g:name") ===== */
 /* Ein Glyph füllt 1em und zeichnet mit currentColor → skaliert exakt wie ein Emoji im selben Slot und
@@ -663,7 +671,7 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* Fader-Symbolslot: Glyph in der Identitätsfarbe (--fill) MIT Glow (currentColor → folgt --fill/Theme).
    Status-Karte bleibt auf --acc. */
 .t-fader-glyph { color: var(--fill, var(--acc, var(--accent2)));
-  filter: drop-shadow(0 0 6px var(--fill, var(--acc, var(--accent2)))) drop-shadow(0 0 2px var(--fill, var(--acc, var(--accent2)))); }
+  filter: drop-shadow(0 0 3px var(--fill, var(--acc, var(--accent2)))); }
 .t-readout-glyph { color: var(--acc); display: inline-flex; filter: drop-shadow(0 0 7px var(--acc)); }
 .t-readout-glyph .dc-glyph { width: 1em; height: 1em; }
 
