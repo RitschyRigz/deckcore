@@ -217,6 +217,10 @@ export function FaderView({ v, opts, skin }) {
   if (o.vuLow) style += `;--vu-low:${resolveColor(o.vuLow)}`
   if (o.vuMid) style += `;--vu-mid:${resolveColor(o.vuMid)}`
   if (o.vuHigh) style += `;--vu-high:${resolveColor(o.vuHigh)}`
+  const _k = (x) => { const n = +x; return (n >= 0.4 && n <= 3) ? n : 0 }   // Größen wie im Live-Fader
+  if (_k(o.nameK)) style += `;--f-name:calc(10cqw * ${_k(o.nameK)})`
+  if (_k(o.valK)) style += `;--f-val:calc(10cqw * ${_k(o.valK)})`
+  if (_k(o.iconK)) style += `;--f-icon:calc(17cqw * ${_k(o.iconK)})`
   const name = val.label || val.title || ''
   const lvl = 66                                      // repräsentativer Pegel für die Vorschau
   const SEGS = 19, segs = []
@@ -227,7 +231,7 @@ export function FaderView({ v, opts, skin }) {
   }
   const icon = val.icon
   return (
-    <div class={'t-fader s-' + (skin || 'brackets')} style={style}>
+    <div class={'t-fader s-' + (skin || 'brackets') + (o.nameLines === 2 ? ' ml-name' : '')} style={style}>
       <div class="t-fader-name" title={name}>{name}</div>
       <div class="t-fader-body">
         <div class="t-fader-track">

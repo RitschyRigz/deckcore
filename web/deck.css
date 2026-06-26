@@ -603,14 +603,19 @@ body.dc-deck-fs .t-deck { padding: 10px; }
   /* --acc = Rahmen/Kachel-Stil (folgt Theme) · --fill = Füllung/Knopf/Symbol (Identitätsfarbe des Faders).
      --acc-dim (unteres Fill-Ende) leitet sich aus --fill ab (kein JS-darken). Fallback: --fill→--acc→--accent2. */
   --acc-dim: color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 45%, #06080c);
+  /* Schrift-/Symbolgrößen (per Fader via opts.nameK/valK/iconK überschreibbar). */
+  --f-name: 10cqw; --f-val: 10cqw; --f-icon: 17cqw;
   background: linear-gradient(165deg, var(--fbg-top, var(--bg3)), var(--fbg-bot, var(--bg))); }
 /* Rahmen/Stil AUS (globaler/per-Deck-Look frame=false ODER per-Taste „Rahmen aus") → Fader OHNE
    Stil-Verzierung, aber Track/Fill/VU bleiben (ein rahmenloser Fader ist trotzdem ein Fader). */
 body[data-frame="off"] .t-fader, .t-key.noframe .t-fader { border: 0 !important; box-shadow: none !important; clip-path: none !important; }
 body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .t-key.noframe .t-fader::before, .t-key.noframe .t-fader::after { display: none !important; }
-.t-fader-name { font-size: 10cqw; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; line-height: 1.1;
+.t-fader-name { font-size: var(--f-name); letter-spacing: .06em; text-transform: uppercase; font-weight: 800; line-height: 1.1;
   color: var(--fg); opacity: .82; max-width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Zweizeiliger Name (opts.nameLines=2): umbrechen statt abschneiden, max. 2 Zeilen. */
+.t-fader.ml-name .t-fader-name { white-space: normal; text-overflow: clip; line-height: 1.05;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .t-fader-body { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; gap: 10%;
   align-items: stretch; justify-content: center; }
 .t-fader-track { position: relative; width: 30cqw; max-width: 40px; border-radius: 999px; cursor: ns-resize;
@@ -630,11 +635,11 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* Max-Schleppzeiger (Peak-Hold) — folgt der VU-Spitzenfarbe. Position kommt per rAF aus der Fader-Komponente. */
 .t-vu-peak { position: absolute; left: -2px; right: -2px; height: 2px; border-radius: 2px; background: var(--vu-high);
   box-shadow: 0 0 8px color-mix(in srgb, var(--vu-high) 95%, transparent), 0 0 2px #fff; pointer-events: none; opacity: 0; }
-.t-fader-foot { font-size: 10cqw; line-height: 1; color: var(--fg); opacity: .9; font-weight: 700; min-height: 1em; }
-.t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
+.t-fader-foot { font-size: var(--f-val); line-height: 1; color: var(--fg); opacity: .9; font-weight: 700; min-height: 1em; }
+.t-fader-icon { font-size: var(--f-icon); line-height: 1; text-align: center; margin-top: 1px; }
 /* Bild-Emote im Fader-Symbolslot (statt Emoji) — fügt sich wie v.image bei normalen Buttons ein. */
 .t-fader-img { font-size: 0; }
-.t-fader-img img { width: 26cqw; height: 26cqw; object-fit: contain; display: block; margin: 1px auto 0;
+.t-fader-img img { width: calc(var(--f-icon) * 1.5); height: calc(var(--f-icon) * 1.5); object-fit: contain; display: block; margin: 1px auto 0;
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 80%, transparent)); }
 /* Mute = ausgegraut wie inaktive Buttons (Graustufe + abgedunkelt, Glow weg). */
 .t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
@@ -645,8 +650,8 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .t-fader.off .t-fader-knob { background: #9aa1ad; box-shadow: none; }
 .t-fader.off .t-fader-foot { color: var(--muted, #8a909c); opacity: .9; }
 /* „Nur Symbol"-Modus: App-Icon statt Titel oben im Fader. */
-.t-fader-name-img { height: 26cqw; max-height: 34px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--fill, var(--acc))); }
-.t-fader-name-emo { font-size: 20cqw; line-height: 1.1; }
+.t-fader-name-img { height: calc(var(--f-icon) * 1.55); max-height: 40px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--fill, var(--acc))); }
+.t-fader-name-emo { font-size: calc(var(--f-icon) * 1.18); line-height: 1.1; }
 
 /* ===== 🎨 SVG-Glyph-Symbole (icon = "g:name") ===== */
 /* Ein Glyph füllt 1em und zeichnet mit currentColor → skaliert exakt wie ein Emoji im selben Slot und

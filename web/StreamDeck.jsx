@@ -3220,6 +3220,29 @@ function StatesEditor({ states, def, options, monitor, action, label, render, op
                 <ColorField value={(opts || {}).vuHigh || ''} onChange={(c) => onOpts({ ...(opts || {}), vuHigh: c || undefined })} />
               </div>
               <p class="muted sd-help" style="margin:0 0 6px">Jede Fader-Farbe einzeln: <b>Slider</b>, <b>Hintergrund</b>, <b>Rahmen</b> (= Slider-Farbe + „Stil" oben) und die 3 <b>VU-Zonen</b>. Leer (∅) = folgt dem Theme.</p>
+              <div class="reward-row sd-state" style="margin:0 0 6px;flex-wrap:wrap">
+                <span class="muted conn-label">🔣 Symbol</span>
+                <select class="so-delay" value={(opts || {}).iconSrc || 'auto'} title="Welches Symbol der Fader zeigt"
+                        onChange={(e) => onOpts({ ...(opts || {}), iconSrc: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
+                  <option value="auto">Auto (Channel = Wave-Link-Icon · Mix = Glyph)</option>
+                  <option value="wl">🎚 Wave-Link-Icon (Original)</option>
+                  <option value="glyph">🪄 Auto-Symbol (einheitlich aus Bibliothek)</option>
+                </select>
+                <label class="sd-inline" style="gap:4px;font-size:12px;margin-left:8px" title="Langen Namen auf zwei Zeilen umbrechen statt abschneiden">
+                  <input type="checkbox" checked={(opts || {}).nameLines === 2} onChange={(e) => onOpts({ ...(opts || {}), nameLines: e.currentTarget.checked ? 2 : undefined })} /> Name zweizeilig</label>
+              </div>
+              <div class="reward-row sd-state" style="margin:0 0 6px;flex-wrap:wrap">
+                <span class="muted conn-label">📏 Größe</span>
+                {[['Name', 'nameK'], ['Wert', 'valK'], ['Symbol', 'iconK']].map(([lbl, key]) => (
+                  <label key={key} class="sd-inline" style="gap:5px;font-size:11px" title={lbl + '-Größe (× Standard). Klick auf den Wert = zurück auf Auto.'}>
+                    {lbl}
+                    <input type="range" min="0.5" max="2.5" step="0.1" style="width:78px" value={(opts || {})[key] || 1}
+                           onInput={(e) => { const n = +e.currentTarget.value; onOpts({ ...(opts || {}), [key]: Math.abs(n - 1) < 0.05 ? undefined : n }) }} />
+                    <span class="sd-lay-v" style="cursor:pointer;min-width:30px" title="zurücksetzen"
+                          onClick={() => onOpts({ ...(opts || {}), [key]: undefined })}>{((opts || {})[key] || 1).toFixed(1)}×</span>
+                  </label>
+                ))}
+              </div>
             </>
           )}
           {!stateless && (states || []).map((st, i) => (

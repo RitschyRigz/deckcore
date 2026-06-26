@@ -276,6 +276,17 @@ def _sanitize_opts(o) -> dict:
         out["noIcon"] = bool(o.get("noIcon"))          # Status-Karte: Auto-/Symbol ausblenden (nur Wert)
     if o.get("skin") in _TILE_SKINS:
         out["skin"] = o["skin"]                         # Kachel-Stil (Rahmen/Glow/Muster) je Taste; leer = globaler Default
+    if o.get("iconSrc") in ("wl", "glyph"):
+        out["iconSrc"] = o["iconSrc"]                   # Fader-Symbolquelle: Wave-Link-Icon ODER einheitliches Glyph (leer=Auto)
+    if o.get("nameLines") in (2, "2"):
+        out["nameLines"] = 2                            # Fader-Name zweizeilig
+    for k in ("nameK", "valK", "iconK"):                # Fader-Größen (Multiplikator 0.5..2.5)
+        try:
+            v = float(o.get(k))
+            if 0.4 <= v <= 3 and abs(v - 1.0) >= 0.05:
+                out[k] = round(v, 2)
+        except (TypeError, ValueError):
+            pass
     for k in ("min", "max"):                          # Gauge-Wertebereich
         try:
             if o.get(k) is not None and o.get(k) != "":

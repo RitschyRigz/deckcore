@@ -3,7 +3,7 @@ import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, fontStack, widgetFontSize } from './widgets.jsx'
-import { Glyph, isGlyph, glyphName, hasGlyph } from './icons.jsx'
+import { Glyph, isGlyph, glyphName, hasGlyph, suggestGlyphName } from './icons.jsx'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
 // ganze Panel um (Deck-Identität, z.B. rot=Dual / blau=Solo); verlässt man es, wird die globale Basis
@@ -371,17 +371,31 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   if (_fo.vuLow) faderStyle += `;--vu-low:${resolveColor(_fo.vuLow)}`
   if (_fo.vuMid) faderStyle += `;--vu-mid:${resolveColor(_fo.vuMid)}`
   if (_fo.vuHigh) faderStyle += `;--vu-high:${resolveColor(_fo.vuHigh)}`
+  // Größen pro Fader (Multiplikator auf die cqw-Basis, leer/1 = Default): Name-Schrift · Wert-Schrift · Symbol.
+  const _k = (x) => { const n = +x; return (n >= 0.4 && n <= 3) ? n : 0 }
+  if (_k(_fo.nameK)) faderStyle += `;--f-name:calc(10cqw * ${_k(_fo.nameK)})`
+  if (_k(_fo.valK)) faderStyle += `;--f-val:calc(10cqw * ${_k(_fo.valK)})`
+  if (_k(_fo.iconK)) faderStyle += `;--f-icon:calc(17cqw * ${_k(_fo.iconK)})`
   const name = v.label || v.title || id
   // Symbol-Bild: explizit gesetztes v.image, sonst live — App-Fader aus der .exe, Wave-Link-CHANNEL aus dem
   // 1:1-Wave-Link-Icon (Channels tragen ein echtes Bild; Mixes liefern nur einen Namen → bleiben beim Emoji).
   // Bei Ladefehler (kein Icon / WL aus) fällt der Slot sauber aufs Emoji-Symbol zurück (imgErr).
   const isWlChan = mon.type === 'wavelink_level' && ttype === 'channel'
+  // Symbol-Quelle (opts.iconSrc): 'wl' = echtes Wave-Link-Icon (Default für Channels) · 'glyph' = einheitliches
+  // Auto-Glyph aus unserer Bibliothek (aus dem Namen) · sonst Auto (Channel→WL-Bild, Mix→gemapptes Glyph).
+  // Ein selbst gesetztes Symbol (v.icon/v.image) gewinnt immer.
+  const iconSrc = _fo.iconSrc || 'auto'
+  const wantWlPng = isWlChan && iconSrc !== 'glyph'
   const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc)
-    : isWlChan && targetId ? '/api/wavelink/icon?id=' + encodeURIComponent(targetId) : '')
+    : wantWlPng && targetId ? '/api/wavelink/icon?id=' + encodeURIComponent(targetId) : '')
   const showImg = imgSrc && !imgErr
-  // Wave-Link-MIX: Glyph aus unserer Bibliothek (live aus image.name gemappt, in wlState.glyph). Greift nur,
-  // solange die Taste das Generator-Default-Symbol trägt (🎚) — eine eigene User-Wahl bleibt unangetastet.
-  const liveGlyph = (!isWa && !isApp && !v.image && st.glyph && (!v.icon || v.icon === '🎚')) ? st.glyph : ''
+  // Glyph-Symbol, wenn kein Bild: explizit (g:) > Channel-als-Glyph (Quelle=glyph, aus dem Namen) > Mix-Mapping
+  // (wlState.glyph, nur solange Default 🎚). Reuse der generischen Auto-Symbol-Engine für „Channel als Glyph".
+  let glyphSym = ''
+  if (isGlyph(v.icon) && hasGlyph(glyphName(v.icon))) glyphSym = glyphName(v.icon)
+  else if (isWlChan && iconSrc === 'glyph') glyphSym = suggestGlyphName({ label: name, monitor: mon })
+  else if (!isWa && !isApp && !v.image && st.glyph && (!v.icon || v.icon === '🎚')) glyphSym = st.glyph
+  const liveGlyph = glyphSym   // (Name beibehalten — unten genutzt)
 
   // Peak-Hold („Schlepp-Zeiger"): trackt den Spitzenpegel, hält ihn ~1,2 s, fällt dann weich.
   // Bewegt das Marker-Element direkt per DOM (rAF) → kein Re-Render, butterweich.
@@ -476,7 +490,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
   }
   return (
-    <div class={'t-fader s-' + (skin || 'brackets') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '')} style={faderStyle}
+    <div class={'t-fader s-' + (skin || 'brackets') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>
         {iconOnly
