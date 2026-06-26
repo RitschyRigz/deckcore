@@ -579,7 +579,7 @@ function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, o
     <div class="t-radial-backdrop" onClick={onClose}>
       <div class={'t-radial' + (shown ? ' in' : '')} style={`left:${cx}px;top:${cy}px;--rk:${size}px`}
            onClick={(e) => e.stopPropagation()}>
-        <span class="t-radial-hub">{(deck && deck.icon) || '📁'}</span>
+        <span class="t-radial-hub" title="schließen" onClick={(e) => { e.stopPropagation(); onClose() }}>{(deck && deck.icon) || '📁'}</span>
         {N === 0 && <div class="t-radial-empty">leer</div>}
         {items.map((it, i) => {
           const ang = (-90 + i * (360 / N)) * Math.PI / 180
@@ -849,7 +849,18 @@ export function TouchDeck() {
     setPressed(id)
     try { await postJSON('/api/streamdeck/press/' + encodeURIComponent(id)) } catch {}
     setTimeout(() => setPressed(''), 220)
-    setOverlay(null)   // nach einer echten Aktion ein offenes Radial schließen
+    // Ordner-Verhalten NACH einer Aktion: „direkt zurück zum Original-Deck" ODER „offen lassen"
+    // (Radial bis Mitte/Display-Tap, Sub-Deck bis „‹ Zurück"). Pro Ordner-Öffner wählbar über
+    // action.close_on_action; Default = bisheriges Verhalten (Radial schließt · Sub-Deck bleibt offen).
+    const inRadial = !!overlay
+    const folderDeck = inRadial ? overlay.deck : (navStack.length ? navStack[navStack.length - 1] : '')
+    if (folderDeck) {
+      const opener = Object.values(actionById).find((ac) => ac && ac.type === 'open_deck' && ac.deck === folderDeck)
+      const auto = (opener && typeof opener.close_on_action === 'boolean') ? opener.close_on_action : inRadial
+      if (auto) { setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
+    } else {
+      setOverlay(null)
+    }
   }
 
   if (!decks.length) return <div class="t-empty" style="margin:30px auto">Keine Decks in der Registry.</div>

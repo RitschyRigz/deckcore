@@ -2468,6 +2468,16 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
               <option value="radial">Radial-Menü (Kreis um den Button)</option>
             </select>
           </div>
+          <div class="reward-row">
+            <span class="muted conn-label">Nach einer Aktion</span>
+            <select class="so-delay"
+                    value={action.close_on_action === true ? 'back' : action.close_on_action === false ? 'stay' : 'auto'}
+                    onChange={(e) => { const v = e.currentTarget.value; onChange({ close_on_action: v === 'auto' ? undefined : (v === 'back') }) }}>
+              <option value="auto">Standard ({(action.mode || 'replace') === 'radial' ? 'schließt sich' : 'bleibt offen'})</option>
+              <option value="back">↩ direkt zurück zum Deck</option>
+              <option value="stay">📌 offen bleiben (bis „‹ Zurück" / Mitte antippen)</option>
+            </select>
+          </div>
           <p class="muted sd-help">Macht diesen Button zu einem <b>Ordner</b>: beim Tippen öffnet sich das
             gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü. Den Ordner-Inhalt füllst du
             im <b>Decks-Tab</b> (Buttons reinziehen oder „📥 Füllen aus OBS/DisplayFusion"). Das <b>Aussehen</b>
