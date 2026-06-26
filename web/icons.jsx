@@ -293,3 +293,82 @@ export function IconView({ icon, cls, fallback = null }) {
   if (icon) return <span class={cls}>{icon}</span>
   return fallback
 }
+
+// ── 🪄 Auto-Symbol: aus Label + Funktion (Aktion/Überwachung) ein sinnvolles Glyph aus UNSERER Bibliothek
+// vorschlagen. GENERISCH für jede Button-Art (nicht nur Wave Link). Liefert 'g:<name>' oder '' (kein Treffer).
+// Quelle der „Intelligenz": GLYPH_KW (DE+EN-Stichworte je Glyph) + ein paar App-/Szenen-Hinweise + Typ-Defaults.
+
+// Häufige Programm-/Begriffsnamen, die NICHT als Glyph-Stichwort stehen → direkt aufs passende Glyph.
+const _AUTO_HINTS = {
+  discord: 'message-circle', steam: 'gamepad', epic: 'gamepad', battlenet: 'gamepad', spotify: 'music',
+  chrome: 'globe', edge: 'globe', firefox: 'globe', opera: 'globe', browser: 'globe', obs: 'video',
+  explorer: 'folder-open', vscode: 'terminal', code: 'terminal', voicemeeter: 'sliders', wavelink: 'sliders',
+  deck: 'sliders', mixer: 'sliders', cam: 'camera', webcam: 'video', stream: 'broadcast', brb: 'coffee',
+  pause: 'coffee', intro: 'sparkles', outro: 'flag', starting: 'sparkles', ending: 'moon', alert: 'bell',
+  raid: 'swords', follow: 'heart', sub: 'gift', bits: 'gift', vip: 'crown', mod: 'shield', timer: 'timer',
+  desktop: 'monitor', pumpe: 'fan', luefter: 'fan', radiator: 'fan', wasser: 'droplet', kuehlung: 'fan',
+}
+// Typ-Default je Aktions-Art / Überwachungs-Art (Fallback, wenn die Stichwortsuche nichts findet).
+const _AUTO_ACT = {
+  open_folder: 'folder-open', open_deck: 'folder', http: 'globe', hotkey: 'keyboard', media: 'play',
+  displayfusion: 'monitor', winaudio: 'volume-2', wavelink: 'sliders', launch: 'window', power: 'power',
+  process_action: 'power', manual_event: 'flag', events_action: 'zap', alert: 'bell', obsbot_cam: 'video',
+  obsbot_track: 'crosshair', scene_suggest: 'layers',
+}
+const _AUTO_MON = {
+  fps: 'target', frametime: 'zap', weather: 'cloud', obs_scene: 'layers', obs_source_visible: 'eye',
+  wavelink_main_output: 'speaker', winaudio_default: 'speaker', wavelink_level: 'sliders', wavelink_mute: 'volume-x',
+  displayfusion_profile: 'monitor', process_alive: 'power', hwinfo: 'cpu', bot_vision: 'eye', bot_state: 'chat',
+}
+
+function _tokens(s) {
+  // Umlaute auf die ASCII-Form normalisieren (GLYPH_KW nutzt luefter/kuehlung/… → so matchen Lüfter/Kühlung).
+  const norm = String(s || '').toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+  return norm.split(/[^a-z0-9]+/).filter((t) => t.length >= 3)
+}
+// Bestes Glyph per Stichwort-Match (GLYPH_KW + Glyph-Name). Punktet exakte Wort-Treffer höher als Teil-Treffer.
+function _kwBest(text) {
+  const toks = _tokens(text)
+  if (!toks.length) return ''
+  let best = '', score = 0
+  for (const name in GLYPH_KW) {
+    const words = (name + ' ' + GLYPH_KW[name]).split(/\s+/)
+    let s = 0
+    for (const t of toks) for (const w of words) {
+      if (w === t) s += 3
+      else if (w.length >= 4 && t.length >= 4 && (w.indexOf(t) === 0 || t.indexOf(w) === 0)) s += 1
+    }
+    if (s > score) { score = s; best = name }
+  }
+  return score > 0 ? best : ''
+}
+
+// ctx = { label, title, action, monitor }. Reihenfolge: App-/Begriffs-Hinweis → Stichwort-Match → Typ-Default.
+export function suggestGlyphName(ctx) {
+  const o = ctx || {}, a = o.action || {}, m = o.monitor || {}
+  const text = [o.label, o.title, a.path, a.url, a.source, a.scene, a.profile, m.sensor, a.app_proc, a.device_id]
+    .filter(Boolean).join(' ')
+  // 1) direkte App-/Begriffs-Hinweise (Token-genau)
+  for (const t of _tokens(text)) if (_AUTO_HINTS[t]) return _AUTO_HINTS[t]
+  // 2) OBS Stream/Aufnahme/Quelle sind eindeutig → vor der Stichwortsuche (Szene NICHT: da gewinnt der Name)
+  if (a.type === 'obs') {
+    if (a.obs_action === 'stream') return 'broadcast'
+    if (a.obs_action === 'record') return 'record'
+    if (a.obs_action === 'source_toggle') return 'eye'
+  }
+  // 3) Stichwort-Match auf Label/Funktion (die „intelligente" Schicht — z.B. Szenenname „Gaming" → gamepad)
+  const kw = _kwBest(text)
+  if (kw && hasGlyph(kw)) return kw
+  // 4) OBS-Szene ohne Namens-Treffer → Ebenen-Symbol
+  if (a.type === 'obs') return 'layers'
+  // 5) Typ-Default (Aktion vor Überwachung)
+  const at = _AUTO_ACT[a.type]; if (at && hasGlyph(at)) return at
+  const mt = _AUTO_MON[m.type]; if (mt && hasGlyph(mt)) return mt
+  return ''
+}
+// Bequemer Wrapper → fertiger Symbol-Wert ('g:<name>' oder '').
+export function suggestGlyph(ctx) {
+  const n = suggestGlyphName(ctx)
+  return n ? glyphValue(n) : ''
+}

@@ -671,6 +671,12 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-iconfield-btn .dc-glyph { font-size: 18px; }
 .sd-iconfield-emo { font-size: 15px; line-height: 1; color: var(--fg); opacity: .9; }
 .sd-iconfield-in { width: 42px; }
+/* 🪄 Auto: blasse Vorschau des Auto-Glyphs im leeren Feld + der „Auto"-Knopf zum Übernehmen. */
+.sd-iconfield-btn.is-suggest { border-style: dashed; color: var(--muted); opacity: .85; }
+.sd-iconfield-btn.is-suggest:hover { color: var(--accent2); opacity: 1; }
+.sd-iconfield-auto { flex: none; padding: 3px 7px; font-size: 11px; line-height: 1.4; white-space: nowrap;
+  background: var(--bg3); color: var(--accent2); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.sd-iconfield-auto:hover { border-color: var(--accent); color: var(--fg); }
 
 /* ── Farb-Feld: eigener Picker + Theme-Farb-Swatches (Akzent/Live/…) ── */
 .sd-colorfield { display: inline-flex; align-items: center; gap: 5px; }

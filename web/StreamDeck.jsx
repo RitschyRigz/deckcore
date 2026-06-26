@@ -3,7 +3,7 @@ import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, applyPalette, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Sparkline, statStyle } from './TouchDeck.jsx'   // Verlaufskurve + Stat-Farbe fürs WYSIWYG (Panel unberührt)
-import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW } from './icons.jsx'
+import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW, suggestGlyph } from './icons.jsx'
 import { THEME_PRESETS, THEME_VARS } from './themes.js'
 
 // Per-Taste-Stil-Auswahl: die geteilten Stile + vorangestellt „(Standard / global)" (= erbt den globalen
@@ -265,18 +265,30 @@ function GlyphPicker({ value, onPick, onClose }) {
 // ── Symbol-Feld: Bibliotheks-Symbol (Glyph) ODER Emoji-Direkteingabe ──────────
 // Ersetzt das nackte Icon-Textfeld. Zeigt das aktuelle Symbol als Vorschau (Glyph leuchtet im
 // Akzent), öffnet per Klick die Bibliothek, und lässt daneben weiterhin ein Emoji eintippen.
-function IconField({ value, onChange, placeholder }) {
+// ``ctx`` (optional) = { label, action, monitor } des Buttons → schaltet den „🪄 Auto"-Knopf frei, der ein
+// sinnvolles Glyph aus unserer Bibliothek vorschlägt. Ist noch kein Symbol gesetzt, zeigt der Knopf den
+// Vorschlag schon blass an (man SIEHT, was Auto wählen würde) — ein Klick übernimmt ihn; danach frei änderbar.
+function IconField({ value, onChange, placeholder, ctx }) {
   const [pick, setPick] = useState(false)
   const glyph = isGlyph(value) && hasGlyph(glyphName(value))
+  const sug = ctx ? suggestGlyph(ctx) : ''
+  const sugName = sug ? glyphName(sug) : ''
+  const showSugHint = !value && sugName            // leeres Feld → Vorschlag blass im Knopf zeigen
   return (
     <span class="sd-iconfield">
-      <button type="button" class={'sd-iconfield-btn' + (glyph ? ' has-glyph' : '')}
+      <button type="button" class={'sd-iconfield-btn' + (glyph ? ' has-glyph' : '') + (showSugHint ? ' is-suggest' : '')}
               title="Symbol-Bibliothek öffnen" onClick={() => setPick(true)}>
-        {glyph ? <Glyph name={glyphName(value)} /> : <span class="sd-iconfield-emo">{value || '🎨'}</span>}
+        {glyph ? <Glyph name={glyphName(value)} />
+          : showSugHint ? <Glyph name={sugName} />
+          : <span class="sd-iconfield-emo">{value || '🎨'}</span>}
       </button>
       <input class="so-delay sd-iconfield-in" placeholder={placeholder || 'Emoji'}
              value={isGlyph(value) ? '' : (value || '')} title="Emoji direkt eingeben"
              onInput={(e) => onChange(e.currentTarget.value)} />
+      {sug && sug !== value && (
+        <button type="button" class="sd-iconfield-auto" title={'Auto-Vorschlag übernehmen: ' + sugName}
+                onClick={() => onChange(sug)}>🪄 Auto</button>
+      )}
       {pick && <GlyphPicker value={value} onPick={(v) => { onChange(v); setPick(false) }} onClose={() => setPick(false)} />}
     </span>
   )
@@ -1512,7 +1524,7 @@ function TitleInput({ value, onInput, cls, style, placeholder }) {
 // Funktions-Editor (Pool): Aktion + Überwachung + Refresh + Zustände/Default. KEINE Platzierung.
 // Typ-Felder für Text-/Uhr-Buttons — Teil der „Aussehen"-Sektion (bei Darstellung text|clock). Bearbeitet
 // opts (Schrift/Farbe/Uhr-Modus) + bei Text den angezeigten Text (= der Titel).
-function WidgetFields({ render, opts, def, onOpts, onDefault }) {
+function WidgetFields({ render, opts, def, onOpts, onDefault, ctx }) {
   const o = opts || {}
   const isClock = render === 'clock'
   const isReadout = render === 'readout'
@@ -1530,7 +1542,7 @@ function WidgetFields({ render, opts, def, onOpts, onDefault }) {
       {isReadout && (
         <>
           <span class="muted conn-label">Symbol</span>
-          <IconField value={(def || {}).icon || ''} placeholder="auto" onChange={(icon) => onDefault({ icon })} />
+          <IconField value={(def || {}).icon || ''} placeholder="auto" onChange={(icon) => onDefault({ icon })} ctx={ctx} />
           <label>Quelle
             <select class="so-delay" value={o.kind || 'generic'} onChange={(e) => setO({ kind: e.currentTarget.value })}>
               <option value="audio">🔊 Audiogerät</option>
@@ -1722,6 +1734,7 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
         <MonitorEditor monitor={b.monitor} options={options} onChange={setMonitor} replace={(m) => { stopPreset(); set({ monitor: m }) }} />
         <RefreshOverride value={b.refresh_seconds} options={options} onChange={(v) => set({ refresh_seconds: v })} />
         <StatesEditor states={b.states} def={b.default} options={options} monitor={b.monitor}
+                      action={b.action} label={b.label}
                       render={b.render} opts={b.opts}
                       onRender={(r) => { stopPreset(); set({ render: r === 'value' ? undefined : r }) }}
                       onOpts={(o) => { stopPreset(); set({ opts: o }) }}
@@ -2995,7 +3008,7 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
   )
 }
 
-function StateRow({ st, options, knownValues, onChange, onDelete }) {
+function StateRow({ st, options, knownValues, onChange, onDelete, ctx }) {
   const op = (st.when || {}).op || 'any'
   const needsValue = !['any', 'truthy', 'falsy'].includes(op)
   return (
@@ -3018,7 +3031,7 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
                onInput={(e) => onChange({ ...st, when: { ...st.when, value: e.currentTarget.value } })} />
       ))}
       <span class="muted sd-when">zeige</span>
-      <IconField value={st.icon || ''} onChange={(icon) => onChange({ ...st, icon })} />
+      <IconField value={st.icon || ''} onChange={(icon) => onChange({ ...st, icon })} ctx={ctx} />
       <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={st.title || ''}
                   onInput={(v) => onChange({ ...st, title: v })} />
       <IconPicker value={st.image} onChange={(url) => onChange({ ...st, image: url })} />
@@ -3029,8 +3042,9 @@ function StateRow({ st, options, knownValues, onChange, onDelete }) {
   )
 }
 
-function StatesEditor({ states, def, options, monitor, render, opts, onRender, onOpts, onStates, onDefault }) {
+function StatesEditor({ states, def, options, monitor, action, label, render, opts, onRender, onOpts, onStates, onDefault }) {
   const mType = (monitor || {}).type || 'none'
+  const iconCtx = { label, action, monitor }   // → 🪄 Auto-Symbol-Vorschlag aus Label + Funktion
   const info = MONITOR_INFO[mType] || {}
   const knownValues = info.values || null
   const stateless = mType === 'none'
@@ -3102,7 +3116,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
         )}
       </div>
       {isWidget ? (
-        <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} />
+        <WidgetFields render={render} opts={opts} def={def} onOpts={onOpts} onDefault={onDefault} ctx={iconCtx} />
       ) : (isGauge || isBar) ? (
         <>
           <p class="muted sd-help">{isBar
@@ -3170,7 +3184,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
           </div>
           <div class="reward-row sd-state" style="margin-top:8px">
             <span class="muted conn-label" title="Symbol/Titel/Basis-Farbe — Titel mit {value} zeigt die Zahl; das physische Stream Deck nutzt diese Farbe.">Standard</span>
-            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} />
+            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} ctx={iconCtx} />
             <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''} onInput={(v) => onDefault({ title: v })} />
             <ColorField value={def.color} onChange={(color) => onDefault({ color: color || undefined })} />
           </div>
@@ -3209,13 +3223,13 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
             </>
           )}
           {!stateless && (states || []).map((st, i) => (
-            <StateRow key={i} st={st} options={options} knownValues={knownValues}
+            <StateRow key={i} st={st} options={options} knownValues={knownValues} ctx={iconCtx}
                       onChange={(s) => upd(i, s)} onDelete={() => rm(i)} />
           ))}
           {!stateless && <button class="btn ghost small" onClick={add}>➕ Status-Regel</button>}
           <div class="reward-row sd-state" style="margin-top:8px">
             <span class="muted conn-label">Standard</span>
-            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} />
+            <IconField value={def.icon || ''} onChange={(icon) => onDefault({ icon })} ctx={iconCtx} />
             <TitleInput cls="so-delay" style="width:100px" placeholder="Titel" value={def.title || ''}
                         onInput={(v) => onDefault({ title: v })} />
             <IconPicker value={def.image} onChange={(url) => onDefault({ image: url })} />
