@@ -211,7 +211,8 @@ export function Readout({ v, opts, skin }) {
 // Spiegelt die Look-Optionen: Slider/Akzent (v.color → --acc), Kachel-Stil (skin), Hintergrund + VU pro Fader (opts).
 export function FaderView({ v, opts, skin }) {
   const val = v || {}, o = opts || {}
-  let style = `--acc:${accentVar(val.color)}`
+  // Rahmen (--acc) = Theme; Füllung/Knopf/Symbol (--fill) = Identitätsfarbe (Button-Farbe). Wie im Live-Fader.
+  let style = `--acc:var(--accent);--fill:${accentVar(val.color)}`
   if (o.bg) { const c = resolveColor(o.bg); style += `;--fbg-top:${c};--fbg-bot:color-mix(in srgb, ${c} 55%, #06080c)` }
   if (o.vuLow) style += `;--vu-low:${resolveColor(o.vuLow)}`
   if (o.vuMid) style += `;--vu-mid:${resolveColor(o.vuMid)}`

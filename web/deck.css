@@ -600,7 +600,9 @@ body.dc-deck-fs .t-deck { padding: 10px; }
    wird via color-mix aus --acc abgeleitet → folgt damit auch Theme-Farben. */
 .t-fader { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; box-sizing: border-box;
   padding: 10cqw 5cqw; gap: 5cqw; align-items: center; cursor: ns-resize; touch-action: none;
-  --acc-dim: color-mix(in srgb, var(--acc, var(--accent2)) 45%, #06080c);
+  /* --acc = Rahmen/Kachel-Stil (folgt Theme) · --fill = Füllung/Knopf/Symbol (Identitätsfarbe des Faders).
+     --acc-dim (unteres Fill-Ende) leitet sich aus --fill ab (kein JS-darken). Fallback: --fill→--acc→--accent2. */
+  --acc-dim: color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 45%, #06080c);
   background: linear-gradient(165deg, var(--fbg-top, var(--bg3)), var(--fbg-bot, var(--bg))); }
 /* Rahmen/Stil AUS (globaler/per-Deck-Look frame=false ODER per-Taste „Rahmen aus") → Fader OHNE
    Stil-Verzierung, aber Track/Fill/VU bleiben (ein rahmenloser Fader ist trotzdem ein Fader). */
@@ -614,10 +616,10 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .t-fader-track { position: relative; width: 30cqw; max-width: 40px; border-radius: 999px; cursor: ns-resize;
   touch-action: none; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.05); box-shadow: inset 0 0 7px rgba(0,0,0,.75); }
 .t-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 999px;
-  background: linear-gradient(to top, var(--acc-dim, #173a63), var(--acc, var(--accent2)));
-  box-shadow: 0 0 12px var(--acc, var(--accent2)), 0 -1px 7px var(--acc, var(--accent2)); }
+  background: linear-gradient(to top, var(--acc-dim, #173a63), var(--fill, var(--acc, var(--accent2))));
+  box-shadow: 0 0 12px var(--fill, var(--acc, var(--accent2))), 0 -1px 7px var(--fill, var(--acc, var(--accent2))); }
 .t-fader-knob { position: absolute; left: -16%; right: -16%; height: 2px; margin-bottom: -1px; border-radius: 2px;
-  background: #fff; box-shadow: 0 0 9px var(--acc, var(--accent2)), 0 0 3px #fff; pointer-events: none; }
+  background: #fff; box-shadow: 0 0 9px var(--fill, var(--acc, var(--accent2))), 0 0 3px #fff; pointer-events: none; }
 .t-fader-vu { position: relative; width: 26cqw; max-width: 34px; padding: 3cqw 0;
   display: flex; flex-direction: column-reverse; gap: 2cqw; }
 .t-vu-seg { flex: 1 1 0; min-height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); transition: background .08s, box-shadow .08s; }
@@ -642,7 +644,7 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .t-fader.off .t-fader-knob { background: #9aa1ad; box-shadow: none; }
 .t-fader.off .t-fader-foot { color: var(--muted, #8a909c); opacity: .9; }
 /* „Nur Symbol"-Modus: App-Icon statt Titel oben im Fader. */
-.t-fader-name-img { height: 26cqw; max-height: 34px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--acc)); }
+.t-fader-name-img { height: 26cqw; max-height: 34px; width: auto; max-width: 86%; object-fit: contain; display: block; margin: 0 auto; filter: drop-shadow(0 0 3px var(--fill, var(--acc))); }
 .t-fader-name-emo { font-size: 20cqw; line-height: 1.1; }
 
 /* ===== 🎨 SVG-Glyph-Symbole (icon = "g:name") ===== */
@@ -652,8 +654,8 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* Flache Tasten (dunkler Grund): Glyph leuchtet im Akzent (--acc) statt neutralem Weiß → wirkt gewollt
    und folgt der Button-/Theme-Farbe. Gefüllte Tasten lassen es weiß (Kontrast auf der Farbfläche). */
 .t-flat .dc-glyph, .sd-prev-key.t-flat .dc-glyph { color: var(--acc, var(--accent2)); }
-/* Fader-Symbolslot + Status-Karte: Glyph im jeweiligen Akzent. */
-.t-fader-glyph { color: var(--acc, var(--accent2)); }
+/* Fader-Symbolslot: Glyph in der Identitätsfarbe (--fill); Status-Karte bleibt auf --acc. */
+.t-fader-glyph { color: var(--fill, var(--acc, var(--accent2))); }
 .t-readout-glyph { color: var(--acc); display: inline-flex; filter: drop-shadow(0 0 7px var(--acc)); }
 .t-readout-glyph .dc-glyph { width: 1em; height: 1em; }
 

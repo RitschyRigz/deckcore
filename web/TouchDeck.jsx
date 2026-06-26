@@ -359,10 +359,13 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   // Akzent wie bei flachen Tasten: Theme-Schlüsselwort (resolveColor → var(--x)) ODER feste Hex, sonst
   // Fallback. --acc-dim wird in deck.css via color-mix aus --acc abgeleitet (kein JS-darken mehr).
   const accCss = accentVar(v.color)
-  // Per-Fader-Overrides (alles optional, leer = folgt Theme): Hintergrund (opts.bg) + VU-Zonen (opts.vuLow/
-  // vuMid/vuHigh). Als Inline-CSS-Vars auf .t-fader → überschreiben nur diesen Fader (Kinder erben sie).
+  // Zwei getrennte Farben: der RAHMEN/Kachel-Stil (--acc) folgt dem THEME (var(--accent), kaskaden-bewusst:
+  // löst innerhalb .t-deck zur Deck-Theme-Farbe auf, sonst global), die FÜLLUNG/Knopf/Symbol (--fill) trägt
+  // die Identitätsfarbe des Faders (Button-Farbe: grün=Windows-Audio, blau=Wave-Link). So überschreibt die
+  // unterste Ebene (Button-Farbe) NUR den Fader selbst, NICHT den Rahmen (User-Wunsch 2026-06-26).
+  // Per-Fader-Overrides (optional, leer = folgt Theme): Hintergrund (opts.bg) + VU-Zonen (opts.vuLow/Mid/High).
   const _fo = opts || {}
-  let faderStyle = `--acc:${accCss}`
+  let faderStyle = `--acc:var(--accent);--fill:${accCss}`
   if (_fo.bg) { const c = resolveColor(_fo.bg); faderStyle += `;--fbg-top:${c};--fbg-bot:color-mix(in srgb, ${c} 55%, #06080c)` }
   if (_fo.vuLow) faderStyle += `;--vu-low:${resolveColor(_fo.vuLow)}`
   if (_fo.vuMid) faderStyle += `;--vu-mid:${resolveColor(_fo.vuMid)}`
