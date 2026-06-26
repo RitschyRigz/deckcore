@@ -379,6 +379,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc)
     : isWlChan && targetId ? '/api/wavelink/icon?id=' + encodeURIComponent(targetId) : '')
   const showImg = imgSrc && !imgErr
+  // Wave-Link-MIX: Glyph aus unserer Bibliothek (live aus image.name gemappt, in wlState.glyph). Greift nur,
+  // solange die Taste das Generator-Default-Symbol trägt (🎚) — eine eigene User-Wahl bleibt unangetastet.
+  const liveGlyph = (!isWa && !isApp && !v.image && st.glyph && (!v.icon || v.icon === '🎚')) ? st.glyph : ''
 
   // Peak-Hold („Schlepp-Zeiger"): trackt den Spitzenpegel, hält ihn ~1,2 s, fällt dann weich.
   // Bewegt das Marker-Element direkt per DOM (rAF) → kein Re-Render, butterweich.
@@ -478,9 +481,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       <div class="t-fader-name" title={name}>
         {iconOnly
           ? (showImg ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={() => setImgErr(true)} />
-             : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
-               ? <span class="t-fader-name-emo t-fader-glyph"><Glyph name={glyphName(v.icon)} /></span>
-               : <span class="t-fader-name-emo">{(isGlyph(v.icon) ? glyphName(v.icon) : v.icon) || name}</span>)
+             : liveGlyph
+               ? <span class="t-fader-name-emo t-fader-glyph"><Glyph name={liveGlyph} /></span>
+               : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
+                 ? <span class="t-fader-name-emo t-fader-glyph"><Glyph name={glyphName(v.icon)} /></span>
+                 : <span class="t-fader-name-emo">{(isGlyph(v.icon) ? glyphName(v.icon) : v.icon) || name}</span>)
           : name}
       </div>
       <div class="t-fader-body">
@@ -493,9 +498,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {!iconOnly && (showImg
         ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={() => setImgErr(true)} /></div>
-        : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
-          ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={glyphName(v.icon)} /></div>
-          : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}
+        : liveGlyph
+          ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={liveGlyph} /></div>
+          : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
+            ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={glyphName(v.icon)} /></div>
+            : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}
     </div>
   )
 }
@@ -589,11 +596,33 @@ function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, o
   )
 }
 
-// Wave-Link-Snapshot ({mixes,channels}) → {id:{level(0..100),muted}} fürs Fader-Lesen. Geteilt von
-// früherem Poll und jetzt dem SSE-Push. Pegel/Mute pro Mix UND Channel.
+// Wave-Link-Mix-Icon-NAME → Glyph aus UNSERER Bibliothek (themen-/akzent-gefärbt via currentColor → einheitlich
+// statt Emoji-Mix). Wave Link liefert für Mixes nur einen Icon-Namen (kein Bild) — Channels haben ein echtes PNG.
+// Unbekannte Namen: direkter Treffer in unserer Bibliothek, sonst generischer Mixer-Glyph „sliders".
+const WL_GLYPH = {
+  headphones: 'headphones', headset: 'headphones', stream: 'broadcast', broadcast: 'broadcast', live: 'broadcast',
+  game: 'gamepad', gaming: 'gamepad', gamepad: 'gamepad', podcast: 'podcast', lens: 'search', monitor: 'search',
+  mic: 'mic', microphone: 'mic', voice: 'mic', music: 'music', song: 'music', chat: 'chat', discord: 'message-circle',
+  browser: 'globe', web: 'globe', internet: 'globe', system: 'cpu', pc: 'cpu', computer: 'cpu', desktop: 'monitor',
+  display: 'monitor', camera: 'camera', cam: 'camera', video: 'video', speaker: 'speaker', sound: 'speaker',
+  radio: 'radio', cast: 'cast', alert: 'bell', notification: 'bell', bell: 'bell', star: 'star', heart: 'heart',
+  gift: 'gift', crown: 'crown', rocket: 'rocket', coffee: 'coffee', bluetooth: 'bluetooth', wifi: 'wifi',
+  film: 'film', movie: 'film', sparkles: 'sparkles', twitch: 'twitch', youtube: 'youtube', record: 'record',
+}
+function wlGlyphFor(name) {
+  if (!name) return ''
+  const k = String(name).toLowerCase().trim()
+  if (WL_GLYPH[k]) return WL_GLYPH[k]
+  if (hasGlyph(k)) return k          // WL-Name deckt sich direkt mit einem unserer Glyphs
+  return 'sliders'                   // generischer Mixer-Glyph als sauberer Fallback (statt Emoji)
+}
+
+// Wave-Link-Snapshot ({mixes,channels}) → {id:{level(0..100),muted,glyph?}} fürs Fader-Lesen. Geteilt von
+// früherem Poll und jetzt dem SSE-Push. Pegel/Mute pro Mix UND Channel; ``glyph`` nur für Mixes (aus image.name →
+// unsere Bibliothek). Channels tragen ein echtes Bild → kein Glyph (der Fader holt das PNG live).
 function buildWlState(snap) {
   const m = {}
-  for (const x of ((snap || {}).mixes || [])) m[x.id] = { level: Math.round((x.level || 0) * 100), muted: !!x.isMuted }
+  for (const x of ((snap || {}).mixes || [])) m[x.id] = { level: Math.round((x.level || 0) * 100), muted: !!x.isMuted, glyph: wlGlyphFor((x.image || {}).name) }
   for (const c of ((snap || {}).channels || [])) m[c.id] = { level: Math.round((c.level || 0) * 100), muted: !!c.isMuted }
   return m
 }

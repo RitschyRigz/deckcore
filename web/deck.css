@@ -634,7 +634,8 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .t-fader-icon { font-size: 17cqw; line-height: 1; text-align: center; margin-top: 1px; }
 /* Bild-Emote im Fader-Symbolslot (statt Emoji) — fügt sich wie v.image bei normalen Buttons ein. */
 .t-fader-img { font-size: 0; }
-.t-fader-img img { width: 26cqw; height: 26cqw; object-fit: contain; display: block; margin: 1px auto 0; }
+.t-fader-img img { width: 26cqw; height: 26cqw; object-fit: contain; display: block; margin: 1px auto 0;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 80%, transparent)); }
 /* Mute = ausgegraut wie inaktive Buttons (Graustufe + abgedunkelt, Glow weg). */
 .t-fader.muted { filter: grayscale(.95) brightness(.62); opacity: .82; }
 .t-fader.muted .t-fader-knob { background: #9aa1ad; box-shadow: none; }
@@ -654,8 +655,10 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 /* Flache Tasten (dunkler Grund): Glyph leuchtet im Akzent (--acc) statt neutralem Weiß → wirkt gewollt
    und folgt der Button-/Theme-Farbe. Gefüllte Tasten lassen es weiß (Kontrast auf der Farbfläche). */
 .t-flat .dc-glyph, .sd-prev-key.t-flat .dc-glyph { color: var(--acc, var(--accent2)); }
-/* Fader-Symbolslot: Glyph in der Identitätsfarbe (--fill); Status-Karte bleibt auf --acc. */
-.t-fader-glyph { color: var(--fill, var(--acc, var(--accent2))); }
+/* Fader-Symbolslot: Glyph in der Identitätsfarbe (--fill) MIT Glow (currentColor → folgt --fill/Theme).
+   Status-Karte bleibt auf --acc. */
+.t-fader-glyph { color: var(--fill, var(--acc, var(--accent2)));
+  filter: drop-shadow(0 0 6px var(--fill, var(--acc, var(--accent2)))) drop-shadow(0 0 2px var(--fill, var(--acc, var(--accent2)))); }
 .t-readout-glyph { color: var(--acc); display: inline-flex; filter: drop-shadow(0 0 7px var(--acc)); }
 .t-readout-glyph .dc-glyph { width: 1em; height: 1em; }
 
