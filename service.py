@@ -1204,6 +1204,7 @@ class DeckCoreService:
         self._scene_flow: dict = {"map": {}, "return": []}  # „logischer" Szenen-Ablauf (von→nächste, Rücksprung-Szenen)
         self._scene_hist: list = []                 # zuletzt gesehene aktive Szenen (für scene_suggest „vorherige Szene")
         self._df_active_cache: tuple = (None, 0.0)  # (aktives DisplayFusion-Profil, ts) — geteilt
+        self._desktop_refresh_ts: float = 0.0     # gedrosselter Auto-Refresh des „🖥 Desktop"-Ordners (kein Watcher)
         self._proc_cache: dict[str, Any] = {}     # process → (status_dict, monotonic) — für Hüllen-Prozess-Monitore
         # Direkter OBS-Client (generische Kern-Capability) — verbindet erst beim ersten echten Zugriff.
         # Eine Hülle kann obs/obs_scene/obs_source_visible über _register_extra_handlers überschreiben
@@ -2082,13 +2083,19 @@ class DeckCoreService:
                 deck["items"].append({"button": fn["id"], "category": "", "style": {}, "hidden": False})
         return deck_id
 
-    def populate_desktop(self) -> dict:
+    def populate_desktop(self, refresh_only: bool = False) -> dict:
         """„🖥 Desktop"-Ordner: scannt den Windows-Desktop (User + Public) nach Verknüpfungen/Programmen
-        und legt pro Eintrag einen launch-Button in einen Ordner. Zero-config, Windows-universal (jeder hat
-        einen Desktop) — der „Hook" + Beispiel-Ordner. Idempotent; bei sehr vielen Einträgen gedeckelt."""
+        und hält pro Eintrag einen launch-Button in einem Ordner. Zero-config, Windows-universal.
+        Idempotent; bei sehr vielen Einträgen gedeckelt. **Voll synchronisierend:** neue Programme
+        kommen dazu, entfernte fliegen raus. ``refresh_only=True`` aktualisiert NUR einen bereits
+        bestehenden Desktop-Ordner (legt keinen an) — der leichte Auto-Refresh beim Panel-Laden.
+        Speichert/pusht NUR bei echter Änderung (kein Publish-Sturm/keine Reload-Schleife)."""
         import os
         if os.name != "nt":
             return {"ok": False, "reason": "nur Windows"}
+        existing = next((d for d in self._decks if d.get("folder") and d.get("label") == "🖥 Desktop"), None)
+        if refresh_only and existing is None:
+            return {"ok": False, "reason": "kein Desktop-Ordner", "changed": False}
         EXT = {".lnk": "🔗", ".url": "🌐", ".exe": "🚀", ".bat": "⚙", ".cmd": "⚙"}
         seen, items = set(), []
         for base_dir in (os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
@@ -2105,37 +2112,52 @@ class DeckCoreService:
                     continue
                 seen.add(stem.lower())
                 items.append((stem, os.path.join(base_dir, nm), EXT[ext.lower()]))
-        if not items:
+        if not items and not refresh_only:
             return {"ok": False, "reason": "keine Desktop-Programme gefunden"}
         items = items[:_DESKTOP_CAP]
         deck_id = self._named_folder("🖥 Desktop", "🖥")
         deck = self._deck(deck_id)
+        import urllib.parse
+        changed = False
+        if "🖥 Desktop" not in self._pool_categories:
+            self._pool_categories.append("🖥 Desktop"); changed = True
         # Standard-Öffner „folder_<deck>" anlegen (wie jeder Ordner) → der Desktop-Ordner ist damit in der
         # „📁 Ordner"-Kategorie ankreuzbar + platzierbar (vorher gab es nur den Schnellstart-Einzelbutton).
+        op_bid = "folder_" + _slug(deck_id)
+        op_existed = any(b.get("id") == op_bid for b in self._buttons)
         self._make_folder_opener(deck_id)
-        import urllib.parse
-        if "🖥 Desktop" not in self._pool_categories:
-            self._pool_categories.append("🖥 Desktop")
+        if not op_existed:
+            changed = True   # nur ein FRISCH angelegter Öffner zählt als Änderung (kein Refresh-Sturm)
         by_id = {b.get("id"): i for i, b in enumerate(self._buttons)}
+        want_bids = set()
         for stem, path, icon in items:
             bid = "desktop_" + _slug(stem)
+            want_bids.add(bid)
             # ECHTES Programm-Icon (aus .lnk/.exe, lazy via /api/streamdeck/file_icon, browser-gecacht) als
-            # Bild; das Typ-Emoji bleibt Fallback. Auto-Liste → FORCE-Replace (KEIN _regen_preserve), damit
-            # der Icon-Fix beim erneuten „Anwenden" auch bestehende Desktop-Buttons aktualisiert.
+            # Bild; das Typ-Emoji bleibt Fallback.
             fn = {"id": bid, "label": stem, "pool_cat": "🖥 Desktop",
                   "action": {"type": "launch", "path": path},
                   "monitor": {"type": "none"}, "states": [],
                   "default": {"icon": icon, "title": stem,
                               "image": "/api/streamdeck/file_icon?path=" + urllib.parse.quote(path)}}
-            if bid in by_id:
-                self._buttons[by_id[bid]] = fn
-            else:
-                self._buttons.append(fn)
-            self._removed.discard(bid)
+            # Nur bei echtem Inhaltsunterschied ersetzen (sonst würde der Auto-Refresh jedes Mal „ändern"
+            # melden → Save+Publish-Schleife). Vergleich über stabile JSON-Serialisierung.
+            cur = self._buttons[by_id[bid]] if bid in by_id else None
+            if cur is None:
+                self._buttons.append(fn); changed = True
+            elif json.dumps(cur, sort_keys=True, ensure_ascii=False) != json.dumps(fn, sort_keys=True, ensure_ascii=False):
+                self._buttons[self._buttons.index(cur)] = fn; changed = True
+            if bid in self._removed:
+                self._removed.discard(bid); changed = True
             if deck and not any(it["button"] == bid for it in deck["items"]):
-                deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False})
-        self._save(); self._schedule_recompute(); self._publish_cfg()
-        return {"ok": True, "deck": deck_id, "count": len(items)}
+                deck["items"].append({"button": bid, "category": "", "style": {}, "hidden": False}); changed = True
+        # Entfernte Desktop-Symbole: zugehörige Auto-Buttons (desktop_*) aus Pool + allen Decks raus.
+        for b in [x for x in self._buttons if str(x.get("id", "")).startswith("desktop_") and x.get("id") not in want_bids]:
+            if self._pool_remove(b["id"]):
+                changed = True
+        if changed:
+            self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "deck": deck_id, "count": len(items), "changed": changed}
 
     def _migrate_buttons(self, data: list) -> bool:
         """Hook für Hüllen: hüllen-spezifische Legacy-Migrationen am rohen Button-Pool
@@ -4014,10 +4036,25 @@ class DeckCoreService:
     def list_buttons(self) -> list[dict]:
         return [json.loads(json.dumps(b)) for b in self._buttons]
 
+    def _maybe_refresh_desktop(self) -> None:
+        """Leichter, watcher-FREIER Auto-Sync des „🖥 Desktop"-Ordners: scannt den Desktop bei
+        Bedarf neu, wenn der Ordner existiert — gedrosselt (≤ alle 4 s) + nur Save/Push bei echter
+        Änderung. Hängt am Panel-/Editor-Laden (registry()) → neue/entfernte Desktop-Symbole erscheinen
+        beim nächsten Öffnen/Reconnect, ohne Hintergrund-Thread. Fehler werden bewusst geschluckt."""
+        now = time.monotonic()
+        if now - self._desktop_refresh_ts < 4.0:
+            return
+        self._desktop_refresh_ts = now
+        try:
+            self.populate_desktop(refresh_only=True)
+        except Exception:  # noqa: BLE001
+            pass
+
     def registry(self) -> dict:
         """Volle Registry inkl. Auswahl-Optionen für den Property-Inspector/Tab.
         ``buttons`` = globaler Funktions-Pool; ``decks`` = eigenständige Templates (jedes mit
         eigenem ``layout``/``categories``/``items``). Kein globales Top-Level-Layout mehr."""
+        self._maybe_refresh_desktop()
         buttons = self.list_buttons()
         for b in buttons:
             o = self._button_owner(b.get("id"))
