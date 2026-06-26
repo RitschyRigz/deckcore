@@ -114,6 +114,15 @@ const OP_LABELS = {
 }
 const L_DEF = DECK_LAYOUT_DEF
 
+// ── Einheitliche Emote-Anzeige für Kategorien + Ordner ──────────────────────────────────────────
+// Beginnt der Text schon mit einem Emoji/Piktogramm? (kein Doppel-Emote, kein fehlendes).
+const startsWithEmoji = (s) => /^\s*\p{Extended_Pictographic}/u.test(String(s || ''))
+// Passendes Emote je bekannter Kategorie (sonst generisch) — NUR Anzeige, ändert die Kategorie-Daten nicht.
+const CAT_EMOJI = { 'HWiNFO': '📊', 'Wave Link': '🎚', 'App-Lautstärke': '🔊', 'Audio': '🎧', 'Custom Buttons': '✏️', 'Mixer': '🎵' }
+const catLabel = (cat) => (!cat || startsWithEmoji(cat)) ? cat : ((CAT_EMOJI[cat] || '📦') + ' ' + cat)
+// Ordner-Anzeige (Icon + Label) OHNE Doppel-Emote: trägt das Label schon ein Emoji → so lassen, sonst Icon davor.
+const folderText = (f) => { const lbl = (f && (f.label || f.id)) || ''; return startsWithEmoji(lbl) ? lbl : (((f && f.icon) || '📁') + ' ' + lbl) }
+
 // Registry-Options robust machen: in schlanken Hüllen (z. B. RigzDeck standalone) fehlen Felder
 // wie `processes`/`manual_event_types` komplett. Ohne Defaults wirft der Funktions-Editor schon
 // beim Aufklappen (options.processes.find(...)) → die Karte öffnet nicht + ein Geister-Duplikat
@@ -970,7 +979,7 @@ function DeckItemInspector({ deck, item, btn, options, onReload, onClose, onNavi
             <select class="so-delay" disabled={folderBusy} title="Diesen Button in einen bestehenden Ordner verschieben"
                     onChange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = ''; moveToFolder(v) }}>
               <option value="">📁 In Ordner verschieben…</option>
-              {folders.map((f) => <option value={f.id}>{(f.icon || '📁') + ' ' + (f.label || f.id)}</option>)}
+              {folders.map((f) => <option value={f.id}>{folderText(f)}</option>)}
             </select>
           )}
           <button class="btn ghost small" onClick={onClose}>✕ schließen</button>
@@ -1024,7 +1033,7 @@ function PalettePicker({ palette, poolCategories, hint, renderChip }) {
             <div class="sd-palcat" key={cat}>
               <button class="sd-palcat-h" onClick={() => toggle(cat)}>
                 <span class="sd-poolcat-toggle">{isOpen ? '▾' : '▸'}</span>
-                <span class="sd-poolcat-name">{cat === POOL_UNCAT ? 'Ohne Kategorie' : cat}</span>
+                <span class="sd-poolcat-name">{cat === POOL_UNCAT ? '📦 Ohne Kategorie' : catLabel(cat)}</span>
                 <span class="muted" style="font-size:11px">({list.length})</span>
               </button>
               {isOpen && <div class="sd-pal-chips">{list.map(renderChip)}</div>}
@@ -1421,7 +1430,7 @@ function PoolList({ buttons, resolved, options, onReload }) {
       )}
       <div class="sd-poolcat">
         <div class="sd-poolcat-h">
-          <span class="sd-poolcat-name">{CUSTOM_CAT}</span>
+          <span class="sd-poolcat-name">{catLabel(CUSTOM_CAT)}</span>
           <span class="muted" style="font-size:11px">({buttons.length})</span>
         </div>
         {buttons.length === 0
