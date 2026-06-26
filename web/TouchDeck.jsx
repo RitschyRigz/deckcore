@@ -600,6 +600,7 @@ function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, o
                            + (isFlat ? `--acc:${accentVar(v.color)}` : `background:${resolveColor(v.color) || '#222'}`)}
                     onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
               <KeyImg image={v.image} icon={v.icon} />
+              {v.title ? <span class="t-key-title">{v.title}</span> : null}
               <span class="t-key-label">{v.label || id}</span>
               {folder && <span class="t-folder-badge">⋯</span>}
             </button>

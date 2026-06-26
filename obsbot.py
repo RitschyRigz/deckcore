@@ -47,7 +47,9 @@ _OSC_APP_PROCS = ("obsbot_center.exe", "obsbot center.exe", "obsbot_main.exe", "
 _REACHABLE_TTL = 3.5           # s — länger keine OSC-Antwort ⇒ App/OSC gilt als nicht erreichbar
 _POLL_INTERVAL = 1.2           # s — Status-Abfrage-Takt des Pollers
 _POLL_IDLE = 12.0              # s — kein Status-Leser mehr ⇒ Poller stoppt (kein Dauer-Polling)
-_SLEEP_PITCH = -70             # Gimbal-Pitch darunter ⇒ Kamera schläft (Linse nach unten gekippt)
+_SLEEP_TILT = 55               # GimbalPosInfoResp = [pan, tilt]; tilt DARÜBER ⇒ Linse tief weggekippt = schläft.
+                               # (Live an Tiny 3 gemessen 2026-06-26: wach tilt≈5–31 · schlafend tilt≈85; args[0]=pan
+                               # bleibt ~-20 und taugt NICHT — der alte „pitch < -70"-Check schlug nie an.)
 
 
 # ── OSC-Encoder (hand-gerollt — kein python-osc nötig; deckcore bleibt dep-frei) ──
@@ -364,8 +366,10 @@ class ObsBotOSC:
                     self._selected = args[8]
             elif tail == "GetGimbalPosInfoResp" and dev is not None and args:
                 info = self._dev.setdefault(self._dkey(dev), {})
-                info["pitch"] = args[0]
-                info["awake"] = args[0] > _SLEEP_PITCH
+                info["pitch"] = args[0]                       # args[0] = pan (für „schläft" irrelevant)
+                if len(args) >= 2:                            # args[1] = tilt → der echte Schlaf-Indikator
+                    info["tilt"] = args[1]
+                    info["awake"] = args[1] < _SLEEP_TILT     # Linse tief gekippt (tilt groß) ⇒ schläft
             elif tail == "AiTrackingInfo" and dev is not None and args:
                 self._dev.setdefault(self._dkey(dev), {})["tracking"] = bool(args[0])
             # ConnectedResp / ZoomInfo / PresetPositionInfo: nur „erreichbar" zählt (oben gesetzt)
