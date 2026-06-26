@@ -347,6 +347,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
   const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
+  const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
 
   const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
@@ -371,9 +372,13 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   if (_fo.vuMid) faderStyle += `;--vu-mid:${resolveColor(_fo.vuMid)}`
   if (_fo.vuHigh) faderStyle += `;--vu-high:${resolveColor(_fo.vuHigh)}`
   const name = v.label || v.title || id
-  // App-Icon: explizit gesetztes v.image, sonst live aus der .exe des Programms (App-Fader).
-  const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc) : '')
-  const hideImg = (e) => { try { e.currentTarget.style.display = 'none' } catch (_) {} }
+  // Symbol-Bild: explizit gesetztes v.image, sonst live — App-Fader aus der .exe, Wave-Link-CHANNEL aus dem
+  // 1:1-Wave-Link-Icon (Channels tragen ein echtes Bild; Mixes liefern nur einen Namen → bleiben beim Emoji).
+  // Bei Ladefehler (kein Icon / WL aus) fällt der Slot sauber aufs Emoji-Symbol zurück (imgErr).
+  const isWlChan = mon.type === 'wavelink_level' && ttype === 'channel'
+  const imgSrc = v.image || (isApp && proc ? '/api/winaudio/app_icon?proc=' + encodeURIComponent(proc)
+    : isWlChan && targetId ? '/api/wavelink/icon?id=' + encodeURIComponent(targetId) : '')
+  const showImg = imgSrc && !imgErr
 
   // Peak-Hold („Schlepp-Zeiger"): trackt den Spitzenpegel, hält ihn ~1,2 s, fällt dann weich.
   // Bewegt das Marker-Element direkt per DOM (rAF) → kein Re-Render, butterweich.
@@ -472,7 +477,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>
         {iconOnly
-          ? (imgSrc ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={hideImg} />
+          ? (showImg ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={() => setImgErr(true)} />
              : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
                ? <span class="t-fader-name-emo t-fader-glyph"><Glyph name={glyphName(v.icon)} /></span>
                : <span class="t-fader-name-emo">{(isGlyph(v.icon) ? glyphName(v.icon) : v.icon) || name}</span>)
@@ -486,8 +491,8 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
         <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
       </div>
       <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
-      {!iconOnly && (imgSrc
-        ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={hideImg} /></div>
+      {!iconOnly && (showImg
+        ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={() => setImgErr(true)} /></div>
         : isGlyph(v.icon) && hasGlyph(glyphName(v.icon))
           ? <div class="t-fader-icon t-fader-glyph" title={name}><Glyph name={glyphName(v.icon)} /></div>
           : v.icon ? <div class="t-fader-icon" title={name}>{v.icon}</div> : null)}

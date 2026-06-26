@@ -3799,6 +3799,25 @@ class DeckCoreService:
         """Aktuelle VU-Pegel {meters:{id:0..1}} — das Frontend pollt das schnell für die VU-Kacheln."""
         return self._wl.meters(ids)
 
+    def wavelink_icon(self, target_id: str) -> Optional[bytes]:
+        """PNG-Icon eines Wave-Link-CHANNELS (1:1 wie in Wave Link) als Bytes, sonst None. Channels tragen
+        ein echtes Bild (``image.imgData`` base64); Mixes liefern nur einen Icon-Namen → None (Fader bleibt
+        beim Emoji). Liest aus dem gecachten Channel-State (kein zusätzlicher WL-Call pro Fader)."""
+        import base64
+        tid = str(target_id or "")
+        if not tid:
+            return None
+        for c in (self._wl.channels(with_images=True) or []):
+            if str(c.get("id")) == tid:
+                d = (c.get("image") or {}).get("imgData")
+                if isinstance(d, str) and d:
+                    try:
+                        return base64.b64decode(d)
+                    except Exception:  # noqa: BLE001
+                        return None
+                return None
+        return None
+
     def set_wavelink_config(self, host: str = None, port: int = None) -> dict:
         """Wave-Link-Host/Port überschreiben (Auto-Discovery sonst) → neu verbinden + Status."""
         self._wl.configure(host=host, port=port)

@@ -462,6 +462,15 @@ def build_streamdeck_router(
         ids = [s for s in ids_q.split(",") if s] or None
         return JSONResponse(get_service(request).wavelink_meters(ids))
 
+    @r.get("/api/wavelink/icon")
+    def wavelink_icon(request: Request) -> Response:
+        """1:1 Wave-Link-CHANNEL-Icon als PNG (``?id=<channel_id>``). 404 = kein Bild (z.B. Mix) → der
+        Fader fällt aufs Emoji zurück. Browser-gecacht (klein halten, kein SSE-Bloat)."""
+        png = get_service(request).wavelink_icon(request.query_params.get("id") or "")
+        if not png:
+            return Response(status_code=404)
+        return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
     @r.post("/api/wavelink/config")
     def wavelink_config(request: Request, body: dict = Body(...)) -> JSONResponse:
         """Wave-Link-Host/Port überschreiben (sonst Auto-Discovery) → neu verbinden + Status."""
