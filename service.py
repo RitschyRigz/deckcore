@@ -1583,8 +1583,12 @@ class DeckCoreService:
                 profs = (self.displayfusion_profiles() or {}).get("profiles") or []
                 if not profs:
                     return {"available": False, "reason": "DisplayFusion nicht installiert / keine Profile"}
+                # ⚠ profs sind dicts {name,last_used,active} — die item-id MUSS der reine Profil-NAME sein,
+                # weil generate_displayfusion_buttons(only=…) per Name matcht. str(p) (stringifizierter dict)
+                # hätte nie gematcht → „0 Buttons erstellt" + Häkchen springen zurück (Bug 2026-06-26).
+                _pn = lambda p: str(p.get("name") if isinstance(p, dict) else p)
                 return {"available": True, "groups": [{"key": "profiles", "label": "Monitor-Profile",
-                        "items": [{"id": str(p), "label": str(p)} for p in profs]}]}
+                        "items": [{"id": _pn(p), "label": _pn(p)} for p in profs]}]}
             if iid == "obsbot":
                 return {"available": True,
                         "options": [{"key": "cameras", "label": "Kameras", "type": "number", "default": 2}],
@@ -2009,10 +2013,12 @@ class DeckCoreService:
                    "default": {"icon": "🎚", "title": "App-Mixer"}}, "Audio")
         dt = self.populate_desktop()   # Desktop-Ordner (Windows-universal) — immer, kein Setup
         if dt.get("ok"):
-            _tile({"id": "start_desktop", "label": "Desktop",
-                   "action": {"type": "open_deck", "deck": dt["deck"], "mode": "replace"},
-                   "monitor": {"type": "none"}, "states": [],
-                   "default": {"icon": "🖥", "title": "Desktop"}}, "Programme")
+            # Den STANDARD-Ordner-Öffner (folder_<deck>, von populate_desktop angelegt) platzieren —
+            # nicht mehr einen Einzel-Button „start_desktop". So lebt der Desktop-Öffner in der
+            # „📁 Ordner"-Kategorie wie jeder andere Ordner (ankreuzbar/platzierbar/„present").
+            dd = self._deck(dt["deck"])
+            if dd is not None:
+                _tile(self._folder_opener_def(dd), "📁 Ordner")
         _tile({"id": "start_clock", "label": "Uhr", "render": "clock",
                "action": {"type": "none"}, "monitor": {"type": "none"}, "states": [], "default": {}},
               "Widgets", w=2, h=2)
@@ -2049,8 +2055,14 @@ class DeckCoreService:
         return ""
 
     def _named_folder(self, label: str, icon: str = "📁") -> str:
-        """Ein Ordner-Deck (folder=True, nicht in der Tableiste) per Label finden oder anlegen."""
-        return self._named_deck(label, icon, folder=True)
+        """Ein Ordner-Deck (folder=True, nicht in der Tableiste) per Label finden oder anlegen.
+        Defensiv: ein bereits existierendes gleichnamiges Deck wird zum Ordner gemacht (sonst taucht
+        es nicht in der „📁 Ordner"-Kategorie auf → nicht platzierbar)."""
+        did = self._named_deck(label, icon, folder=True)
+        d = self._deck(did)
+        if d is not None and not d.get("folder"):
+            d["folder"] = True
+        return did
 
     def _outdev_folder(self) -> str:
         """„🔊 Ausgabegerät"-Ordner: je Windows-Ausgabegerät ein set_default-Button (aktives grün) fürs
@@ -2098,6 +2110,9 @@ class DeckCoreService:
         items = items[:_DESKTOP_CAP]
         deck_id = self._named_folder("🖥 Desktop", "🖥")
         deck = self._deck(deck_id)
+        # Standard-Öffner „folder_<deck>" anlegen (wie jeder Ordner) → der Desktop-Ordner ist damit in der
+        # „📁 Ordner"-Kategorie ankreuzbar + platzierbar (vorher gab es nur den Schnellstart-Einzelbutton).
+        self._make_folder_opener(deck_id)
         import urllib.parse
         if "🖥 Desktop" not in self._pool_categories:
             self._pool_categories.append("🖥 Desktop")

@@ -354,7 +354,7 @@ function LiveKey({ v, eff, base, render, opts, uid }) {
     )
   }
   if (render === 'clock') {
-    return <div class={keyClass(eff, base) + ' t-widget is-clock'} style="background:transparent"><Clock opts={o} /></div>
+    return <div class={keyClass(eff, base) + ' t-widget is-clock'} style="background:transparent"><Clock opts={o} skin={skin} /></div>
   }
   if (render === 'text') {
     return (
@@ -3075,7 +3075,7 @@ function StatesEditor({ states, def, options, monitor, render, opts, onRender, o
                 onChange={(e) => onOpts({ ...(opts || {}), size: e.currentTarget.value === 'auto' ? undefined : e.currentTarget.value })}>
           {Object.keys(SIZE_LABELS).map((k) => <option value={k}>{SIZE_LABELS[k]}</option>)}
         </select>
-        {(!render || render === 'value' || render === 'fader' || isViz) && (
+        {(!render || render === 'value' || render === 'fader' || isViz || render === 'clock' || render === 'readout') && (
           <>
             <span class="muted conn-label" style="margin-left:8px">Stil</span>
             <select class="so-delay" value={(opts || {}).skin || ''}

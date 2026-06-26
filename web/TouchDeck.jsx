@@ -895,7 +895,7 @@ export function TouchDeck() {
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '')}
               style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
               onClick={(e) => onTap(id, e)}>
-        {isClock ? <Clock opts={o} />
+        {isClock ? <Clock opts={o} skin={skin} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
           : isReadout ? <Readout v={v} opts={o} skin={skin} />
           : isGraph ? (

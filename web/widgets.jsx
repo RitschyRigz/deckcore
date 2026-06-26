@@ -59,7 +59,7 @@ const fmtDate = (d) => {
 // Live-Uhr — digital (Text) ODER analog (SVG), in einer Deck-Kachel mit Rahmen+Glow (passt zum Flat-/Fader-Design).
 // Läuft client-seitig aus der lokalen Browser-Zeit. Optionen: mode, seconds, format24, date, frame, color, font, size.
 // Die Farbe (opts.color) treibt Ziffern-Glow + Eck-Brackets (--acc) — Default ein kühles Blau.
-export function Clock({ opts }) {
+export function Clock({ opts, skin }) {
   const o = opts || {}
   const withSeconds = o.seconds !== false
   const withDate = !!o.date
@@ -70,7 +70,9 @@ export function Clock({ opts }) {
     return () => clearInterval(iv)
   }, [withSeconds])
   const accent = resolveColor(o.color) || 'var(--accent)'
-  const cardCls = 't-clock-card' + (framed ? ' framed' : '')
+  // Verzierung (Rahmen/Glow/Brackets) kommt aus dem Kachel-Stil .s-* (global/Deck-Look ODER pro Taste
+  // opts.skin) — EXAKT wie Status-Karte/Flat/Fader; früher war die Uhr-Karte „festgebrannt".
+  const cardCls = 't-clock-card' + (framed ? ' framed s-' + (skin || 'brackets') : '')
   const dateEl = withDate ? <span class="t-clock-date">{fmtDate(now)}</span> : null
 
   if (o.mode === 'analog') {
