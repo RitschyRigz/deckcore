@@ -1288,7 +1288,9 @@ class DeckCoreService:
         A("winaudio", self._act_winaudio)
         A("app_audio", self._act_app_audio)
         A("obsbot", self._act_obsbot)
+        A("multi", self._act_multi)                  # mehrere Aktionen auf EINEM Button (generisch, jede Art)
         M("none", self._mon_none)
+        M("aggregate", self._mon_aggregate)          # mehrere Monitore kombinieren (alle/eine/Anzahl)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
         M("poll", self._mon_poll)
@@ -4225,6 +4227,41 @@ class DeckCoreService:
     def _act_none(self, action: dict, btn: dict) -> dict:
         return {"success": True, "message": "Anzeige-Button (keine Aktion)"}
 
+    def _act_multi(self, action: dict, btn: dict, _depth: int = 0) -> dict:
+        """Multi-Action: mehrere Aktionen auf EINEM Button, der Reihe nach (schnell hintereinander =
+        praktisch „gleichzeitig"). GENERISCH — jeder Schritt ist ein normales ``action``-Dict beliebiger
+        Art (auch verschachtelt). ``stop_on_error`` (Default False): bei True bricht der erste Fehlschlag
+        ab, sonst laufen ALLE und die Rückmeldung sammelt pro Schritt ok/Fehler (Multi-Rückmeldung)."""
+        steps = action.get("steps") or []
+        if not steps:
+            return {"success": True, "message": "Keine Schritte"}
+        if _depth > 6:                       # Schutz gegen versehentliche Endlos-Schachtelung
+            return {"success": False, "message": "Multi-Action zu tief verschachtelt"}
+        stop = bool(action.get("stop_on_error"))
+        oks = errs = 0
+        parts: list[str] = []
+        for i, step in enumerate(steps):
+            stype = (step or {}).get("type", "none")
+            h = self._action_handlers.get(stype)
+            if h is None:
+                errs += 1; parts.append(f"{i + 1}:{stype}✗(unbekannt)")
+                if stop:
+                    break
+                continue
+            try:
+                res = (h(step, btn, _depth + 1) if stype == "multi" else h(step, btn)) or {}
+                if res.get("success"):
+                    oks += 1; parts.append(f"{i + 1}:{stype}✓")
+                else:
+                    errs += 1; parts.append(f"{i + 1}:{stype}✗")
+                    if stop:
+                        break
+            except Exception as e:  # noqa: BLE001
+                errs += 1; parts.append(f"{i + 1}:{stype}✗({e})")
+                if stop:
+                    break
+        return {"success": errs == 0, "message": f"{oks}/{len(steps)} ok · " + " ".join(parts)}
+
     def _act_flag_toggle(self, action: dict, btn: dict) -> dict:
         return self._toggle_flag(action["flag"])
 
@@ -4448,10 +4485,10 @@ class DeckCoreService:
             flags = sorted(p.name for p in self._flags_dir.glob("*.flag"))
         except Exception:  # noqa: BLE001
             pass
-        _ACTION_ORDER = ["process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
+        _ACTION_ORDER = ["multi", "process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
                          "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
-        _MONITOR_ORDER = ["process_alive", "flag", "manual_count", "bot_mode", "bot_state",
+        _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
@@ -4610,6 +4647,44 @@ class DeckCoreService:
     # ── Monitor-Handler (Capability-Registry; generisch = DeckCore) ───────
     def _mon_none(self, mon: dict, btn: dict) -> Any:
         return None
+
+    def _mon_aggregate(self, mon: dict, btn: dict, _depth: int = 0) -> Any:
+        """Aggregierter Status: kombiniert MEHRERE Sub-Monitore zu EINEM Wert (generisch, jede Monitor-Art).
+        ``monitors`` = Liste normaler ``monitor``-Dicts. ``match`` = Bedingung (op/value) je Sub-Monitor →
+        bool (Default ``truthy``). ``mode`` reduziert die Trefferzahl:
+          • ``all``  (Default) → True nur wenn ALLE matchen (UND)         → states: truthy/falsy
+          • ``any``            → True wenn MINDESTENS EINER matcht (ODER)
+          • ``count``          → Anzahl der Treffer (Zahl)                 → states: gt/lt/eq
+          • ``tally``          → 'all' | 'some' | 'none' (3-Wege)          → states: eq all/some/none
+        Beispiel (User): mode=all, match={eq,'trackon'}, monitors=[obsbot_track dev0, dev1] → True NUR wenn
+        beide Kameras tracken. Rekursiv (ein Sub-Monitor darf selbst ``aggregate`` sein)."""
+        subs = mon.get("monitors") or []
+        if not subs:
+            return None
+        if _depth > 6:
+            return None
+        cond = mon.get("match") or {"op": "truthy"}
+        hits = 0
+        for sm in subs:
+            stype = (sm or {}).get("type", "none")
+            h = self._monitor_handlers.get(stype)
+            val = None
+            if h is not None:
+                try:
+                    val = h(sm, btn, _depth + 1) if stype == "aggregate" else h(sm, btn)
+                except Exception:  # noqa: BLE001
+                    val = None
+            if _match(val, cond):
+                hits += 1
+        total = len(subs)
+        mode = mon.get("mode", "all")
+        if mode == "any":
+            return hits > 0
+        if mode == "count":
+            return hits
+        if mode == "tally":
+            return "all" if hits == total else ("some" if hits > 0 else "none")
+        return hits == total   # 'all' (Default): UND über alle Sub-Monitore
 
     def _mon_flag(self, mon: dict, btn: dict) -> Any:
         return (self._flags_dir / mon["flag"]).exists()

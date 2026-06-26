@@ -690,6 +690,10 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-iconfield-auto { flex: none; padding: 3px 7px; font-size: 11px; line-height: 1.4; white-space: nowrap;
   background: var(--bg3); color: var(--accent2); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
 .sd-iconfield-auto:hover { border-color: var(--accent); color: var(--fg); }
+/* 🔀 Multi-Action / Aggregat-Monitor: geschachtelte Sub-Editoren (rekursiv) — eingerückt + Akzent-Leiste. */
+.sd-substep { margin: 6px 0 8px 6px; padding-left: 10px; border-left: 2px solid var(--accent2); }
+.sd-substep-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; margin: 4px 0 2px; }
+.sd-substep .sd-block { margin-top: 4px; }
 
 /* ── Farb-Feld: eigener Picker + Theme-Farb-Swatches (Akzent/Live/…) ── */
 .sd-colorfield { display: inline-flex; align-items: center; gap: 5px; }

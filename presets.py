@@ -44,6 +44,12 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
     a = action or {}
     t = a.get("type") or "none"
 
+    # ── Multi-Action: nur ein Symbol vorschlagen, Monitor/Zustände NICHT anfassen (der User baut den
+    # aggregierten Status selbst — sonst würde das Auto-Preset bei jedem Schritt-Edit den Aggregat-
+    # Monitor überschreiben). Keine monitor/states-Keys → applyPresetData behält die aktuellen Werte. ──
+    if t == "multi":
+        return {"default": {"icon": "🔀"}}
+
     # ── Audio (generisch) ────────────────────────────────────────────────
     if t == "winaudio":
         sub = a.get("wa_action") or "set_default"

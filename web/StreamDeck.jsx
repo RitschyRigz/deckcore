@@ -28,6 +28,7 @@ import './deck.css'   // geteilte Deck-CSS (Editor .sd-* + Touch .t-*) — alle 
 // category/*,reorder,item,item/{bid}} (per-Deck). Live-Vorschau via SSE streamdeck:buttons.
 
 const ACTION_LABELS = {
+  multi: '🔀 Multi-Action (mehrere Aktionen auf einem Button)',
   events_action: '⭐ Action auslösen (aus Events & Actions)',
   process_action: '🟢 Prozess-Aktion (start/stop/toggle/mute)',
   launch: '🚀 Programm/Script starten (beliebige .exe/.py/.lnk …)',
@@ -49,6 +50,7 @@ const ACTION_LABELS = {
   none: '— Keine (reiner Anzeige-Button)',
 }
 const MONITOR_LABELS = {
+  aggregate: '🔀 Mehrere kombinieren (alle/eine/Anzahl) — z. B. „nur wenn ALLE …"',
   none: 'Keine — Button sieht immer gleich aus (einfach)',
   process_alive: 'Läuft ein Prozess? (an/aus)',
   flag: 'Ist ein Schalter gesetzt? (an/aus)',
@@ -77,6 +79,7 @@ const MONITOR_LABELS = {
   weather: 'Wetter am Standort (Open-Meteo) — als „🪪 Status-Karte"',
 }
 const MONITOR_INFO = {
+  aggregate: { text: 'Kombiniert mehrere Überwachungen zu EINEM Status. „Bedingung je Monitor" (z. B. „= trackon") wird auf JEDEN Sub-Monitor angewandt; „Verknüpfung" reduziert: ALLE (UND) → an/aus (truthy/falsy) · EINE (ODER) → an/aus · Anzahl → Zahl (gt/lt/eq) · Stufen → all/some/none (eq). Beispiel: „nur wenn BEIDE Kameras tracken" = ALLE + Bedingung „= trackon".', values: null, bool: true },
   none: { text: 'Kein Status — der Button nutzt immer das „Standard"-Aussehen unten. Für reine Tasten genau richtig.', values: null, bool: false },
   process_alive: { text: 'Liefert AN oder AUS. Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
   flag: { text: 'Liefert AN oder AUS. Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
@@ -2395,6 +2398,42 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
           {(options.action_types || []).map((k) => <option value={k}>{ACTION_LABELS[k] || k}</option>)}
         </select>
       </div>
+      {t === 'multi' && (() => {
+        // Multi-Action: rekursiv geschachtelte ActionEditoren — jeder Schritt ist eine VOLLE normale Aktion.
+        const steps = action.steps || []
+        const setSteps = (next) => onChange({ steps: next })
+        return (
+          <>
+            <p class="muted sd-help">Mehrere Aktionen auf EINEM Button — laufen schnell nacheinander (≈ gleichzeitig).
+              Jeder Schritt ist eine ganz normale Aktion (jede Art, auch geschachtelt). Die Rückmeldung sammelt pro
+              Schritt ✓/✗. Den <b>Status</b> setzt du unten über die Überwachung „🔀 Mehrere kombinieren" (z. B. „nur
+              wenn alle aktiv").</p>
+            <label class="sd-inline" style="gap:6px;font-size:12px;margin:0 0 8px">
+              <input type="checkbox" checked={!!action.stop_on_error}
+                     onChange={(e) => onChange({ stop_on_error: e.currentTarget.checked || undefined })} />
+              Beim ersten Fehler abbrechen <span class="muted">(sonst laufen alle Schritte)</span>
+            </label>
+            {steps.map((step, i) => (
+              <div key={i} class="sd-substep">
+                <div class="sd-substep-head">
+                  <span class="muted">Schritt {i + 1}</span>
+                  <span style="flex:1" />
+                  {i > 0 && <button class="btn ghost small" title="nach oben"
+                              onClick={() => { const n = steps.slice(); [n[i - 1], n[i]] = [n[i], n[i - 1]]; setSteps(n) }}>↑</button>}
+                  {i < steps.length - 1 && <button class="btn ghost small" title="nach unten"
+                              onClick={() => { const n = steps.slice(); [n[i + 1], n[i]] = [n[i], n[i + 1]]; setSteps(n) }}>↓</button>}
+                  <button class="btn ghost small danger" title="Schritt entfernen"
+                          onClick={() => setSteps(steps.filter((_, j) => j !== i))}>✕</button>
+                </div>
+                <ActionEditor action={step} options={options} onPicked={onPicked}
+                  onChange={(patch) => { const n = steps.slice(); n[i] = { ...step, ...patch }; setSteps(n) }}
+                  replace={(full) => { const n = steps.slice(); n[i] = full; setSteps(n) }} />
+              </div>
+            ))}
+            <button class="btn small" onClick={() => setSteps([...steps, { type: 'none' }])}>➕ Aktion hinzufügen</button>
+          </>
+        )
+      })()}
       {t === 'events_action' && (
         <>
           <div class="reward-row">
@@ -2867,6 +2906,48 @@ function MonitorEditor({ monitor, options, onChange, replace }) {
         </select>
       </div>
       {info && <p class="muted sd-help">{info.text}</p>}
+      {t === 'aggregate' && (() => {
+        // Aggregat: rekursiv geschachtelte MonitorEditoren + EINE Bedingung je Sub-Monitor + Verknüpfung.
+        const subs = monitor.monitors || []
+        const setSubs = (next) => onChange({ monitors: next })
+        const m = monitor.match || { op: 'truthy' }
+        const setMatch = (patch) => onChange({ match: { ...m, ...patch } })
+        const needsVal = !['any', 'truthy', 'falsy'].includes(m.op || 'truthy')
+        return (
+          <>
+            <div class="reward-row sd-state" style="flex-wrap:wrap">
+              <span class="muted conn-label">Bedingung je Monitor</span>
+              <select class="so-delay" value={m.op || 'truthy'} onChange={(e) => setMatch({ op: e.currentTarget.value })}>
+                {(options.match_ops || ['any', 'truthy', 'falsy', 'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'contains']).map((o) => <option value={o}>{OP_LABELS[o] || o}</option>)}
+              </select>
+              {needsVal && <input class="so-delay" style="width:120px" placeholder="Wert (z. B. trackon)"
+                                  value={m.value != null ? m.value : ''} onInput={(e) => setMatch({ value: e.currentTarget.value })} />}
+            </div>
+            <div class="reward-row sd-state">
+              <span class="muted conn-label">Verknüpfung</span>
+              <select class="so-delay" value={monitor.mode || 'all'}
+                      onChange={(e) => onChange({ mode: e.currentTarget.value === 'all' ? undefined : e.currentTarget.value })}>
+                <option value="all">ALLE (UND) → an/aus</option>
+                <option value="any">EINE (ODER) → an/aus</option>
+                <option value="count">Anzahl der Treffer → Zahl</option>
+                <option value="tally">Stufen → all / some / none</option>
+              </select>
+            </div>
+            <p class="muted sd-help" style="margin:2px 0">Zustände unten: <b>ALLE/EINE</b> → „ist wahr/an" bzw. „ist falsch/aus" · <b>Anzahl</b> → „&gt; größer als" usw. · <b>Stufen</b> → „= gleich" mit <code>all</code>/<code>some</code>/<code>none</code>.</p>
+            {subs.map((sm, i) => (
+              <div key={i} class="sd-substep">
+                <div class="sd-substep-head"><span class="muted">Monitor {i + 1}</span><span style="flex:1" />
+                  <button class="btn ghost small danger" title="entfernen" onClick={() => setSubs(subs.filter((_, j) => j !== i))}>✕</button>
+                </div>
+                <MonitorEditor monitor={sm} options={options}
+                  onChange={(patch) => { const n = subs.slice(); n[i] = { ...sm, ...patch }; setSubs(n) }}
+                  replace={(full) => { const n = subs.slice(); n[i] = full; setSubs(n) }} />
+              </div>
+            ))}
+            <button class="btn small" onClick={() => setSubs([...subs, { type: 'none' }])}>➕ Monitor hinzufügen</button>
+          </>
+        )
+      })()}
       {t === 'hwinfo' && (
         <>
           <div class="reward-row">
