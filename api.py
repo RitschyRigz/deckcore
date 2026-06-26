@@ -159,7 +159,8 @@ def build_streamdeck_router(
         als Ordner anlegen (nicht in der Panel-Tableiste, nur per open_deck erreichbar)."""
         b = body or {}
         return JSONResponse(get_service(request).add_deck(
-            b.get("label", ""), b.get("icon", "🎛"), b.get("copy_from", ""), b.get("folder")))
+            b.get("label", ""), b.get("icon", "🎛"), b.get("copy_from", ""), b.get("folder"),
+            make_opener=bool(b.get("make_opener"))))   # frischer Ordner sofort „aktiv"/angehakt (Öffner anlegen)
 
     @r.post("/api/streamdeck/deck/delete")
     def streamdeck_deck_delete(request: Request, body: dict = Body(...)) -> JSONResponse:

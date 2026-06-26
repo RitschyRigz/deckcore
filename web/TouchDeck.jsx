@@ -623,7 +623,6 @@ export function TouchDeck() {
   const flashT = useRef(null)
   const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
-  const baseThemeRef = useRef(null)                   // globale Theme-Basis (für Deck-Theme-Override: Rückkehr)
   const [globalLook, setGlobalLook] = useState({})    // globaler Deck-Look (registry.look) — per Deck überschreibbar
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
@@ -708,36 +707,14 @@ export function TouchDeck() {
   }, [fullscreen])
   useEffect(() => () => { try { document.body.classList.remove('dc-deck-fs') } catch {} }, [])
 
-  // Deck-Theme-Override: die globale Theme-Basis EINMAL beim Mount erfassen (die Hülle hat das globale Theme
-  // schon auf :root angewandt). Beim Unmount wiederherstellen, damit die Klasse/Vars nie hängenbleiben.
-  useEffect(() => {
-    try {
-      const cs = getComputedStyle(document.documentElement)
-      const base = {}
-      for (const k of THEME_VAR_KEYS) base[k] = (cs.getPropertyValue(k) || '').trim()
-      baseThemeRef.current = base
-    } catch {}
-    return () => {
-      const base = baseThemeRef.current; if (!base) return
-      try { const root = document.documentElement; for (const k of THEME_VAR_KEYS) if (base[k]) root.style.setProperty(k, base[k]) } catch {}
-    }
-  }, [])
-  // Aktives TOP-LEVEL-Deck (Tab) hat ein eigenes Theme → dessen Farben auf :root; sonst die globale Basis
-  // zurück. Folgt dem Tab, NICHT dem Ordner-Drilldown (ein Ordner gehört zur Identität seines Decks).
+  // Globaler + per-Deck-LOOK (Kachel-Stil/Druck/Ordner-Rahmen/Rahmen) auf body/:root anwenden — das sind KEINE
+  // Theme-Farben (die liegen scoped im .t-deck-Wrapper via deckStyle), sondern body-Data-Attribute + Look-Vars
+  // (--press/--folder/--fam-*), die nicht mit dem globalen Hüllen-Theme kollidieren. Folgt dem Tab (Top-Deck),
+  // NICHT dem Ordner-Drilldown (ein Ordner gehört zur Identität seines Decks).
   useEffect(() => {
     const topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
     const dk = decks.find((d) => d.id === topId) || {}
-    // Look: globaler Look + per-Deck-Override (Kachel-Stil/Druck/Ordner/Rahmen). NICHT an die Theme-Basis gebunden.
     try { applyDeckLook({ ...globalLook, ...((dk.theme && dk.theme.look) || {}) }) } catch {}
-    // Farben: per-Deck-Theme auf :root, sonst die globale Basis zurück (Basis erst nach Mount erfasst).
-    const base = baseThemeRef.current
-    if (base) {
-      const tv = (dk.theme && dk.theme.vars) || null
-      try {
-        const root = document.documentElement
-        for (const k of THEME_VAR_KEYS) root.style.setProperty(k, (tv && tv[k]) || base[k] || '')
-      } catch {}
-    }
   }, [deck, defaultDeck, decks, globalLook])
   useEffect(() => {
     if (!fullscreen) return
@@ -835,12 +812,19 @@ export function TouchDeck() {
   const size = (layout.button_size || 116) + 'px'
   const gridCols = (layout.cols > 0) ? `repeat(${layout.cols}, 1fr)` : `repeat(auto-fill, minmax(${size}, 1fr))`
   const gridStyle = `grid-template-columns:${gridCols};gap:${layout.gap || 12}px`
-  const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}`
+  const _topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
+  const _topDeck = decks.find((d) => d.id === _topId) || {}
+  // Per-Deck-Theme-Farben: SCOPED auf den .t-deck-Wrapper (NICHT :root!). So bleibt das globale Hüllen-Theme
+  // auf :root unangetastet — das Deck-Theme überschreibt nur INNERHALB seines Panels, die Button-Farben darunter.
+  // Klare Kaskade: global(:root) → Deck(.t-deck) → Taste(inline). Früher mutierte ein Effekt :root und kämpfte
+  // mit dem globalen Theme (gleiche Inline-Deklaration) → „folgt global" ging verloren, Fader blieben slate-blau.
+  const _dtv = (_topDeck.theme && _topDeck.theme.vars) || null
+  const deckThemeCss = _dtv ? THEME_VAR_KEYS.map((k) => (_dtv[k] ? `${k}:${_dtv[k]}` : '')).filter(Boolean).join(';') : ''
+  const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}` + (deckThemeCss ? ';' + deckThemeCss : '')
   const showCatTitles = layout.show_category_titles !== false
   // Effektiver Kachel-Stil-Default = globaler Look + per-Deck-Override (reaktiv, damit Deck-Wechsel sofort greift).
   // Pro Taste via opts.skin überschreibbar.
-  const _topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
-  const _effLook = { ...LOOK_DEFAULT, ...globalLook, ...(((decks.find((d) => d.id === _topId) || {}).theme || {}).look || {}) }
+  const _effLook = { ...LOOK_DEFAULT, ...globalLook, ...((_topDeck.theme || {}).look || {}) }
   const defSkin = _effLook.tile || 'brackets'
 
   const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)

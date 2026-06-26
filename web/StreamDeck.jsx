@@ -961,11 +961,16 @@ function DeckItemInspector({ deck, item, btn, options, onReload, onClose, onNavi
           <button class="btn ghost small" onClick={onClose}>✕ schließen</button>
         </span>
       </div>
-      {btn
-        ? <FunctionEditor key={item.button} button={btn} options={options} onSaved={onReload} />
-        : <p class="muted sd-help">Diese Funktion liegt nicht (mehr) in der Button-Bibliothek.</p>}
+      {/* Reihenfolge: erst die Platzierung („wie sieht der Button auf DIESEM Deck aus"), dann die Funktion
+          — deren „Speichern" sitzt damit ganz unten am Ende der Karte (User-Wunsch). */}
       <h4 class="section-h sd-inspect-sub">📐 Anzeige auf diesem Deck <span class="muted" style="font-weight:400;font-size:12px">— Rahmen · Name · Titel · Größe (überschreibt nur hier)</span></h4>
       <ItemInspector deck={deck} item={item} onReload={onReload} />
+      {btn
+        ? <>
+            <h4 class="section-h sd-inspect-sub">⚙ Funktion <span class="muted" style="font-weight:400;font-size:12px">— Aktion · Überwachung · Aussehen (gilt für diesen Button überall)</span></h4>
+            <FunctionEditor key={item.button} button={btn} options={options} onSaved={onReload} />
+          </>
+        : <p class="muted sd-help">Diese Funktion liegt nicht (mehr) in der Button-Bibliothek.</p>}
     </div>
   )
 }
