@@ -60,9 +60,12 @@ _SC_CAP = 64             # ⚠ numSwapChains ist IN/OUT: VOR dem Poll die Blob-K
 #                          sonst lehnt pmPollDynamicQuery mit BAD_ARGUMENT (Status 2) ab. Kostete 1 Debug-Runde.
 # Sichtbare Prozesse, die KEIN Spiel sind (Browser/Deck/Shell) → nie als FPS-Quelle nehmen. So bleiben die
 # Werte stehen, während man das Panel im Browser anschaut (das Spiel läuft borderless im Hintergrund weiter).
+# ⚠ Spiegel-/Capture-Tools (RitschyMirror, OBS) präsentieren VSync-gelockt mit der Refresh-Rate (z.B. 165 flat) →
+#   ohne Deny-Eintrag gewinnt so ein flacher Dauer-Präsentierer den „meiste FPS"-Scan, sobald das echte Spiel
+#   unter die Refresh-Rate dippt, und der sticky Game-Lock klebt dann für immer an ihm fest (Anzeige konstant 165).
 _DENY = ("chrome", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "iexplore", "explorer.exe",
-         "rigzdeck", "python", "code.exe", "discord", "obs", "electron", "dwm.exe", "textinputhost",
-         "searchhost", "applicationframehost", "shellexperiencehost", "widgets", "nvidia")
+         "rigzdeck", "python", "code.exe", "discord", "obs", "ritschymirror", "electron", "dwm.exe",
+         "textinputhost", "searchhost", "applicationframehost", "shellexperiencehost", "widgets", "nvidia")
 
 
 class PM_QUERY_ELEMENT(ctypes.Structure):
