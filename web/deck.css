@@ -332,6 +332,16 @@ body[data-frame="off"] .t-readout::before, body[data-frame="off"] .t-readout::af
 .t-sysmenu-item:hover { background: rgba(255,255,255,.08); }
 .t-sysmenu-item:active { transform: scale(.97); }
 .t-sysmenu-backdrop { position: fixed; inset: 0; z-index: 61; }
+/* Per-Gerät-Leistungsstufe (Update-Rate) im System-Menü — drosselt die Live-Render-Last auf schwachen Tablets. */
+.t-sysmenu-perf { display: flex; flex-direction: column; gap: 5px; padding: 8px 6px 3px; margin-top: 3px;
+  border-top: 1px solid var(--line); }
+.t-sysmenu-perflbl { font-size: 12px; font-weight: 800; color: var(--fg); opacity: .8; padding-left: 2px; }
+.t-sysmenu-perfrow { display: flex; gap: 4px; }
+.t-sysmenu-perfbtn { flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+  font-size: 12px; font-weight: 700; padding: 7px 6px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.t-sysmenu-perfbtn:active { transform: scale(.96); }
+.t-sysmenu-perfbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.t-sysmenu-perfhint { font-size: 10px; color: var(--fg); opacity: .5; padding-left: 2px; }
 @keyframes t-sysmenu-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 /* Side-Scroll-Slide beim Deck-Wechsel im Vollbild (nur das einlaufende Deck wird animiert — kein Preload nötig). */
 .t-deck-body.t-slide-next { animation: t-slide-next .2s ease-out; }

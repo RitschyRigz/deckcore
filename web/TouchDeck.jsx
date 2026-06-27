@@ -75,10 +75,20 @@ function _accumHist(hist, buttons) {
   }
 }
 
+// ── Per-Gerät-Leistungsstufe (localStorage 'rd.perf') ────────────────────────────────────────────
+// Drosselt die Live-Render-Rate für schwache Tablets: 'full' = bisheriges Verhalten (KEIN Throttle),
+// 'balanced'/'eco' zeichnen Verlaufs-Graph + Live-Werte seltener neu — optisch praktisch gleich (Status/
+// Trend), aber drastisch weniger Client-Last. Pro Gerät wie das Theme: der starke S11 bleibt 'full', der
+// schwache Lenovo wählt 'eco'. Wirkt auf FastGraph (fps/frametime-Poll) UND den buttons-Push (setVis).
+export const PERF_GAPS = { full: 0, balanced: 90, eco: 150 }   // ms Mindestabstand zwischen Live-Updates
+export function perfMode() {
+  try { const m = localStorage.getItem('rd.perf'); return PERF_GAPS[m] != null ? m : 'full' } catch { return 'full' }
+}
+
 // High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
 // sampelt im ms-Bereich; die Anzeige liest gröber). Zeigt einen klaren Hinweis, wenn keine Daten
-// (kein Spiel / PresentMon fehlt) — nie stumm leer.
-function FastGraph({ kind, color, opts }) {
+// (kein Spiel / PresentMon fehlt) — nie stumm leer. ``ms`` = Poll-/Render-Intervall (per-Gerät gedrosselt).
+function FastGraph({ kind, color, opts, ms }) {
   const [data, setData] = useState([])
   const [pct, setPct] = useState(null)
   const [fps, setFps] = useState(0)
@@ -97,9 +107,9 @@ function FastGraph({ kind, color, opts }) {
       n++
     }
     tick()
-    const iv = setInterval(tick, 55)   // ~18 Hz — flüssig + RTSS-näher; Last niedrig (kleiner Ring, ~100 Punkte)
+    const iv = setInterval(tick, ms || 55)   // full ~18 Hz; per-Gerät gedrosselt (balanced/eco → seltener)
     return () => { alive = false; clearInterval(iv) }
-  }, [kind, visible])
+  }, [kind, visible, ms])
   if (msg && (!data || data.length < 2)) return <div class="t-spark-msg">{msg}</div>
   // Frametime: FESTES ~2,6-s-Zeitfenster (fps-abhängige Frame-Zahl, da echte Per-Frame-Daten) → ruhiger, RTSS-
   //   ähnlicher Verlauf statt sub-sekündlichem Geflacker. FPS: ~20 s, ausgedünnt + geglättet.
@@ -718,6 +728,10 @@ export function TouchDeck() {
   const flashT = useRef(null)
   const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
+  const [perf, setPerf] = useState(() => perfMode())  // per-Gerät-Leistungsstufe (full/balanced/eco), localStorage
+  const liveGap = PERF_GAPS[perf] || 0                 // ms Mindestabstand zwischen Live-Updates (0 = kein Throttle)
+  const fastMs = liveGap ? Math.max(55, liveGap) : 55  // FastGraph-Intervall: full→55, balanced→90, eco→150
+  const visThrottleRef = useRef({ last: 0, timer: null, pending: null })  // Trailing-Throttle für setVis
   const [globalLook, setGlobalLook] = useState({})    // globaler Deck-Look (registry.look) — per Deck überschreibbar
 
   const loadReg = () => getJSON('/api/streamdeck/registry').then((d) => {
@@ -738,8 +752,28 @@ export function TouchDeck() {
     loadReg()
     getJSON('/api/streamdeck/resolved').then((d) => { _accumHist(histRef.current, d.buttons || {}); setVis(d.buttons || {}) }).catch(() => {})
   }, [])
+  useEffect(() => () => { const t = visThrottleRef.current; if (t.timer) { clearTimeout(t.timer); t.timer = null } }, [])
+  // Live-Werte gedrosselt anwenden (per-Gerät): Verlauf IMMER akkumulieren (billig, kein Render), aber setVis
+  // höchstens alle ``liveGap`` ms (full=0 → sofort). Trailing-Edge → der letzte Stand landet garantiert. Presses
+  // bleiben sofort (lokaler ``pressed``-State, läuft NICHT über vis) → die Drossel kostet keine Tap-Reaktion.
+  const pushVis = (buttons) => {
+    _accumHist(histRef.current, buttons)
+    if (!liveGap) { setVis(buttons); return }
+    const t = visThrottleRef.current
+    t.pending = buttons
+    const now = Date.now()
+    const due = t.last + liveGap
+    if (now >= due) { t.last = now; t.pending = null; setVis(buttons) }
+    else if (!t.timer) {
+      t.timer = setTimeout(() => {
+        t.timer = null; t.last = Date.now()
+        const b = t.pending; t.pending = null
+        if (b) setVis(b)
+      }, due - now)
+    }
+  }
   useEventStream(['streamdeck:buttons', 'streamdeck:layout', 'streamdeck:audio'], {
-    'streamdeck:buttons': (d) => { if (d.buttons) { _accumHist(histRef.current, d.buttons); setVis(d.buttons) } },
+    'streamdeck:buttons': (d) => { if (d.buttons) pushVis(d.buttons) },
     // Deck-Template- ODER Button-Änderung aus dem Editor → Registry neu lesen (hält actionById frisch).
     'streamdeck:layout': () => loadReg(),
     // Variante 2: Live-Audio (VU/Pegel) kommt jetzt GEPUSHT über DENSELBEN stabilen Stream — kein 90-ms-
@@ -999,7 +1033,7 @@ export function TouchDeck() {
             <>
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
               {['fps', 'frametime'].includes((monById[id] || {}).type)
-                ? <FastGraph kind={(monById[id] || {}).type} color={v.color} opts={o} />
+                ? <FastGraph kind={(monById[id] || {}).type} color={v.color} opts={o} ms={fastMs} />
                 : <Sparkline data={histRef.current[id]} color={v.color} opts={o} uid={id} />}
             </>
           ) : isGauge ? (
@@ -1094,6 +1128,18 @@ export function TouchDeck() {
               🔌 Verbindungen
             </button>
           )}
+          {/* Per-Gerät-Leistungsstufe — drosselt die Live-Render-Rate. Menü bleibt offen → sofortiges A/B-Gefühl
+              ohne Neuladen (starkes Tablet = Voll, schwaches = Sparsam). Pro Gerät in localStorage gespeichert. */}
+          <div class="t-sysmenu-perf">
+            <span class="t-sysmenu-perflbl">⚡ Update-Rate</span>
+            <div class="t-sysmenu-perfrow">
+              {[['full', 'Voll'], ['balanced', 'Mittel'], ['eco', 'Sparsam']].map(([k, lbl]) => (
+                <button key={k} class={'t-sysmenu-perfbtn' + (perf === k ? ' on' : '')}
+                        onClick={() => { try { localStorage.setItem('rd.perf', k) } catch (_) {} setPerf(k) }}>{lbl}</button>
+              ))}
+            </div>
+            <span class="t-sysmenu-perfhint">Sparsam = flüssiger auf schwachen Tablets</span>
+          </div>
         </div>
       )}
       <button class={'t-sysbtn' + (sysMenu ? ' open' : '')} title="System" aria-label="System"
