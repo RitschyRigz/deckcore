@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'preact/hooks'
+import { useEffect, useState, useRef, useMemo, useCallback } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
@@ -674,6 +674,17 @@ function buildWlState(snap) {
   return m
 }
 
+// Kachel-Memoization: ein streamdeck:buttons-Push ersetzt die GANZE resolved-Map → ohne das re-rendert
+// das komplette Deck bei JEDER Wertänderung (FPS/HWiNFO/Szene/Uhr), was auf schwachen Tablets die Ordner-
+// Animation + Touch-Eingabe ruckeln lässt (Last-Befund 2026-06-27). DeckTile merkt sich das gerenderte
+// Vnode pro Signatur (useMemo[sig]): ist die sig gleich, gibt es das IDENTISCHE Vnode zurück → Preact
+// überspringt den Teilbaum (kein Re-Render). ⚠ sig MUSS alles kodieren, was die Kachel zeichnet (sonst
+// stale). Fader/Graph rendern bewusst OHNE Memo weiter (Audio-VU bzw. Verlaufs-Sparkline brauchen jeden
+// Push). Die Handler sind ref-stabil (s. onTap) → eine übersprungene Kachel hält keine veraltete Closure.
+function DeckTile({ sig, render }) {
+  return useMemo(render, [sig])
+}
+
 export function TouchDeck() {
   const [decks, setDecks] = useState([])        // volle Templates [{id,label,icon,layout,categories,items}]
   const [defaultDeck, setDefaultDeck] = useState('main')
@@ -866,7 +877,12 @@ export function TouchDeck() {
   )
 
   // EINHEITLICHER Tap-Handler (Haupt-Raster UND Radial): Ordner → navigieren; sonst → Press.
-  const onTap = async (id, evt) => {
+  // Ref-stabil (useCallback []): liest den aktuellen State über _liveRef → eine memoizte (übersprungene)
+  // Kachel tappt NIE mit veralteter Closure (sonst falsches actionById/overlay/navStack nach einem Push).
+  const _liveRef = useRef({})
+  _liveRef.current = { actionById, overlay, navStack }
+  const onTap = useCallback(async (id, evt) => {
+    const { actionById, overlay, navStack } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
@@ -893,7 +909,7 @@ export function TouchDeck() {
     } else {
       setOverlay(null)
     }
-  }
+  }, [])
 
   if (!decks.length) return <div class="t-empty" style="margin:30px auto">Keine Decks in der Registry.</div>
 
@@ -921,6 +937,8 @@ export function TouchDeck() {
   // Pro Taste via opts.skin überschreibbar.
   const _effLook = { ...LOOK_DEFAULT, ...globalLook, ...((_topDeck.theme || {}).look || {}) }
   const defSkin = _effLook.tile || 'brackets'
+  // Layout-Signatur fürs Kachel-Memo (eff/Platzierung hängen am Layout; ändert sich selten).
+  const layoutKey = JSON.stringify(layout)
 
   const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
@@ -1002,6 +1020,21 @@ export function TouchDeck() {
     )
   }
 
+  // Memo-Wrapper: Fader/Graph rendern bewusst IMMER (Audio-VU bzw. Verlaufs-Sparkline brauchen jeden Push);
+  // alle anderen Kacheln nur, wenn sich ihre Signatur ändert (resolved-Eintrag + Layout/Opts/Skin/Ordner/
+  // Render/Press). So unterbricht ein Push, der nur fremde Kacheln ändert, NICHT die laufende Ordner-Animation.
+  const tileMemo = (it) => {
+    const id = it.button
+    const rnd = renderById[id]
+    if (rnd === 'fader' || rnd === 'graph') return tile(it)
+    const sig = JSON.stringify([
+      id, it.w || 0, it.h || 0, it.x, it.y, it.style || 0, freeMode,
+      vis[id] || 0, optsById[id] || 0, (actionById[id] || {}).type || 0,
+      rnd || 0, (monById[id] || {}).type || 0, defSkin, pressed === id, layoutKey,
+    ])
+    return <DeckTile key={id} sig={sig} render={() => tile(it)} />
+  }
+
   return (
     <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
          onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
@@ -1034,14 +1067,14 @@ export function TouchDeck() {
           ? <div class="t-empty" style="margin:30px auto">Dieses Deck ist leer.</div>
           : freeMode ? (
             <div class="t-deck-grid t-deck-free" style={freeStyle}>
-              {(active.items || []).filter((it) => !it.hidden).map((it) => tile(it))}
+              {(active.items || []).filter((it) => !it.hidden).map((it) => tileMemo(it))}
             </div>
           ) : (
             groups.map((g) => (
               <section class="t-deck-grp" key={g.name}>
                 {showCatTitles && <h2 class="t-col-h">{g.name}</h2>}
                 <div class="t-deck-grid" style={gridStyle}>
-                  {g.items.map((it) => tile(it))}
+                  {g.items.map((it) => tileMemo(it))}
                 </div>
               </section>
             ))
