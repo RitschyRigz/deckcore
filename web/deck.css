@@ -661,6 +661,58 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
   box-shadow: 0 0 9px var(--fill, var(--acc, var(--accent2))), inset 0 0 6px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 22%, transparent); }
 .t-fader.s-ring .t-fader-glyph, .t-fader.s-ring .t-fader-img img { filter: none; }
 
+/* =========================================================================
+   🎨 DATEN-VIZ-DESIGN-VARIANTEN (opts.variant / opts.vu) — rein additiv.
+   Default ('') = das bisherige Design (oben), unverändert. Diese Klassen
+   greifen NUR, wenn eine Variante gewählt ist. Generisch für JEDE Quelle.
+   ========================================================================= */
+
+/* ── Balken/Bar ─────────────────────────────────────────────────────────── */
+/* Segmente (LED-Leiste): Spur wird zur Flex-Reihe/Spalte aus Einzel-Blöcken. */
+.t-bar-track.t-bar-segs { display: flex; gap: 2px; background: transparent; box-shadow: none; overflow: visible; }
+.t-bar:not(.bar-vert) .t-bar-track.t-bar-segs { flex-direction: row; }
+.t-bar.bar-vert .t-bar-track.t-bar-segs { flex-direction: column-reverse; }
+.t-bar-seg { flex: 1 1 0; min-width: 2px; background: rgba(255, 255, 255, .07); border-radius: 1.5px; transition: background .12s, box-shadow .12s; }
+/* Zonen-Verlauf: fester Verlauf über die ganze Spur + dunkle Maske über dem unbefüllten Teil. */
+.t-bar-zones { position: absolute; inset: 0; border-radius: inherit; }
+.t-bar-mask { position: absolute; inset: 0; background: #0c1119; border-radius: inherit; transition: left .25s ease, bottom .25s ease; }
+/* Minimal: flach 2D, eckig, kein Glow. */
+.t-bar.v-minimal .t-bar-track { border-radius: 2px; background: #0d121b; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.t-bar.v-minimal .t-bar-fill { border-radius: 1px; }
+
+/* ── Fader-Grundformen (opts.variant) ───────────────────────────────────── */
+/* Modern: breiter, runder Track + Verlaufs-Füllung + schlanker Knopf. */
+.t-fader.v-modern .t-fader-track { width: 40cqw; max-width: 52px; border-radius: 14px; }
+.t-fader.v-modern .t-fader-fill { border-radius: 12px; }
+.t-fader.v-modern .t-fader-knob { height: 5px; border-radius: 3px; left: -8%; right: -8%; }
+/* Neon-Glow: kräftiger Leucht-Track + starke Fill-Aura. */
+.t-fader.v-glow .t-fader-track { box-shadow: inset 0 0 7px rgba(0, 0, 0, .75), 0 0 11px color-mix(in srgb, var(--fill, var(--acc, var(--accent2))) 45%, transparent); }
+.t-fader.v-glow .t-fader-fill { box-shadow: 0 0 20px var(--fill, var(--acc, var(--accent2))), 0 0 8px var(--fill, var(--acc, var(--accent2))); }
+.t-fader.v-glow .t-fader-knob { box-shadow: 0 0 14px var(--fill, var(--acc, var(--accent2))), 0 0 4px #fff; }
+/* Flach 2D: eckiger Track, harte Füllung, kein Glow, Block-Knopf. */
+.t-fader.v-flat .t-fader-track { border-radius: 3px; background: #0c1119; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.t-fader.v-flat .t-fader-fill { border-radius: 2px; box-shadow: none; background: var(--fill, var(--acc, var(--accent2))); }
+.t-fader.v-flat .t-fader-knob { height: 3px; border-radius: 0; background: #dfe6f0; box-shadow: none; }
+/* Minimal: dünner Linien-Track + Punkt-Knopf, kein Glow. */
+.t-fader.v-minimal .t-fader-track { width: 7cqw; max-width: 9px; background: rgba(255, 255, 255, .13); box-shadow: none; border: 0; }
+.t-fader.v-minimal .t-fader-fill { box-shadow: none; }
+.t-fader.v-minimal .t-fader-knob { width: 11cqw; max-width: 15px; height: 11cqw; max-height: 15px; left: 50%; right: auto;
+  transform: translate(-50%, 50%); border-radius: 50%; background: #fff;
+  box-shadow: 0 0 7px var(--fill, var(--acc, var(--accent2))); }
+
+/* ── VU-Meter-Stile (opts.vu) ───────────────────────────────────────────── */
+/* Punkte (LED): die Segmente werden schmale runde Pillen statt Balken. */
+.t-fader-vu.vu-dots .t-vu-seg { width: 55%; margin: 0 auto; border-radius: 999px; }
+/* Balken (durchgehend): Zonen-Verlauf als Hintergrund, dunkle Maske über dem unbefüllten oberen Teil. */
+.t-fader-vu.vu-bar { padding: 0; gap: 0; border-radius: 4px; overflow: hidden;
+  background: linear-gradient(to top, var(--vu-low), var(--vu-mid) 66%, var(--vu-high));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); }
+.t-vu-barmask { position: absolute; left: 0; right: 0; top: 0; background: #0c1119; transition: height .08s linear; }
+/* Linie (Pegel-Strich): dünner Groove + ein heller Querstrich auf Pegelhöhe. */
+.t-fader-vu.vu-line { background: rgba(255, 255, 255, .07); border-radius: 999px; overflow: visible; }
+.t-vu-lineind { position: absolute; left: -2px; right: -2px; height: 3px; border-radius: 2px;
+  transform: translateY(50%); transition: bottom .08s linear; pointer-events: none; }
+
 /* ===== 🎨 SVG-Glyph-Symbole (icon = "g:name") ===== */
 /* Ein Glyph füllt 1em und zeichnet mit currentColor → skaliert exakt wie ein Emoji im selben Slot und
    nimmt die Textfarbe der Kachel an. Damit folgt jedes Bibliotheks-Symbol automatisch Akzent/Theme. */

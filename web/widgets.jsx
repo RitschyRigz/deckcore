@@ -119,33 +119,80 @@ export function Clock({ opts, skin }) {
 export const gaugeColor = (t, fixed, crit) => (crit !== false && t >= 0.8) ? '#ff4d4d'
   : (fixed || (t < 0.6 ? '#37e0a3' : t < 0.85 ? '#ffb454' : '#ff5d5d'))
 
-// Radial-Gauge im Deck-Stil: Glow-Bogen (270°, Gap unten) + Schleppzeiger-Punkt + großer Wert mit Glow.
-// Wertbereich aus opts.min/max (Default 0..100), Einheit opts.unit. Skaliert via cqw (wie Text/Uhr).
-// Reine Panel-Darstellung — physisches Stream Deck zeigt nur Titel/Wert.
+// Geometrie-/Deko-Konfig je Gauge-Variante (cx/cy/r identisch; nur Start/Sweep/viewBox + Deko variieren).
+// '' = Klassisch (270° Glow-Bogen, Gap unten) — byte-gleich zum bisherigen Design. Generisch: gilt für JEDE
+// numerische Quelle (HWiNFO/FPS/poll/…), nichts sensor-exklusives.
+const _GAUGE_GEO = {
+  '':       { a0: 135, sw: 270, vb: '0 0 100 76', cy: 50, valTop: '' },
+  classic:  { a0: 135, sw: 270, vb: '0 0 100 76', cy: 50, valTop: '' },
+  ring:     { a0: -90, sw: 360, vb: '1 1 98 98', cy: 50, valTop: '50%' },
+  half:     { a0: 180, sw: 180, vb: '0 6 100 52', cy: 52, valTop: '80%' },
+  ticks:    { a0: 135, sw: 270, vb: '0 0 100 76', cy: 50, valTop: '', ticks: true },
+  segments: { a0: 135, sw: 270, vb: '0 0 100 76', cy: 50, valTop: '', segs: true },
+  minimal:  { a0: 135, sw: 270, vb: '0 0 100 76', cy: 50, valTop: '', thin: true, noDot: true },
+}
+
+// Radial-Gauge im Deck-Stil. Varianten (opts.variant): klassisch 270°-Glow, Ring 360°, Tacho 180°, Skala mit
+// Strichen, Segmente (Zonen-Blöcke), Minimal (flacher dünner Bogen). Wert an/aus via opts.showValue.
+// Wertbereich aus opts.min/max (Default 0..100), Einheit opts.unit. Skaliert via cqw. Reine Panel-Darstellung.
 export function Gauge({ value, opts }) {
   const o = opts || {}
+  const g = _GAUGE_GEO[o.variant] || _GAUGE_GEO['']
   const min = Number.isFinite(+o.min) ? +o.min : 0
   const max = Number.isFinite(+o.max) ? +o.max : 100
   const span = (max - min) || 1
   const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
   const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
   const col = gaugeColor(t, resolveColor(o.color), o.crit)   // feste Farbe via resolveColor (Theme-/fam-Token möglich)
-  const cx = 50, cy = 50, r = 38, A0 = 135, SW = 270
+  const cx = 50, cy = g.cy, r = 38, A0 = g.a0
+  const SW = g.sw >= 360 ? 359.999 : g.sw     // Voll-Ring: 360°-Bogen (Start=Ende) ist nicht zeichenbar → minimal kürzen
+  const trackW = g.thin ? 4 : 9, fillW = g.thin ? 4 : 9
   const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)] }
   const arc = (a0, a1) => { const [x0, y0] = pol(a0), [x1, y1] = pol(a1); const lg = Math.abs(a1 - a0) > 180 ? 1 : 0
     return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${lg} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}` }
   const [tx, ty] = pol(A0 + SW * t)
   const disp = v === null ? '–' : (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  // Segmente: SW in N Blöcke mit kleiner Lücke; Block leuchtet, wenn seine Mitte ≤ t.
+  let segEls = null
+  if (g.segs) {
+    const N = 22, gap = 1.4, blk = SW / N, els = []
+    for (let i = 0; i < N; i++) {
+      const a = A0 + i * blk, b = a + blk - gap
+      const on = v !== null && (i + 0.5) / N <= t
+      els.push(<path key={i} d={arc(a, b)} fill="none" stroke-width="9" stroke-linecap="butt"
+        style={on ? `stroke:${col};filter:drop-shadow(0 0 3px ${col})` : 'stroke:#1a2230'} />)
+    }
+    segEls = els
+  }
+  // Skala-Striche: kurze radiale Markierungen am Außenrand (rein dekorativ, zeigt die Skalierung).
+  let tickEls = null
+  if (g.ticks) {
+    const N = 10, els = []
+    for (let i = 0; i <= N; i++) {
+      const a = (A0 + SW * (i / N)) * Math.PI / 180
+      const r0 = r + 5, r1 = r + (i % 5 === 0 ? 10 : 7.5)
+      els.push(<line key={i} x1={(cx + r0 * Math.cos(a)).toFixed(1)} y1={(cy + r0 * Math.sin(a)).toFixed(1)}
+        x2={(cx + r1 * Math.cos(a)).toFixed(1)} y2={(cy + r1 * Math.sin(a)).toFixed(1)}
+        stroke="#5a6b82" stroke-width={i % 5 === 0 ? 1.6 : 1} stroke-linecap="round" vector-effect="non-scaling-stroke" />)
+    }
+    tickEls = els
+  }
+  const valStyle = `font-size:${widgetFontSize(o, 'gauge')}` + (g.valTop ? `;top:${g.valTop}` : '')
   return (
     <div class="t-gauge" style={`--acc:${col}`}>
-      <svg class="t-gauge-svg" viewBox="0 0 100 74" preserveAspectRatio="xMidYMid meet">
-        <path d={arc(A0, A0 + SW)} fill="none" stroke="#1a2230" stroke-width="9" stroke-linecap="round" />
-        {v !== null && <path d={arc(A0, A0 + SW * t)} fill="none" stroke-width="9" stroke-linecap="round"
-                             style={`stroke:${col};filter:drop-shadow(0 0 4px ${col})`} />}
-        {v !== null && <circle cx={tx.toFixed(2)} cy={ty.toFixed(2)} r="4.6" fill="#fff"
+      <svg class="t-gauge-svg" viewBox={g.vb} preserveAspectRatio="xMidYMid meet">
+        {tickEls}
+        {g.segs ? segEls : (
+          <>
+            <path d={arc(A0, A0 + SW)} fill="none" stroke="#1a2230" stroke-width={trackW} stroke-linecap="round" />
+            {v !== null && <path d={arc(A0, A0 + SW * t)} fill="none" stroke-width={fillW} stroke-linecap="round"
+                                 style={`stroke:${col}` + (g.thin ? '' : `;filter:drop-shadow(0 0 4px ${col})`)} />}
+          </>
+        )}
+        {v !== null && !g.noDot && !g.segs && <circle cx={tx.toFixed(2)} cy={ty.toFixed(2)} r="4.6" fill="#fff"
                                style={`filter:drop-shadow(0 0 6px ${col})`} />}
       </svg>
-      <div class="t-gauge-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-gauge-u">{o.unit || ''}</span></div>
+      {o.showValue !== false && <div class="t-gauge-v" style={valStyle}>{disp}<span class="t-gauge-u">{o.unit || ''}</span></div>}
     </div>
   )
 }
@@ -156,22 +203,55 @@ export function Gauge({ value, opts }) {
 // hoch=gut). Skaliert via cqw. Reine Panel-Darstellung — physisches Stream Deck zeigt nur Titel/Wert.
 export function Bar({ value, opts }) {
   const o = opts || {}
+  const variant = o.variant || ''
   const min = Number.isFinite(+o.min) ? +o.min : 0
   const max = Number.isFinite(+o.max) ? +o.max : 100
   const span = (max - min) || 1
   const v = (value === null || value === undefined || value === '' || isNaN(+value)) ? null : +value
   const t = v === null ? 0 : Math.max(0, Math.min(1, (v - min) / span))
-  const col = gaugeColor(t, resolveColor(o.color), o.crit)   // feste Farbe via resolveColor (Theme-/fam-Token möglich)
+  const fixed = resolveColor(o.color)
+  const col = gaugeColor(t, fixed, o.crit)   // feste Farbe via resolveColor (Theme-/fam-Token möglich)
   const vert = o.orient === 'v'
   const pct = (t * 100).toFixed(1) + '%'
   const disp = v === null ? '–' : (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
-  const fillStyle = (vert ? `height:${pct}` : `width:${pct}`) + `;background:${col};box-shadow:0 0 6px ${col}`
-  return (
-    <div class={'t-bar' + (vert ? ' bar-vert' : '')} style={`--acc:${col}`}>
-      <div class="t-bar-track"><div class="t-bar-fill" style={fillStyle}></div></div>
-      <div class="t-bar-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-bar-u">{o.unit || ''}</span></div>
-    </div>
-  )
+  // Zonen-Farbe einer Position 0..1 (grün→amber→rot) — für Segmente/Verlauf; feste opts.color gewinnt.
+  const zoneCol = (p) => fixed || (p < 0.6 ? '#37e0a3' : p < 0.85 ? '#ffb454' : '#ff5d5d')
+  const valEl = o.showValue === false ? null
+    : <div class="t-bar-v" style={`font-size:${widgetFontSize(o, 'gauge')}`}>{disp}<span class="t-bar-u">{o.unit || ''}</span></div>
+  const root = (inner) => <div class={'t-bar' + (vert ? ' bar-vert' : '') + (variant ? ' v-' + variant : '')} style={`--acc:${col}`}>{inner}</div>
+
+  // Segmente (LED-Leiste): N Blöcke, leuchten bis t, je nach Position grün/amber/rot (außer feste Farbe).
+  if (variant === 'segments') {
+    const N = 16, segs = []
+    for (let i = 0; i < N; i++) {
+      const p = (i + 0.5) / N, on = v !== null && p <= t
+      const c = zoneCol(p)
+      segs.push(<span key={i} class={'t-bar-seg' + (on ? ' on' : '')}
+        style={on ? `background:${c};box-shadow:0 0 5px color-mix(in srgb, ${c} 80%, transparent)` : ''} />)
+    }
+    return root(<><div class="t-bar-track t-bar-segs">{segs}</div>{valEl}</>)
+  }
+  // Zonen-Verlauf: fester grün→amber→rot-Verlauf über die GANZE Spur, unbefüllter Teil abgedunkelt.
+  if (variant === 'gradient') {
+    const grad = fixed
+      ? `linear-gradient(${vert ? 'to top' : 'to right'}, color-mix(in srgb, ${fixed} 45%, #06080c), ${fixed})`
+      : `linear-gradient(${vert ? 'to top' : 'to right'}, #37e0a3 0%, #37e0a3 50%, #ffb454 74%, #ff5d5d 100%)`
+    const maskStyle = vert ? `bottom:${pct};top:0` : `left:${pct};right:0`
+    return root(<><div class="t-bar-track">
+      <div class="t-bar-zones" style={`background:${grad}`} />
+      <div class="t-bar-mask" style={maskStyle} />
+    </div>{valEl}</>)
+  }
+  // Streifen: diagonale Streifen-Füllung in der Farbe (candy stripe).
+  if (variant === 'striped') {
+    const stripe = `repeating-linear-gradient(45deg, ${col} 0 5px, color-mix(in srgb, ${col} 50%, #06080c) 5px 10px)`
+    const fillStyle = (vert ? `height:${pct}` : `width:${pct}`) + `;background:${stripe}`
+    return root(<><div class="t-bar-track"><div class="t-bar-fill" style={fillStyle} /></div>{valEl}</>)
+  }
+  // Klassisch (Glow) + Minimal (flach 2D, kein Glow — via CSS-Klasse v-minimal).
+  const glow = variant === 'minimal' ? '' : `;box-shadow:0 0 6px ${col}`
+  const fillStyle = (vert ? `height:${pct}` : `width:${pct}`) + `;background:${col}` + glow
+  return root(<><div class="t-bar-track"><div class="t-bar-fill" style={fillStyle} /></div>{valEl}</>)
 }
 
 // 🪪 Status-Karte (render=readout): zeigt einen (Text-/Namens-)Wert schön im Deck-Look — dunkle Karte mit
@@ -205,6 +285,36 @@ export function Readout({ v, opts, skin }) {
   )
 }
 
+// 🎚 VU-Meter-Renderer (geteilt: Live-Fader in TouchDeck UND Editor-Vorschau FaderView). vu-Stil (opts.vu):
+// '' / 'segments' = Lämpchen (Default) · 'dots' = runde LEDs · 'bar' = durchgehende Säule (Zonen-Verlauf,
+// von unten befüllt) · 'line' = dünner Pegel-Strich · 'none' = kein VU. mlvl = 0..1. peakEl (optional) =
+// der Peak-Hold-Marker (live per rAF; in der Vorschau null). Farben = Theme-Vars --vu-low/mid/high.
+export function FaderVU({ vu, mlvl, peakEl }) {
+  if (vu === 'none') return null
+  const lvl = Math.max(0, Math.min(1, mlvl || 0))
+  if (vu === 'bar') {
+    // Zonen-Verlauf als Container-Hintergrund (deck.css) + dunkle Maske über dem unbefüllten oberen Teil.
+    return <div class="t-fader-vu vu-bar">
+      <div class="t-vu-barmask" style={`height:${((1 - lvl) * 100).toFixed(1)}%`} />
+      {peakEl}
+    </div>
+  }
+  if (vu === 'line') {
+    const c = lvl > 0.75 ? 'var(--vu-high)' : lvl > 0.667 ? 'var(--vu-mid)' : 'var(--vu-low)'
+    return <div class="t-fader-vu vu-line">
+      <div class="t-vu-lineind" style={`bottom:${(lvl * 100).toFixed(1)}%;background:${c};box-shadow:0 0 8px ${c}`} />
+      {peakEl}
+    </div>
+  }
+  const SEGS = 19, segs = []
+  for (let i = 0; i < SEGS; i++) {
+    const thr = (i + 1) / SEGS
+    const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
+    segs.push(<span key={i} class={'t-vu-seg' + (lvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
+  }
+  return <div class={'t-fader-vu' + (vu === 'dots' ? ' vu-dots' : '')}>{segs}{peakEl}</div>
+}
+
 // 🎚 Fader-VORSCHAU (render=fader im Editor-WYSIWYG): rendert die Fader-Kachel 1:1 über DIESELBEN CSS-Klassen
 // wie das Live-Panel (deck.css .t-fader*), nur STATISCH — fester Pegel, repräsentative VU-Säule, KEIN Drag/
 // Live-Meter. So sieht der Editor aus wie der echte Fader (statt einer flachen Kachel), bleibt aber editierbar.
@@ -223,22 +333,17 @@ export function FaderView({ v, opts, skin }) {
   if (_k(o.iconK)) style += `;--f-icon:calc(17cqw * ${_k(o.iconK)})`
   const name = val.label || val.title || ''
   const lvl = 66                                      // repräsentativer Pegel für die Vorschau
-  const SEGS = 19, segs = []
-  for (let i = 0; i < SEGS; i++) {
-    const thr = (i + 1) / SEGS
-    const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
-    segs.push(<span key={i} class={'t-vu-seg' + (thr <= 0.58 ? ' on ' + cls : '')} />)   // statisch bis ~58% „an"
-  }
+  const variant = o.variant || ''
   const icon = val.icon
   return (
-    <div class={'t-fader s-' + (skin || 'brackets') + (o.nameLines === 2 ? ' ml-name' : '')} style={style}>
+    <div class={'t-fader s-' + (skin || 'brackets') + (variant ? ' v-' + variant : '') + (o.nameLines === 2 ? ' ml-name' : '')} style={style}>
       <div class="t-fader-name" title={name}>{name}</div>
       <div class="t-fader-body">
         <div class="t-fader-track">
           <div class="t-fader-fill" style={`height:${lvl}%`} />
           <div class="t-fader-knob" style={`bottom:${lvl}%`} />
         </div>
-        <div class="t-fader-vu">{segs}</div>
+        <FaderVU vu={o.vu} mlvl={0.58} peakEl={null} />
       </div>
       <div class="t-fader-foot">{lvl}%</div>
       {icon && (isGlyph(icon) && hasGlyph(glyphName(icon))

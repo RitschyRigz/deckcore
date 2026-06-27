@@ -147,6 +147,11 @@ def build_streamdeck_router(
     def streamdeck_delete(bid: str, request: Request) -> JSONResponse:
         return JSONResponse(get_service(request).delete_button(bid))
 
+    # OBSBOT-OSC-Status (Live-Diagnose im Editor: ready · osc_blocked · osc_silent · plugin_only · no_app).
+    @r.get("/api/obsbot/status")
+    def obsbot_status(request: Request) -> JSONResponse:
+        return JSONResponse(get_service(request).obsbot_status())
+
     # ── Decks: Liste + literale Routen (VOR den /{deck_id}-Routen) ─────────
     @r.post("/api/streamdeck/decks")
     def streamdeck_decks(request: Request, body: dict = Body(...)) -> JSONResponse:

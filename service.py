@@ -179,6 +179,12 @@ _CLOCK_MODES = ("digital", "analog")
 # Kachel-Stile (Verzierung einer flachen Taste) — Whitelist fuer opts.skin; muss zu deck.css .s-* passen.
 _TILE_SKINS = ("brackets", "neon", "double", "inset", "underline", "dashed", "gradient",
                "scan", "cut", "ring", "topbar", "plate", "cornerglow", "plain")
+# Daten-Viz-Design-Varianten (opts.variant) — Union ALLER Typen (Graph/Gauge/Balken/Fader); ein Button hat
+# genau einen render-Typ, der Renderer nimmt nur seine Werte. Muss zu deckstyle.js (*_VARIANTS) passen.
+_VIZ_VARIANTS = ("classic", "neon", "minimal", "dashed", "bars", "gradient",
+                 "ring", "half", "ticks", "segments", "striped", "flat", "glow", "modern")
+# VU-Meter-Stile des Faders (opts.vu) — orthogonal zur Fader-Variante. Muss zu deckstyle.js VU_VARIANTS passen.
+_VU_STYLES = ("segments", "bar", "line", "dots", "none")
 # Theme-CSS-Variablen, die ein Deck-Theme-Override setzen darf (Farben). Muss zur Huelle (theme.js) +
 # TouchDeck (THEME_VAR_KEYS) passen. Werte werden gegen _is_hex_color geprueft (import-sicher).
 _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
@@ -313,6 +319,15 @@ def _sanitize_opts(o) -> dict:
             out["lineWidth"] = 0.5 if lw < 0.5 else (6.0 if lw > 6 else lw)
     except (TypeError, ValueError):
         pass
+    # 🎨 Design-Variante (rein kosmetisch, generisch je Viz-Typ). EIN Feld pro Button (ein Button hat genau
+    # einen render-Typ) → Union-Whitelist; der jeweilige Renderer interpretiert seine Werte, fremde fallen auf
+    # Klassisch zurück. ``vu`` = VU-Meter-Stil des Faders (orthogonal). ``showValue`` = Zahl ein/aus (Gauge/Balken).
+    if o.get("variant") in _VIZ_VARIANTS:
+        out["variant"] = o["variant"]
+    if o.get("vu") in _VU_STYLES:
+        out["vu"] = o["vu"]
+    if "showValue" in o:
+        out["showValue"] = bool(o.get("showValue"))
     return out
 
 

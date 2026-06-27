@@ -78,6 +78,32 @@ export const PRESS_MODES = [
   ['pop', 'Nur Pop'], ['lift', 'Anheben'],
 ]
 
+// 🎨 Daten-Viz-Design-Varianten (rein additiv, generisch — gelten für JEDE Datenquelle des jeweiligen Typs;
+// nichts sensor-/quellen-exklusives). [Wert, Label] — '' = Klassisch (bisheriges Design, Default). Der
+// Renderer schaltet auf den Stil; unbekannte Werte fallen auf Klassisch zurück. Single-Source für Editor-
+// Dropdowns (StreamDeck.jsx) UND die Render-Komponenten (widgets.jsx / TouchDeck.jsx).
+export const GRAPH_VARIANTS = [
+  ['', 'Klassisch (Glow-Linie)'], ['neon', 'Neon (starker Glow)'], ['minimal', 'Minimal (dünne Linie)'],
+  ['dashed', 'Strichlinie'], ['bars', 'Balken-Verlauf'], ['gradient', 'Verlaufs-Linie'],
+]
+export const GAUGE_VARIANTS = [
+  ['', 'Klassisch (270° Glow-Bogen)'], ['ring', 'Ring (360° Donut)'], ['half', 'Tacho (180°)'],
+  ['ticks', 'Skala mit Strichen'], ['segments', 'Segmente (Zonen)'], ['minimal', 'Minimal (flacher Bogen)'],
+]
+export const BAR_VARIANTS = [
+  ['', 'Klassisch (Glow-Füllung)'], ['segments', 'Segmente (LED)'], ['gradient', 'Zonen-Verlauf'],
+  ['striped', 'Streifen'], ['minimal', 'Minimal (flach 2D)'],
+]
+export const FADER_VARIANTS = [
+  ['', 'Klassisch'], ['modern', 'Modern (breit, Verlauf)'], ['glow', 'Neon-Glow'],
+  ['flat', 'Flach 2D'], ['minimal', 'Minimal (Linie)'],
+]
+// VU-Meter-Stile des Faders (orthogonal zur Fader-Variante). '' = Segmente (Lämpchen, Default).
+export const VU_VARIANTS = [
+  ['', 'Segmente (Lämpchen)'], ['bar', 'Balken (durchgehend)'], ['line', 'Linie (Pegel-Strich)'],
+  ['dots', 'Punkte (LED)'], ['none', 'Ohne VU'],
+]
+
 // Globaler Deck-„Look" (Kachel-Stil-Default / Druck-Bestätigung / Ordner-Rahmen). GENERISCH: von TouchDeck
 // (Panel) UND StreamDeck (Editor-Vorschau) aus der Registry (`look`) angewandt → Cockpit + RigzDeck identisch,
 // ohne Hüllen-Theme-System. Kachel-Stil/Druck-Modus als body-data (deck.css liest sie), Farben/Breite als Vars.

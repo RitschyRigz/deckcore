@@ -47,6 +47,8 @@ _OSC_APP_PROCS = ("obsbot_center.exe", "obsbot center.exe", "obsbot_main.exe", "
 _REACHABLE_TTL = 3.5           # s — länger keine OSC-Antwort ⇒ App/OSC gilt als nicht erreichbar
 _POLL_INTERVAL = 1.2           # s — Status-Abfrage-Takt des Pollers
 _POLL_IDLE = 12.0              # s — kein Status-Leser mehr ⇒ Poller stoppt (kein Dauer-Polling)
+_PORT_OWNER_TTL = 4.0          # s — Cache für die „wer hält 16284?"-Abfrage (netstat ist teuer)
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "0.0.0.0")  # nur lokal können wir den Port-Halter prüfen
 _SLEEP_TILT = 55               # GimbalPosInfoResp = [pan, tilt]; tilt DARÜBER ⇒ Linse tief weggekippt = schläft.
                                # (Live an Tiny 3 gemessen 2026-06-26: wach tilt≈5–31 · schlafend tilt≈85; args[0]=pan
                                # bleibt ~-20 und taugt NICHT — der alte „pitch < -70"-Check schlug nie an.)
@@ -128,6 +130,7 @@ class ObsBotOSC:
         self._want_ts: float = -1e9                # monotonic des letzten Status-Lesers (Idle-Stop)
         self._pstop = threading.Event()
         self._poller: Optional[threading.Thread] = None
+        self._port_cache: tuple = (None, -1e9)     # (owner_pid|None, monotonic) — wer hält den OSC-Port (gecacht)
 
     # ── Verbindung/Config ────────────────────────────────────────────────
     def set_config(self, host: str | None = None, port: int | None = None) -> dict:
@@ -418,6 +421,65 @@ class ObsBotOSC:
         self._proc_cache = (found, time.monotonic())
         return found
 
+    # ── Port-Halter-Diagnose (gegen den OBSBOT-„Zombie-Port"-Bug) ─────────
+    # OBSBOT gibt seinen UDP-Empfangsport (16284) beim Schließen NICHT immer frei: ein sterbender
+    # Launcher-Prozess vererbt den Socket-Handle an ein verwaistes Kind → der Port bleibt von einem
+    # toten/fremden PID belegt, und ein FRISCH geöffneter Center kann ihn nicht binden ⇒ OSC stumm.
+    # Das ist optisch identisch zu „OSC ist aus" (beides: läuft, aber keine Antwort). Wir trennen die
+    # zwei Fälle, indem wir prüfen, WER 16284 hält: niemand ⇒ OSC aus (`osc_silent`); ein Prozess, der
+    # KEIN lebender OBSBOT-Prozess ist (tot/fremd) ⇒ blockiert (`osc_blocked`) — klare, andere Ansage.
+    def _udp_owner_pid(self, port: int) -> Optional[int]:
+        """PID, der lokal UDP ``port`` hält (Windows, via netstat). None = niemand/Fehler. Kurz gecacht."""
+        if not sys.platform.startswith("win"):
+            return None
+        owner, ts = self._port_cache
+        if (time.monotonic() - ts) < _PORT_OWNER_TTL:
+            return owner
+        found: Optional[int] = None
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "UDP"], capture_output=True, text=True,
+                                 timeout=3.0, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            needle = ":" + str(port)
+            for line in (out.stdout or "").splitlines():
+                parts = line.split()
+                # UDP-Zeile: "UDP  0.0.0.0:16284  *:*  <PID>" (kein State bei UDP)
+                if len(parts) >= 4 and parts[0].upper() == "UDP" and parts[1].endswith(needle):
+                    try:
+                        found = int(parts[-1]); break
+                    except ValueError:
+                        pass
+        except Exception:  # noqa: BLE001
+            found = None
+        self._port_cache = (found, time.monotonic())
+        return found
+
+    def _pid_image(self, pid: int) -> tuple:
+        """(alive, name_lower) für eine PID (Windows). (False,'') wenn der Prozess weg ist."""
+        if not sys.platform.startswith("win"):
+            return (True, "")
+        try:
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True, timeout=3.0,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            for line in (out.stdout or "").splitlines():
+                if '","' in line:                       # echte CSV-Zeile (sonst „INFO: Kein Task…")
+                    nm = line.split('","', 1)[0].strip().strip('"').lower()
+                    return (True, nm)
+        except Exception:  # noqa: BLE001
+            pass
+        return (False, "")
+
+    def port_blocker(self) -> Optional[int]:
+        """PID, der den OSC-Port belegt, obwohl er KEIN lebender OBSBOT-Prozess ist (tot/fremd) → blockiert
+        den frischen Center. None = Port frei ODER von einem echten OBSBOT-Prozess gehalten. Nur lokal."""
+        if self._host not in _LOCAL_HOSTS:
+            return None
+        owner = self._udp_owner_pid(self._port)
+        if not owner:
+            return None
+        alive, nm = self._pid_image(owner)
+        return None if (alive and "obsbot" in nm) else owner
+
     def osc_app_running(self) -> Optional[bool]:
         """Läuft OBSBOT **Center** (der OSC-Server)? NICHT das Elgato-Plugin (das spricht kein OSC).
         None außerhalb Windows. Robust gegen unbekannte Center-Prozessnamen: jede OBSBOT-App außer
@@ -430,7 +492,10 @@ class ObsBotOSC:
     def status(self) -> dict:
         """Status für die UI. ``state`` macht das Feedback eindeutig:
           • ``ready``       — OSC antwortet (Center läuft + OSC aktiv) → Steuerung + Rückmeldung gehen.
-          • ``osc_silent``  — Center läuft, aber keine OSC-Antwort → in Center „OSC" aktivieren (Port 16284).
+          • ``osc_blocked`` — Center läuft, OSC stumm, ABER der Empfangsport ist von einem toten/fremden
+            Prozess (``blocker_pid``) belegt → der frische Center kann nicht binden. OBSBOT komplett
+            beenden (alle Prozesse) & neu starten. (Der bekannte OBSBOT-„Zombie-Port"-Bug.)
+          • ``osc_silent``  — Center läuft, Port frei, aber keine OSC-Antwort → in Center „OSC" aktivieren.
           • ``plugin_only`` — nur das Elgato-Plugin läuft (kein OSC) → OBSBOT Center starten.
           • ``no_app``      — keine OBSBOT-App läuft.
         ``reachable`` = kürzlich eine OSC-Antwort; ``devices`` = pro Cam verbunden/wach/tracking."""
@@ -442,8 +507,12 @@ class ObsBotOSC:
         procs = self._obsbot_procs()
         osc_app = self.osc_app_running()
         plugin = bool(procs) and _PLUGIN_PROC in procs
+        # Nur wenn’s NICHT geht den (teuren) Port-Halter prüfen → trennt „blockiert" von „OSC aus".
+        blocker = None if reachable else self.port_blocker()
         if reachable:
             state = "ready"
+        elif blocker is not None:
+            state = "osc_blocked"
         elif osc_app:
             state = "osc_silent"
         elif plugin:
@@ -454,5 +523,6 @@ class ObsBotOSC:
                 "reachable": reachable, "state": state,
                 "osc_app_running": osc_app, "plugin_running": plugin,
                 "app_running": osc_app,   # = der OSC-Server (Center), nicht das Plugin
+                "blocker_pid": blocker,   # belegt 16284, ist aber kein lebender OBSBOT-Prozess (sonst None)
                 "devices": devices,
                 "last_send_age": (round(now - self._last_send, 1) if self._last_send else None)}

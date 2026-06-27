@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'preact/hooks'
 import { getJSON, postJSON } from './api.js'
 import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
-import { Clock, Gauge, Bar, Readout, fontStack, widgetFontSize } from './widgets.jsx'
+import { Clock, Gauge, Bar, Readout, FaderVU, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph, suggestGlyphName } from './icons.jsx'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
@@ -229,31 +229,67 @@ export function Sparkline({ data, color, minSpan, pct, opts, uid }) {
   const lineC = vizColor(o.lineColor) || vizColor(o.color) || vizColor(color) || '#39d8ff'
   const fillC = vizColor(o.fillColor) || lineC
   const dotC = vizColor(o.dotColor) || lineC
-  const showLine = o.line !== false, showFill = o.fill !== false, showDot = o.dot !== false, showLabels = o.labels !== false
-  const lw = (Number.isFinite(+o.lineWidth) && +o.lineWidth > 0) ? +o.lineWidth : 2
+  // 🎨 Variante (rein kosmetisch, generisch): '' = Klassisch (unverändert). neon = starker Glow · minimal =
+  // dünne Linie ohne Füllung/Punkt/Eckwerte · dashed = Strichlinie · bars = Balken-Verlauf · gradient = Verlaufs-Linie.
+  const variant = o.variant || ''
+  const dFill = !(variant === 'minimal' || variant === 'dashed' || variant === 'bars')
+  const dDot = !(variant === 'minimal' || variant === 'bars')
+  const dLabels = variant !== 'minimal'
+  const showLine = variant === 'bars' ? false : (o.line !== false)
+  const showFill = (o.fill === undefined ? dFill : o.fill !== false)
+  const showDot = (o.dot === undefined ? dDot : o.dot !== false)
+  const showLabels = (o.labels === undefined ? dLabels : o.labels !== false)
+  const dLW = variant === 'neon' ? 2.6 : variant === 'minimal' ? 1.4 : 2
+  const lw = (Number.isFinite(+o.lineWidth) && +o.lineWidth > 0) ? +o.lineWidth : dLW
+  const glow = variant === 'neon' ? 5.5 : variant === 'minimal' ? 0 : 2.5
+  const fillOp = variant === 'neon' ? 0.45 : 0.32
+  const dash = variant === 'dashed' ? 'stroke-dasharray:3.5 2.6;' : ''
   const fmt = (v) => (Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
   // Kritischer Bereich = oberste 20% (nur bei fester Skala + crit !== false): rote Zone + Linie wird darin rot.
   const crit = fixed && o.crit !== false
   const critY = crit ? py(lo + (hi - lo) * 0.8) : 0
   const curCrit = crit && arr[n - 1] >= lo + (hi - lo) * 0.8
   const sid = String(uid || 'x').replace(/[^a-z0-9_]/gi, '')
-  const cid = 'crit_' + sid, gid = 'gfill_' + sid
+  const cid = 'crit_' + sid, gid = 'gfill_' + sid, stid = 'sgrad_' + sid
+  const lineStroke = variant === 'gradient' ? `url(#${stid})` : lineC
+  const lineGlowC = variant === 'gradient' ? fillC : lineC
+  const lineStyle = `stroke:${lineStroke};stroke-width:${lw};${dash}` + (glow ? `filter:drop-shadow(0 0 ${glow}px ${lineGlowC})` : '')
+  // Balken-Verlauf: ~36 vertikale Balken (Max je Bucket erhält Spitzen) statt Linie/Fläche.
+  let barEls = null
+  if (variant === 'bars') {
+    const N = Math.min(40, n), bw = (W / N) * 0.66
+    barEls = []
+    for (let i = 0; i < N; i++) {
+      const a = Math.floor(i * n / N), b = Math.max(a + 1, Math.floor((i + 1) * n / N))
+      let m = -Infinity; for (let j = a; j < b; j++) if (arr[j] > m) m = arr[j]
+      const x = (i / N) * W + (W / N - bw) / 2, y = py(m)
+      const hot = crit && m >= lo + (hi - lo) * 0.8
+      barEls.push(<rect key={i} x={x.toFixed(1)} y={y.toFixed(1)} width={bw.toFixed(1)} height={(H - y).toFixed(1)}
+        rx="0.6" fill={hot ? '#ff5252' : lineC} style={glow ? `filter:drop-shadow(0 0 1.6px ${lineC})` : ''} opacity="0.92" />)
+    }
+  }
   return (
     <div class="t-graph">
       <svg class="t-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
         <defs>
           {showFill && <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" style={`stop-color:${fillC};stop-opacity:0.32`} />
+            <stop offset="0" style={`stop-color:${fillC};stop-opacity:${fillOp}`} />
             <stop offset="1" style={`stop-color:${fillC};stop-opacity:0`} />
+          </linearGradient>}
+          {variant === 'gradient' && <linearGradient id={stid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={`stop-color:color-mix(in srgb, ${lineC} 35%, #ffffff)`} />
+            <stop offset="1" style={`stop-color:${lineC}`} />
           </linearGradient>}
           {crit && <clipPath id={cid}><rect x="0" y="0" width={W} height={critY.toFixed(1)} /></clipPath>}
         </defs>
         {crit && <rect x="0" y="0" width={W} height={critY.toFixed(1)} fill="#ff4d4d" opacity="0.1" />}
-        {showFill && <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={`url(#${gid})`} stroke="none" />}
-        {showLine && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
-              style={`stroke:${lineC};stroke-width:${lw};filter:drop-shadow(0 0 2.5px ${lineC})`} />}
-        {showLine && crit && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
-              clip-path={`url(#${cid})`} style={`stroke:#ff5252;stroke-width:${lw};filter:drop-shadow(0 0 2.5px #ff5252)`} />}
+        {variant === 'bars' ? barEls : <>
+          {showFill && <path d={`${path} L ${W} ${H} L 0 ${H} Z`} fill={`url(#${gid})`} stroke="none" />}
+          {showLine && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+                style={lineStyle} />}
+          {showLine && crit && <path d={path} fill="none" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"
+                clip-path={`url(#${cid})`} style={`stroke:#ff5252;stroke-width:${lw};${dash}` + (glow ? `filter:drop-shadow(0 0 2.5px #ff5252)` : '')} />}
+        </>}
         {crit && <line x1="0" y1={critY.toFixed(1)} x2={W} y2={critY.toFixed(1)} stroke="#ff5252" stroke-width="0.5"
               stroke-dasharray="2 2" opacity="0.5" vector-effect="non-scaling-stroke" />}
       </svg>
@@ -482,15 +518,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     setDrag(null)
   }
 
-  // VU-Färbung: oberes Drittel (ab 2/3) orange, oberes Viertel (ab 3/4) rot, sonst grün.
-  const SEGS = 19, segs = []
-  for (let i = 0; i < SEGS; i++) {
-    const thr = (i + 1) / SEGS
-    const cls = thr > 0.75 ? 'r' : thr > 0.667 ? 'y' : 'g'
-    segs.push(<span key={i} class={'t-vu-seg' + (mlvl >= thr - 0.0001 ? ' on ' + cls : '')} />)
-  }
+  // VU-Stil (opts.vu) + Body-Variante (opts.variant) — beide rein kosmetisch, generisch (jede Quelle). Der
+  // VU-Renderer ist mit der Editor-Vorschau geteilt (FaderVU); der Peak-Hold-Marker wird live per rAF bewegt.
+  const fbVariant = _fo.variant || ''
   return (
-    <div class={'t-fader s-' + (skin || 'brackets') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
+    <div class={'t-fader s-' + (skin || 'brackets') + (fbVariant ? ' v-' + fbVariant : '') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div class="t-fader-name" title={name}>
         {iconOnly
@@ -507,7 +539,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
           <div class="t-fader-fill" style={`height:${level}%`} />
           <div class="t-fader-knob" style={`bottom:${level}%`} />
         </div>
-        <div class="t-fader-vu">{segs}<div class="t-vu-peak" ref={peakRef} /></div>
+        <FaderVU vu={_fo.vu} mlvl={mlvl} peakEl={<div class="t-vu-peak" ref={peakRef} />} />
       </div>
       <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {!iconOnly && (showImg

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
-import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, applyPalette, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS } from './deckstyle.js'
+import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, applyPalette, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS, GRAPH_VARIANTS, GAUGE_VARIANTS, BAR_VARIANTS, FADER_VARIANTS, VU_VARIANTS } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderView, FONT_LABELS, SIZE_LABELS, fontStack, widgetFontSize } from './widgets.jsx'
 import { Sparkline, statStyle } from './TouchDeck.jsx'   // Verlaufskurve + Stat-Farbe fürs WYSIWYG (Panel unberührt)
 import { Glyph, IconView, isGlyph, glyphName, glyphValue, hasGlyph, GLYPH_CATS, GLYPH_KW, suggestGlyph } from './icons.jsx'
@@ -660,6 +660,62 @@ function GlobalLookEditor({ look, onReload }) {
       </div>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
         können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
+    </div>
+  )
+}
+
+// 🪄 Auto-Symbole für ALLE Buttons (global). Wendet `suggestGlyph` (dieselbe Quelle wie der „🪄 Auto"-Knopf
+// im Symbol-Feld — aus Label + Funktion) in EINEM Schwung auf den ganzen Pool an, statt Taste für Taste.
+// Zwei Modi (User-Entscheid offen gehalten): „leere füllen" (nur Tasten OHNE Symbol — zerstörungsfrei) und
+// „alle ersetzen" (jede Taste auf den Vorschlag, eigene Symbole gehen verloren → Sicherheitsabfrage).
+// Konservativ: nur normale Tasten (render leer/„value", kein Hintergrundbild) — Uhr/Text/Graph/Gauge/Fader
+// haben eigene Darstellungslogik und werden NICHT angefasst. Geschrieben wird nur `default.icon` (das primäre
+// Symbol); State-Symbole bleiben unberührt. Rein Frontend: iteriert den Pool und upsertet je Taste über die
+// bestehende /api/streamdeck/buttons-Route → kein Backend-/Python-Duplikat der Vorschlags-„Intelligenz".
+function GlobalAutoIcons({ buttons, onReload }) {
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const list = buttons || []
+  // Eine Taste ist auto-fähig, wenn sie normal rendert + kein Bild trägt + die Engine einen Vorschlag liefert.
+  const sugFor = (b) => {
+    if (b.render && b.render !== 'value') return ''
+    if ((b.default || {}).image) return ''
+    return suggestGlyph({ label: b.label, action: b.action, monitor: b.monitor })
+  }
+  const cand = list.map((b) => ({ b, sug: sugFor(b), cur: (b.default || {}).icon || '' }))
+                   .filter((x) => x.sug)
+  const emptyN = cand.filter((x) => !x.cur).length                       // „leere füllen"
+  const replN = cand.filter((x) => x.sug !== x.cur).length               // „alle ersetzen" (no-ops übersprungen)
+  const apply = async (mode) => {                                        // mode: 'empty' | 'all'
+    if (mode === 'all' && !window.confirm(`Bei ${replN} Taste${replN === 1 ? '' : 'n'} das Symbol durch den Auto-Vorschlag ERSETZEN? Eigene Symbole gehen dabei verloren.`)) return
+    setBusy(true); setMsg('')
+    let n = 0
+    for (const { b, sug, cur } of cand) {
+      if (sug === cur) continue                                         // schon korrekt → kein Schreibvorgang
+      if (mode === 'empty' && cur) continue                            // belegt → im „leere"-Modus überspringen
+      try { await postJSON('/api/streamdeck/buttons', { ...b, default: { ...(b.default || {}), icon: sug } }); n++ } catch (e) { /* einzelne Taste scheitert → weiter */ }
+    }
+    setMsg(`✓ ${n} Symbol${n === 1 ? '' : 'e'} gesetzt`)
+    setBusy(false)
+    onReload && onReload()
+  }
+  return (
+    <div class="card" style="max-width:820px;margin-bottom:12px">
+      <div class="reward-row" style="flex-wrap:wrap;gap:12px;align-items:center">
+        <span class="kv-k" style="min-width:150px">🪄 Auto-Symbole</span>
+        <button class="btn small" disabled={busy || !emptyN} onClick={() => apply('empty')}
+                title="Nur Tasten ohne Symbol bekommen den Auto-Vorschlag (zerstörungsfrei).">
+          {busy ? '…' : `Leere füllen (${emptyN})`}
+        </button>
+        <button class="btn ghost small" disabled={busy || !replN} onClick={() => apply('all')}
+                title="Jede passende Taste auf den Auto-Vorschlag setzen — eigene Symbole gehen verloren.">
+          {busy ? '…' : `Alle ersetzen (${replN})`}
+        </button>
+        {msg && <span class="muted" style="font-size:12px">{msg}</span>}
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Schlägt aus <b>Label + Funktion</b> für jede Taste ein
+        passendes Symbol aus der Bibliothek vor (wie der <b>🪄 Auto</b>-Knopf im Symbol-Feld, nur für alle auf einmal).
+        Betrifft normale Tasten (kein Bild, keine Uhr/Graph/Fader); setzt nur das Hauptsymbol — Zustands-Symbole bleiben.</p>
     </div>
   )
 }
@@ -2295,6 +2351,7 @@ export function StreamDeck() {
           So entspricht der Swatch dem echten Render; wer eine FESTE Farbe will, wählt eine eigene Hex. */}
       <div style={deckThemeStyle}>
         <GlobalLookEditor look={data.look} onReload={load} />
+        <GlobalAutoIcons buttons={data.buttons || []} onReload={load} />
       </div>
 
       <div class="sd-tabbar">
@@ -2330,6 +2387,35 @@ export function StreamDeck() {
 }
 
 // ── Funktions-Editor-Bausteine (Aktion / Überwachung / Zustände) ─────────────
+// Live-OBSBOT-OSC-Status direkt im Editor. Wichtigster Mehrwert: trennt „Port blockiert" (ein alter/toter
+// OBSBOT-Prozess hält 16284, der frische Center kann nicht binden — der bekannte OBSBOT-Bug) von „OSC aus" —
+// zwei Fälle, die sonst identisch als „geht nicht" aussehen. Pollt /api/obsbot/status (im Cockpit vorhanden;
+// in schlanken Hosts ohne OBSBOT-Status → still nichts). Reine Anzeige (kein Auto-Kill): erkennen statt heilen.
+function ObsbotStatusHint() {
+  const [st, setSt] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const tick = () => getJSON('/api/obsbot/status').then((d) => alive && setSt(d || null)).catch(() => alive && setSt(null))
+    tick(); const iv = setInterval(tick, 2500)
+    return () => { alive = false; clearInterval(iv) }
+  }, [])
+  if (!st || !st.state) return null
+  const M = {
+    ready:       ['var(--ok)',    '✓ OSC erreichbar — Steuerung aktiv'],
+    osc_blocked: ['var(--err)',   `⚠ Port ${st.port} ist von einem alten/toten OBSBOT-Prozess (PID ${st.blocker_pid}) blockiert → OBSBOT KOMPLETT beenden (alle Prozesse) und neu starten, dann bindet OSC wieder sauber.`],
+    osc_silent:  ['var(--warn)',  `OSC stumm — in OBSBOT Center „OSC" aktivieren (Empfangs-Port ${st.port}).`],
+    plugin_only: ['var(--warn)',  'Nur das Stream-Deck-Plugin läuft (kein OSC) — OBSBOT Center starten.'],
+    no_app:      ['var(--muted)', 'Keine OBSBOT-App läuft — OBSBOT Center starten.'],
+  }
+  const [col, txt] = M[st.state] || ['var(--muted)', st.state]
+  return (
+    <p class="sd-help" style={`margin-top:6px;color:${col};display:flex;gap:7px;align-items:center`}>
+      <span style={`flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:${col};box-shadow:0 0 6px ${col}`}></span>
+      <span>{txt}</span>
+    </p>
+  )
+}
+
 function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const t = action.type || 'none'
   const proc = (options.processes || []).find((p) => p.key === action.process)
@@ -2806,6 +2892,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
           )}
           <p class="muted sd-help">OBSBOT-App muss laufen + <b>OSC aktiv</b> (UDP, Port 16284). Bei zwei
             baugleichen Kameras in OBSBOT die <b>Positions-Sperre</b> setzen, damit „Kamera 1" stabil bleibt.</p>
+          <ObsbotStatusHint />
         </>
       )}
       {t === 'winaudio' && (
@@ -3204,6 +3291,18 @@ function StatesEditor({ states, def, options, monitor, action, label, render, op
             </select>
           </>
         )}
+        {/* 🎨 Design-Variante: rein optisch, gilt generisch für JEDE Quelle des Typs (Graph/Gauge/Balken/Fader). */}
+        {(render === 'graph' || isGauge || isBar || render === 'fader') && (
+          <>
+            <span class="muted conn-label" style="margin-left:8px">Design</span>
+            <select class="so-delay" value={(opts || {}).variant || ''}
+                    title="Design-Variante dieser Darstellung — rein optisch, funktioniert mit jeder Datenquelle"
+                    onChange={(e) => onOpts({ ...(opts || {}), variant: e.currentTarget.value || undefined })}>
+              {(render === 'graph' ? GRAPH_VARIANTS : isGauge ? GAUGE_VARIANTS : isBar ? BAR_VARIANTS : FADER_VARIANTS)
+                .map(([v, l]) => <option value={v}>{l}</option>)}
+            </select>
+          </>
+        )}
         {isViz && (
           <>
             <span class="muted conn-label" style="margin-left:8px">Hintergrund</span>
@@ -3236,6 +3335,9 @@ function StatesEditor({ states, def, options, monitor, action, label, render, op
                      onChange={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.checked ? undefined : '#39d8ff' })} /> Schwellwert-Farbe</label>
             {(opts || {}).color && <input type="color" class="sd-color" value={(opts || {}).color}
                    onInput={(e) => onOpts({ ...(opts || {}), color: e.currentTarget.value })} />}
+            <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:6px" title="Den Zahlenwert in der Kachel anzeigen (aus = nur die Grafik)">
+              <input type="checkbox" checked={(opts || {}).showValue !== false}
+                     onChange={(e) => onOpts({ ...(opts || {}), showValue: e.currentTarget.checked ? undefined : false })} /> Wert anzeigen</label>
             {isBar && (
               <>
                 <span class="muted conn-label" style="margin-left:6px">Richtung</span>
@@ -3319,7 +3421,14 @@ function StatesEditor({ states, def, options, monitor, action, label, render, op
                 <span class="muted" style="font-size:11px">oben</span>
                 <ColorField value={(opts || {}).vuHigh || ''} onChange={(c) => onOpts({ ...(opts || {}), vuHigh: c || undefined })} />
               </div>
-              <p class="muted sd-help" style="margin:0 0 6px">Jede Fader-Farbe einzeln: <b>Slider</b>, <b>Hintergrund</b>, <b>Rahmen</b> (= Slider-Farbe + „Stil" oben) und die 3 <b>VU-Zonen</b>. Leer (∅) = folgt dem Theme.</p>
+              <p class="muted sd-help" style="margin:0 0 6px">Jede Fader-Farbe einzeln: <b>Slider</b>, <b>Hintergrund</b>, <b>Rahmen</b> (= Slider-Farbe + „Stil" oben) und die 3 <b>VU-Zonen</b>. Leer (∅) = folgt dem Theme. <b>Design</b> (oben) = Grundform des Faders.</p>
+              <div class="reward-row sd-state" style="margin:0 0 6px;flex-wrap:wrap">
+                <span class="muted conn-label">📊 VU-Meter</span>
+                <select class="so-delay" value={(opts || {}).vu || ''} title="VU-Meter-Stil (Lämpchen, durchgehender Balken, Pegel-Linie, Punkte oder ganz aus)"
+                        onChange={(e) => onOpts({ ...(opts || {}), vu: e.currentTarget.value || undefined })}>
+                  {VU_VARIANTS.map(([v, l]) => <option value={v}>{l}</option>)}
+                </select>
+              </div>
               <div class="reward-row sd-state" style="margin:0 0 6px;flex-wrap:wrap">
                 <span class="muted conn-label">🔣 Symbol</span>
                 <select class="so-delay" value={(opts || {}).iconSrc || 'auto'} title="Welches Symbol der Fader zeigt"
