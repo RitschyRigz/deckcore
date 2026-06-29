@@ -1701,7 +1701,16 @@ function FaderSource({ b, onPick }) {
 }
 
 function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
-  const [b, setB] = useState(() => JSON.parse(JSON.stringify(button)))
+  const [b, setB] = useState(() => {
+    // Defensive Normalisierung: ein (z.B. per API) unvollständig angelegter Button darf den Editor
+    // NICHT crashen — MonitorEditor/StatesEditor erwarten monitor/states/default.
+    const x = JSON.parse(JSON.stringify(button)) || {}
+    if (!x.action || typeof x.action !== 'object') x.action = { type: 'none' }
+    if (!x.monitor || typeof x.monitor !== 'object') x.monitor = { type: 'none' }
+    if (!Array.isArray(x.states)) x.states = []
+    if (!x.default || typeof x.default !== 'object') x.default = {}
+    return x
+  })
   const [msg, setMsg] = useState(null)
   const [busy, setBusy] = useState(false)
   // Vorlage/Preset: füllt Überwachung + Zustände + Symbol passend zur Aktion vor. AUTO bei neuen

@@ -1195,31 +1195,84 @@ def _parse_hotkey(spec: str) -> list:
 
 def _send_vk_combo(vks: list, hold_ms: int = 18) -> bool:
     """VK-Codes als Kombo drücken (alle runter in Reihenfolge, ``hold_ms`` halten, dann hoch in
-    Gegenreihenfolge). Setzt für Pfeil-/Nav-/Win-Tasten das Extended-Flag (``_EXT_VKS``). Wird
-    SYSTEM-WEIT in den Eingabestrom injiziert → globale Hotkeys (TikTok Live Studio, OBS …) lösen
-    auch im Hintergrund aus. Windows-nativ via ctypes; auf Nicht-Windows → False."""
+    Gegenreihenfolge). Injiziert SYSTEM-WEIT via ``SendInput`` MIT echtem Hardware-Scancode
+    (``MapVirtualKey``) — sieht für die Ziel-App wie eine echte Tastatur aus. ⭐ WICHTIG: das alte
+    ``keybd_event(vk, 0, …)`` schickte Scancode 0; manche Apps (Electron-/Stream-Tools wie TikTok
+    Live Studio, die die Eingabe wie Raw-Input prüfen) verwerfen scancode-lose Tasten → Hotkey kam
+    NIE an, obwohl die echte Tastatur ging. Mit echtem Scancode + Extended-Flag (Pfeile/Nav/Win)
+    greifen ihre globalen Hotkeys auch im Hintergrund. Fallback auf ``keybd_event``; Nicht-Windows
+    → False."""
     if not vks:
         return False
     try:
         import ctypes
         import time
-        u = ctypes.windll.user32           # nur Windows; sonst AttributeError → False
-        KEYEVENTF_KEYUP = 0x0002
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)   # nur Windows; sonst OSError → Fallback
+        ULONG_PTR = wintypes.WPARAM
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ULONG_PTR)]
+
+        class MOUSEINPUT(ctypes.Structure):   # nur fürs korrekte Union-/Struct-Sizing
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+        class _INPUTUNION(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
+
+        INPUT_KEYBOARD = 1
         KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_SCANCODE = 0x0008
+        MAPVK_VK_TO_VSC = 0
 
-        def _flags(vk: int, up: bool) -> int:
-            f = KEYEVENTF_EXTENDEDKEY if vk in _EXT_VKS else 0
-            return f | (KEYEVENTF_KEYUP if up else 0)
+        def _mk(vk: int, up: bool) -> "INPUT":
+            scan = int(user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)) & 0xFF
+            ext = vk in _EXT_VKS
+            if scan:                                   # echte Scancode-Eingabe (wie Hardware)
+                flags = KEYEVENTF_SCANCODE | (KEYEVENTF_EXTENDEDKEY if ext else 0)
+                wvk, wscan = 0, scan
+            else:                                      # kein Scancode (z.B. Media-VK) → VK-Modus
+                flags = KEYEVENTF_EXTENDEDKEY if ext else 0
+                wvk, wscan = vk, 0
+            if up:
+                flags |= KEYEVENTF_KEYUP
+            ki = KEYBDINPUT(wVk=wvk, wScan=wscan, dwFlags=flags, time=0, dwExtraInfo=0)
+            return INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=ki))
 
-        for vk in vks:
-            u.keybd_event(vk, 0, _flags(vk, False), 0)
+        size = ctypes.sizeof(INPUT)
+        downs = (INPUT * len(vks))(*[_mk(vk, False) for vk in vks])
+        user32.SendInput(len(vks), ctypes.byref(downs), size)
         if hold_ms > 0:
-            time.sleep(hold_ms / 1000.0)   # Press läuft in to_thread → Sleep ist unkritisch
-        for vk in reversed(vks):
-            u.keybd_event(vk, 0, _flags(vk, True), 0)
+            time.sleep(hold_ms / 1000.0)               # Press läuft in to_thread → Sleep unkritisch
+        ups = (INPUT * len(vks))(*[_mk(vk, True) for vk in reversed(vks)])
+        user32.SendInput(len(vks), ctypes.byref(ups), size)
         return True
     except Exception:  # noqa: BLE001
-        return False
+        # Fallback: altes keybd_event (Scancode 0) — besser als gar nichts, falls SendInput scheitert.
+        try:
+            import ctypes
+            import time
+            u = ctypes.windll.user32
+            KEYUP, EXT = 0x0002, 0x0001
+            def _f(vk, up):
+                return (EXT if vk in _EXT_VKS else 0) | (KEYUP if up else 0)
+            for vk in vks:
+                u.keybd_event(vk, 0, _f(vk, False), 0)
+            if hold_ms > 0:
+                time.sleep(hold_ms / 1000.0)
+            for vk in reversed(vks):
+                u.keybd_event(vk, 0, _f(vk, True), 0)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
 
 class DeckCoreService:
