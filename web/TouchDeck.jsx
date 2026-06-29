@@ -85,6 +85,16 @@ export function perfMode() {
   try { const m = localStorage.getItem('rd.perf'); return PERF_GAPS[m] != null ? m : 'full' } catch { return 'full' }
 }
 
+// ── Per-Gerät-Deck-Größe (localStorage 'rd.scale') ───────────────────────────────────────────────
+// Skaliert NUR die Anzeige dieses Geräts: multipliziert Kachel-Größe (--sd-size), Schrift (--sd-font)
+// und Abstand mit einem Faktor. Das Deck-Layout (button_size) ist PRO DECK + geräteübergreifend geteilt —
+// dieser Faktor lässt dasselbe 8-Zoll-Deck auf einem 11-Zoll-Tablet größer erscheinen, OHNE das Layout
+// (und damit die anderen Geräte) zu verändern. Pro Gerät wie Theme/Leistungsstufe. Default 1 = unverändert.
+export const SCALE_STEPS = [['0.85', 'S'], ['1', 'M'], ['1.25', 'L'], ['1.5', 'XL'], ['1.85', 'XXL']]
+export function deckScale() {
+  try { const v = parseFloat(localStorage.getItem('rd.scale')); return (v >= 0.5 && v <= 2.5) ? v : 1 } catch { return 1 }
+}
+
 // High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
 // sampelt im ms-Bereich; die Anzeige liest gröber). Zeigt einen klaren Hinweis, wenn keine Daten
 // (kein Spiel / PresentMon fehlt) — nie stumm leer. ``ms`` = Poll-/Render-Intervall (per-Gerät gedrosselt).
@@ -596,14 +606,14 @@ function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOn
 // Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
 // getippten Ordner-Button) auf. Reines Overlay — schließt bei Tap auf den Hintergrund oder nach
 // einer ausgeführten Aktion. Ein Ordner-Button IM Radial öffnet wieder ein Radial (eine Ebene).
-function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, onClose }) {
+function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, onClose, scale = 1 }) {
   const [shown, setShown] = useState(false)
   useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
   const items = (deck && deck.items || []).filter((it) => !it.hidden)
   const N = items.length
   // Tasten-Größe = button_size des Ordner-Decks (derselbe Layout-Schieber wie im Raster; bei Ordnern
   // sonst ungenutzt) → die Radial-Größe ist ganz normal im UI einstellbar. Default 88 = wie bisher.
-  const size = Math.max(48, Math.min(240, ((deck && deck.layout && deck.layout.button_size) || 88)))
+  const size = Math.max(48, Math.min(240, ((deck && deck.layout && deck.layout.button_size) || 88) * scale))
   const margin = 14, keyHalf = Math.round(size / 2) + 2
   const vw = (typeof window !== 'undefined' ? window.innerWidth : 1024)
   const vh = (typeof window !== 'undefined' ? window.innerHeight : 768)
@@ -729,6 +739,7 @@ export function TouchDeck() {
   const swipeAtRef = useRef(0)                         // ts der letzten klar horizontalen Wisch-Geste — sperrt Button-Taps kurz danach
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
   const [perf, setPerf] = useState(() => perfMode())  // per-Gerät-Leistungsstufe (full/balanced/eco), localStorage
+  const [scale, setScale] = useState(() => deckScale())  // per-Gerät-Deck-Größe (Faktor 0.5–2.5, localStorage 'rd.scale')
   const liveGap = PERF_GAPS[perf] || 0                 // ms Mindestabstand zwischen Live-Updates (0 = kein Throttle)
   const fastMs = liveGap ? Math.max(55, liveGap) : 55  // FastGraph-Intervall: full→55, balanced→90, eco→150
   const visThrottleRef = useRef({ last: 0, timer: null, pending: null })  // Trailing-Throttle für setVis
@@ -954,9 +965,9 @@ export function TouchDeck() {
   const groups = groupDeckItems(active.items || [], active.categories || [], false)
     .filter((g) => g.items.length)
 
-  const size = (layout.button_size || 116) + 'px'
+  const size = Math.round((layout.button_size || 116) * scale) + 'px'
   const gridCols = (layout.cols > 0) ? `repeat(${layout.cols}, 1fr)` : `repeat(auto-fill, minmax(${size}, 1fr))`
-  const gridStyle = `grid-template-columns:${gridCols};gap:${layout.gap || 12}px`
+  const gridStyle = `grid-template-columns:${gridCols};gap:${Math.round((layout.gap || 12) * scale)}px`
   const _topId = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
   const _topDeck = decks.find((d) => d.id === _topId) || {}
   // Per-Deck-Theme-Farben: SCOPED auf den .t-deck-Wrapper (NICHT :root!). So bleibt das globale Hüllen-Theme
@@ -965,7 +976,7 @@ export function TouchDeck() {
   // mit dem globalen Theme (gleiche Inline-Deklaration) → „folgt global" ging verloren, Fader blieben slate-blau.
   const _dtv = (_topDeck.theme && _topDeck.theme.vars) || null
   const deckThemeCss = _dtv ? THEME_VAR_KEYS.map((k) => (_dtv[k] ? `${k}:${_dtv[k]}` : '')).filter(Boolean).join(';') : ''
-  const deckStyle = `--sd-size:${size};--sd-font:${layout.font_scale || 1}` + (deckThemeCss ? ';' + deckThemeCss : '')
+  const deckStyle = `--sd-size:${size};--sd-font:${(layout.font_scale || 1) * scale}` + (deckThemeCss ? ';' + deckThemeCss : '')
   const showCatTitles = layout.show_category_titles !== false
   // Effektiver Kachel-Stil-Default = globaler Look + per-Deck-Override (reaktiv, damit Deck-Wechsel sofort greift).
   // Pro Taste via opts.skin überschreibbar.
@@ -983,7 +994,7 @@ export function TouchDeck() {
   // Kategorie-Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt").
   const freeMode = !!layout.free
   const freeCols = layout.cols > 0 ? layout.cols : 6
-  const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${layout.gap || 12}px;justify-content:start`
+  const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${Math.round((layout.gap || 12) * scale)}px;justify-content:start`
   const tile = (it) => {
     const id = it.button
     const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
@@ -1140,13 +1151,25 @@ export function TouchDeck() {
             </div>
             <span class="t-sysmenu-perfhint">Sparsam = flüssiger auf schwachen Tablets</span>
           </div>
+          {/* Per-Gerät-Deck-Größe — skaliert NUR die Anzeige dieses Geräts (Kachel/Schrift/Abstand), nicht das
+              geteilte Layout. Menü bleibt offen → sofortiges A/B (8-Zoll-Deck am 11-Zoll-Tablet größer ziehen). */}
+          <div class="t-sysmenu-perf">
+            <span class="t-sysmenu-perflbl">🔍 Deck-Größe</span>
+            <div class="t-sysmenu-perfrow">
+              {SCALE_STEPS.map(([k, lbl]) => (
+                <button key={k} class={'t-sysmenu-perfbtn' + (Math.abs(scale - parseFloat(k)) < 0.001 ? ' on' : '')}
+                        onClick={() => { try { localStorage.setItem('rd.scale', k) } catch (_) {} setScale(parseFloat(k)) }}>{lbl}</button>
+              ))}
+            </div>
+            <span class="t-sysmenu-perfhint">Nur dieses Gerät · M = Standard</span>
+          </div>
         </div>
       )}
       <button class={'t-sysbtn' + (sysMenu ? ' open' : '')} title="System" aria-label="System"
               onClick={(e) => { e.stopPropagation(); setSysMenu((v) => !v) }}>☰</button>
       {overlay && overlayDeck && (
         <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById} optsById={optsById} defSkin={defSkin}
-                    anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} />
+                    anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} scale={scale} />
       )}
     </div>
   )
