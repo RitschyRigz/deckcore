@@ -36,7 +36,7 @@ const ACTION_LABELS = {
   open_deck: '📁 Ordner öffnen (Sub-Deck / Radial-Menü)',
   displayfusion: '🖥 DisplayFusion — Monitor-Profil laden',
   media: '⏯ Media-Taste (Play/Pause · ⏭⏮ · Lauter/Leiser · Mute)',
-  hotkey: '⌨ Tastenkürzel / Makro senden',
+  hotkey: '⌨ Makro / Tastenkürzel senden (Stream-Deck-Stil, system-weit)',
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
   obs: '🎬 OBS (Szene wechseln / Quelle ein-aus / Stream / Aufnahme)',
@@ -2414,6 +2414,136 @@ function ObsbotStatusHint() {
   )
 }
 
+// ── Makro / Tastenkürzel: Klick-zum-Aufnehmen ──────────────────────────────────────────────
+// Statt „ctrl+shift+1" zu TIPPEN: Feld anklicken und die echte Kombination DRÜCKEN. Der Browser-
+// Tastendruck wird in die kanonische Token-Kombo übersetzt, die das Backend (_parse_hotkey) 1:1
+// versteht. Mehrere Schritte = Makro (werden beim Druck nacheinander system-weit gesendet).
+const HK_PRETTY = {
+  ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', win: 'Win', enter: 'Enter', numenter: 'Num↵',
+  esc: 'Esc', space: 'Space', tab: 'Tab', backspace: '⌫', delete: 'Entf', insert: 'Einfg',
+  up: '↑', down: '↓', left: '←', right: '→', pageup: 'Bild↑', pagedown: 'Bild↓',
+  home: 'Pos1', end: 'Ende', plus: '+', minus: '-', comma: ',', period: '.', slash: '/',
+  backslash: '\\', semicolon: ';', quote: "'", bracketleft: '[', bracketright: ']',
+  tilde: '~', backquote: '~', equal: '=', printscreen: 'Druck', apps: '☰', capslock: 'Caps',
+  numadd: 'Num+',
+}
+function hkPretty(tok) {
+  if (HK_PRETTY[tok]) return HK_PRETTY[tok]
+  if (/^f\d{1,2}$/.test(tok)) return tok.toUpperCase()
+  if (tok.startsWith('num')) return 'Num' + tok.slice(3)
+  return tok.toUpperCase()
+}
+function hkChips(combo) { return String(combo || '').split('+').filter(Boolean).map(hkPretty) }
+
+const HK_CODE = {
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+  Enter: 'enter', NumpadEnter: 'numenter', Space: 'space', Tab: 'tab', Backspace: 'backspace',
+  Delete: 'delete', Insert: 'insert', Home: 'home', End: 'end', PageUp: 'pageup',
+  PageDown: 'pagedown', Minus: 'minus', Equal: 'plus', Comma: 'comma', Period: 'period',
+  Slash: 'slash', Backslash: 'backslash', Semicolon: 'semicolon', Quote: 'quote',
+  BracketLeft: 'bracketleft', BracketRight: 'bracketright', Backquote: 'tilde',
+  NumpadAdd: 'numadd', NumpadSubtract: 'num-', NumpadMultiply: 'num*', NumpadDivide: 'num/',
+  NumpadDecimal: 'num.', PrintScreen: 'printscreen', ContextMenu: 'apps', CapsLock: 'capslock',
+}
+function hkComboFromEvent(e) {
+  const mods = []
+  if (e.ctrlKey) mods.push('ctrl')
+  if (e.altKey) mods.push('alt')
+  if (e.shiftKey) mods.push('shift')
+  if (e.metaKey) mods.push('win')
+  const code = e.code || ''
+  let main = null
+  if (/^Key[A-Z]$/.test(code)) main = code.slice(3).toLowerCase()
+  else if (/^Digit[0-9]$/.test(code)) main = code.slice(5)
+  else if (/^Numpad[0-9]$/.test(code)) main = 'num' + code.slice(6)
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) main = code.toLowerCase()
+  else if (HK_CODE[code]) main = HK_CODE[code]
+  else { const k = e.key || ''; if (k.length === 1 && /[a-z0-9]/i.test(k)) main = k.toLowerCase() }
+  if (!main) return null                       // nur Modifier gedrückt → weiter warten
+  return [...mods, main].join('+')
+}
+
+function HotkeyCapture({ value, onCapture }) {
+  const [listening, setListening] = useState(false)
+  useEffect(() => {
+    if (!listening) return undefined
+    const onKey = (e) => {
+      e.preventDefault(); e.stopPropagation()
+      if (e.key === 'Escape') { setListening(false); return }
+      const combo = hkComboFromEvent(e)
+      if (combo) { onCapture(combo); setListening(false) }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [listening])
+  const chips = hkChips(value)
+  return (
+    <button type="button" class={'sd-hk-capture' + (listening ? ' rec' : '')}
+            onClick={() => setListening((v) => !v)}
+            title="Anklicken und dann die gewünschte Tastenkombination drücken (Esc = abbrechen)">
+      {listening
+        ? <span class="sd-hk-rec">● Jetzt Tasten drücken…</span>
+        : (chips.length
+            ? <span class="sd-hk-chips">{chips.map((c) => <kbd class="sd-kbd">{c}</kbd>)}</span>
+            : <span class="muted">⌨ Klicken, dann Tasten drücken</span>)}
+    </button>
+  )
+}
+
+function HotkeyEditor({ action, onChange }) {
+  // Lokale Zeilen-Liste (erlaubt leere Schritte beim Bauen); persistiert kompakt nach action:
+  // 1 Kombo → {keys}; mehrere → {steps:[{keys,delay}]}.
+  const seed = () => {
+    const src = (Array.isArray(action.steps) && action.steps.length)
+      ? action.steps : (action.keys ? [{ keys: action.keys }] : [{ keys: '' }])
+    return src.map((s, i) => ({ keys: (s && s.keys) || '', delay: (s && s.delay), _id: 'r' + i }))
+  }
+  const [rows, setRows] = useState(seed)
+  const idc = useRef(rows.length)
+  const push = (next) => {
+    setRows(next)
+    const clean = next.filter((r) => r.keys).map((r) => (r.delay == null ? { keys: r.keys } : { keys: r.keys, delay: r.delay }))
+    if (clean.length > 1) onChange({ steps: clean, keys: '' })
+    else if (clean.length === 1) onChange({ steps: undefined, keys: clean[0].keys })
+    else onChange({ steps: undefined, keys: '' })
+  }
+  const setRow = (i, p) => push(rows.map((r, j) => (j === i ? { ...r, ...p } : r)))
+  const addRow = () => { idc.current += 1; push([...rows, { keys: '', delay: undefined, _id: 'r' + idc.current }]) }
+  const delRow = (i) => push(rows.length > 1 ? rows.filter((_, j) => j !== i) : [{ keys: '', delay: undefined, _id: 'r0' }])
+  const macro = rows.length > 1
+  return (
+    <>
+      <div class="sd-hk-steps">
+        {rows.map((r, i) => (
+          <div class="sd-hk-step" key={r._id}>
+            {macro && <span class="sd-hk-num">{i + 1}</span>}
+            <HotkeyCapture value={r.keys} onCapture={(c) => setRow(i, { keys: c })} />
+            {macro && i < rows.length - 1 && (
+              <label class="sd-hk-delay" title="Pause nach diesem Schritt, in Millisekunden (Default 40)">
+                ⏱<input type="number" min="0" max="5000" step="10" value={r.delay == null ? '' : r.delay}
+                        placeholder="40" onInput={(e) => {
+                          const v = e.currentTarget.value
+                          setRow(i, { delay: v === '' ? undefined : Math.max(0, Math.min(5000, parseInt(v, 10) || 0)) })
+                        }} />ms
+              </label>
+            )}
+            {macro && <button type="button" class="btn ghost small" title="Schritt entfernen" onClick={() => delRow(i)}>✖</button>}
+          </div>
+        ))}
+      </div>
+      <div class="reward-row" style="margin:6px 0 2px">
+        <button type="button" class="btn ghost small" onClick={addRow}>➕ Schritt (Makro)</button>
+        <span class="muted" style="font-size:12px">Mehrere Schritte = Makro: werden beim Druck der Reihe nach gesendet.</span>
+      </div>
+      <p class="muted sd-help">Feld anklicken und die <b>echte Tastenkombination drücken</b> — RigzDeck tippt sie
+        beim Druck selbst. Die Kombo wird <b>system-weit</b> gesendet (wie ein echtes Stream Deck): Programme mit
+        globalen Hotkeys — z.&nbsp;B. <b>TikTok&nbsp;Live&nbsp;Studio</b> oder OBS — reagieren auch <b>im Hintergrund</b>,
+        das Fenster muss <b>nicht</b> im Vordergrund sein. Setup: in TikTok Live Studio unter Einstellungen → Hotkeys
+        eine Kombo für „Live starten" / Szene wechseln vergeben und hier <b>dieselbe</b> Kombo aufnehmen.</p>
+    </>
+  )
+}
+
 function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const t = action.type || 'none'
   const proc = (options.processes || []).find((p) => p.key === action.process)
@@ -2674,18 +2804,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             Media-Player (Spotify, YouTube, Wave Link …).</p>
         </>
       )}
-      {t === 'hotkey' && (
-        <>
-          <div class="reward-row">
-            <span class="muted conn-label">Tasten</span>
-            <input class="reward-input" placeholder="z.B. ctrl+shift+m  ·  alt+f4  ·  f9"
-                   value={action.keys || ''} onInput={(e) => onChange({ keys: e.currentTarget.value })} />
-          </div>
-          <p class="muted sd-help">Sendet diese Tastenkombination ans gerade fokussierte Fenster.
-            Mit „+" verbinden. Modifier: ctrl · alt · shift · win. Tasten: a–z, 0–9, f1–f24, enter,
-            esc, space, tab, up/down/left/right …</p>
-        </>
-      )}
+      {t === 'hotkey' && <HotkeyEditor action={action} onChange={onChange} />}
       {t === 'flag_toggle' && (
         <div class="reward-row">
           <span class="muted conn-label">Flag-Datei</span>

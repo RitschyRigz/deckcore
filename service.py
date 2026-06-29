@@ -64,7 +64,9 @@ GENERISCHE Aktions-Typen (``action.type``) im Kern:
   • displayfusion {"profile":"3 Monitore"}                → DisplayFusion-Monitorprofil laden
   • media         {"action":"playpause"}                  → Media-Taste (playpause/next/prev/
                                                             volup/voldown/mute), Windows-nativ
-  • hotkey        {"keys":"ctrl+shift+m"}                 → beliebige Tastenkombo senden
+  • hotkey        {"keys":"ctrl+shift+1"} ODER            → Makro/Tastenkürzel SYSTEM-WEIT senden
+                  {"steps":[{"keys":"ctrl+1"},…]}            (Stream-Deck-Stil; löst globale Hotkeys
+                                                            auch im Hintergrund aus, z.B. TikTok Live Studio)
   • none                                                   → reiner Anzeige-Button
 
 GENERISCHE Monitor-Typen (``monitor.type``) — was die Button-Darstellung treibt:
@@ -1125,7 +1127,9 @@ def _match(value: Any, when: dict) -> bool:
 
 
 # ── Eingabe-Simulation (generische Capabilities media/hotkey) — Windows-nativ via ctypes ──────
-# Media-Tasten + beliebige Hotkey-Kombos ans fokussierte Fenster/OS senden. Kein schwerer Dep.
+# Media-Tasten + Makro-/Hotkey-Kombos SYSTEM-WEIT senden (wie ein echtes Stream Deck). Die Kombo
+# geht in den OS-Eingabestrom → globale Hotkeys (z.B. TikTok Live Studio, OBS) lösen auch aus,
+# wenn deren Fenster im HINTERGRUND ist — es muss NICHT fokussiert sein. Kein schwerer Dep.
 _MEDIA_VK = {
     "playpause": 0xB3, "play": 0xB3, "pause": 0xB3, "toggle": 0xB3,
     "next": 0xB0, "nexttrack": 0xB0, "prev": 0xB1, "previous": 0xB1, "prevtrack": 0xB1,
@@ -1135,11 +1139,26 @@ _MEDIA_VK = {
 _VK_MODS = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "menu": 0x12,
             "shift": 0x10, "win": 0x5B, "super": 0x5B, "cmd": 0x5B, "meta": 0x5B}
 _VK_SPECIAL = {
-    "enter": 0x0D, "return": 0x0D, "esc": 0x1B, "escape": 0x1B, "space": 0x20, "tab": 0x09,
-    "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "home": 0x24, "end": 0x23,
-    "pageup": 0x21, "pagedown": 0x22, "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
-    "insert": 0x2D, "ins": 0x2D, "plus": 0xBB, "minus": 0xBD,
+    "enter": 0x0D, "return": 0x0D, "numenter": 0x0D, "esc": 0x1B, "escape": 0x1B,
+    "space": 0x20, "tab": 0x09, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
+    "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "insert": 0x2D, "ins": 0x2D,
+    "printscreen": 0x2C, "capslock": 0x14, "apps": 0x5D, "contextmenu": 0x5D,
+    # Satzzeichen (OEM-VKs, US-Layout)
+    "plus": 0xBB, "minus": 0xBD, "comma": 0xBC, "period": 0xBE, "slash": 0xBF,
+    "backslash": 0xDC, "semicolon": 0xBA, "quote": 0xDE, "bracketleft": 0xDB,
+    "bracketright": 0xDD, "tilde": 0xC0, "backquote": 0xC0, "equal": 0xBB,
+    # Ziffernblock
+    "num0": 0x60, "num1": 0x61, "num2": 0x62, "num3": 0x63, "num4": 0x64, "num5": 0x65,
+    "num6": 0x66, "num7": 0x67, "num8": 0x68, "num9": 0x69,
+    # ⚠ KEIN literales '+' als Token (das ist der Kombo-Trenner!) → Ziffernblock-Plus = "numadd".
+    "num*": 0x6A, "numadd": 0x6B, "numplus": 0x6B, "num-": 0x6D, "num.": 0x6E, "num/": 0x6F,
 }
+# Tasten, die das KEYEVENTF_EXTENDEDKEY-Flag brauchen, damit Windows sie als die „grauen"
+# Navigations-/Sondertasten erkennt (sonst tippt z.B. ↑ als Numpad-8). Pflicht für Pfeile,
+# Nav-Block, Win/Apps, Numpad-/ und PrintScreen.
+_EXT_VKS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
+            0x5B, 0x5C, 0x5D, 0x6F, 0x2C}
 
 
 def _vk_for_token(tok: str):
@@ -1174,19 +1193,30 @@ def _parse_hotkey(spec: str) -> list:
     return vks
 
 
-def _send_vk_combo(vks: list) -> bool:
-    """VK-Codes als Kombo drücken (alle runter in Reihenfolge, hoch in Gegenreihenfolge).
-    Windows-nativ via ctypes; auf Nicht-Windows → False (kein keybd_event verfügbar)."""
+def _send_vk_combo(vks: list, hold_ms: int = 18) -> bool:
+    """VK-Codes als Kombo drücken (alle runter in Reihenfolge, ``hold_ms`` halten, dann hoch in
+    Gegenreihenfolge). Setzt für Pfeil-/Nav-/Win-Tasten das Extended-Flag (``_EXT_VKS``). Wird
+    SYSTEM-WEIT in den Eingabestrom injiziert → globale Hotkeys (TikTok Live Studio, OBS …) lösen
+    auch im Hintergrund aus. Windows-nativ via ctypes; auf Nicht-Windows → False."""
     if not vks:
         return False
     try:
         import ctypes
+        import time
         u = ctypes.windll.user32           # nur Windows; sonst AttributeError → False
         KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+
+        def _flags(vk: int, up: bool) -> int:
+            f = KEYEVENTF_EXTENDEDKEY if vk in _EXT_VKS else 0
+            return f | (KEYEVENTF_KEYUP if up else 0)
+
         for vk in vks:
-            u.keybd_event(vk, 0, 0, 0)
+            u.keybd_event(vk, 0, _flags(vk, False), 0)
+        if hold_ms > 0:
+            time.sleep(hold_ms / 1000.0)   # Press läuft in to_thread → Sleep ist unkritisch
         for vk in reversed(vks):
-            u.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+            u.keybd_event(vk, 0, _flags(vk, True), 0)
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -4328,7 +4358,39 @@ class DeckCoreService:
         return {"success": ok, "message": f"Media: {key}" if ok else "Media-Taste nur unter Windows"}
 
     def _act_hotkey(self, action: dict, btn: dict) -> dict:
-        # Beliebige Tastenkombo senden, z.B. {"keys":"ctrl+shift+m"} (ans fokussierte Fenster).
+        # Makro/Tastenkürzel SYSTEM-WEIT senden (wie ein Stream Deck) — löst globale Hotkeys auch
+        # im Hintergrund aus (TikTok Live Studio, OBS …). Zwei Formen:
+        #   • Einzel-Kombo:  {"keys": "ctrl+shift+1"}
+        #   • Makro (mehrere Schritte nacheinander):
+        #       {"steps": [{"keys": "ctrl+1"}, {"keys": "ctrl+2", "delay": 250}]}
+        #     ``delay`` = Pause NACH dem Schritt in ms (0..5000, Default 40). Press läuft in
+        #     to_thread → die Sleeps blockieren keine andere Verarbeitung.
+        steps = action.get("steps")
+        if isinstance(steps, list) and steps:
+            import time
+            done = total = 0
+            parts: list[str] = []
+            real = [s for s in steps if str((s or {}).get("keys") or "").strip()]
+            for i, step in enumerate(real):
+                spec = str((step or {}).get("keys") or "").strip()
+                total += 1
+                vks = _parse_hotkey(spec)
+                ok = _send_vk_combo(vks) if vks else False
+                if ok:
+                    done += 1
+                parts.append(spec if ok else f"{spec}✗")
+                if i < len(real) - 1:                      # nach dem letzten Schritt nicht warten
+                    try:
+                        d = int((step or {}).get("delay", 40))
+                    except (TypeError, ValueError):
+                        d = 40
+                    d = max(0, min(5000, d))
+                    if d:
+                        time.sleep(d / 1000.0)
+            if total == 0:
+                return {"success": False, "message": "Makro ohne gültige Schritte"}
+            return {"success": done == total, "message": f"Makro: {' -> '.join(parts)}"}
+        # Einzel-Kombo (Back-compat)
         spec = str(action.get("keys") or action.get("combo") or "").strip()
         vks = _parse_hotkey(spec)
         if not vks:

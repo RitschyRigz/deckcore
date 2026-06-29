@@ -106,8 +106,15 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
                 "default": {"icon": icon, "title": title}}
 
     if t == "hotkey":
+        steps = [s for s in (a.get("steps") or []) if str((s or {}).get("keys") or "").strip()]
+        if len(steps) > 1:
+            title = f"Makro · {len(steps)} Schritte"
+        elif len(steps) == 1:
+            title = str(steps[0].get("keys"))
+        else:
+            title = a.get("keys") or "Makro"
         return {"monitor": {"type": "none"}, "states": [],
-                "default": {"icon": "⌨", "title": a.get("keys") or "Makro"}}
+                "default": {"icon": "⌨", "title": title}}
 
     if t == "http":
         return {"monitor": {"type": "none"}, "states": [],
