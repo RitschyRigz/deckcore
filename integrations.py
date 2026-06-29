@@ -119,11 +119,10 @@ CORE_INTEGRATIONS = [
     },
     {
         "id": "obsbot", "emoji": "📷", "label": "OBSBOT",
-        "description": "OBSBOT-Kameras steuern: Presets, Zentrieren, Wake/Sleep, Tracking-Toggle (OSC). "
-                       "Steuerung läuft live; der Tracking-Status ist deck-getrieben (OBSBOT meldet ihn "
-                       "nicht zurück).",
+        "description": "OBSBOT-Kameras steuern (Tiny/Meet): Tracking, Zentrieren, Schwenken — via rohes "
+                       "UVC, ganz OHNE OBSBOT-Software. Tracking inkl. echtem Readback.",
         "actions": ["obsbot"], "monitors": ["obsbot_cam", "obsbot_track"],
-        "requires": "OBSBOT Center läuft + OSC aktiv (UDP-Server, Standard-Port 16284).",
+        "requires": "⚠ OBSBOT Center darf NICHT laufen (greift sonst die Kamera) · Kamera in OBS o.ä. als Quelle aktiv · Windows.",
         "generator": {"endpoint": "/api/streamdeck/generate/obsbot",
                       "label": "📷 OBSBOT-Kamera-Buttons generieren", "opt": "obsbot_cameras"},
     },

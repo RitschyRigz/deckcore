@@ -427,7 +427,7 @@ def build_streamdeck_router(
 
     @r.post("/api/streamdeck/generate/obsbot")
     def streamdeck_generate_obsbot(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        """Pro OBSBOT-Kamera ein Button-Set im Pool (4 Presets + Zentrieren + Tracking-Toggle + Wake/Sleep)."""
+        """Pro OBSBOT-Kamera ein Button-Set im Pool (Tracking + Zentrieren + Schwenken hoch/runter/links/rechts)."""
         res = get_service(request).generate_obsbot_buttons(int((body or {}).get("cameras", 2) or 2))
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))

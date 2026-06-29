@@ -97,7 +97,7 @@ from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Imp
 from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
 from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
 from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
-from .obsbot import ObsBotOSC   # OBSBOT-Kamerasteuerung via lokales OSC/UDP (Tiny/Meet/Tail; send-only)
+from .obsbot_uvc import ObsBotUVC   # OBSBOT-Kamerasteuerung CENTER-FREI via rohes UVC (rein Python, echtes Readback)
 from .weather import WeatherSource   # Wetter (Open-Meteo + IP-Auto-Standort, gratis/key-frei, gecacht, opt-in)
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
@@ -1240,7 +1240,7 @@ class DeckCoreService:
         self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
         self._weather = WeatherSource(config_path=str(self._runtime / "weather.json"))   # Wetter (lazy, gecacht, opt-in)
         self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
-        self._obsbot = ObsBotOSC(obsbot_host, obsbot_port)   # OBSBOT-Kamerasteuerung (OSC/UDP, send-only, lazy Socket)
+        self._obsbot = ObsBotUVC()   # OBSBOT-Kamerasteuerung CENTER-FREI (rohes UVC, eigener COM-Worker, echtes byte24-Readback)
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
@@ -1447,9 +1447,9 @@ class DeckCoreService:
             if iid == "obsbot":
                 st = (self.obsbot_status(probe=probe) or {}).get("state")
                 if st == "ready":
-                    return {"state": "ok", "detail": "Center + OSC bereit"}
-                labels = {"osc_silent": "Center läuft, aber OSC aus/stumm", "plugin_only":
-                          "nur Elgato-Plugin (kein OSC)", "no_app": "OBSBOT Center läuft nicht"}
+                    return {"state": "ok", "detail": "Center-frei steuerbar (UVC)"}
+                labels = {"no_cam": "Keine OBSBOT-Kamera gefunden (USB? in OBS wach?)",
+                          "unavailable": "UVC nicht verfügbar (comtypes/pygrabber fehlen)"}
                 return {"state": "off", "detail": labels.get(st, "nicht erreichbar")}
             if iid == "audio":
                 ok = bool((self.winaudio_status() or {}).get("available"))
@@ -1492,8 +1492,7 @@ class DeckCoreService:
             # present je Funktion = existiert ein obsbot-Button dieser Funktion (irgendeine Cam)?
             # cameras-Default = höchste vorhandene Cam-Nummer + 1 (damit „Anwenden" nicht versehentlich
             # Kameras dazu/weg generiert).
-            _fsuf = {"presets": ("preset0", "preset1", "preset2"), "center": ("recenter",),
-                     "wake": ("wake", "sleep"), "track": ("track",)}
+            _fsuf = {"center": ("recenter",), "track": ("track",), "move": ("up", "down", "left", "right")}
             obids = [b for b in pool_ids if b and b.startswith("obsbot_c")]
             for g in el.get("groups", []):
                 if g.get("key") != "functions":
@@ -1522,8 +1521,8 @@ class DeckCoreService:
                     if op.get("key") == "cameras":
                         op["default"] = min(max(d for d, _ in _det) + 1, 4)
             _names = [nm for _, nm in _det if nm]
-            _honest = ("Steuerung läuft live; der Tracking-Status ist deck-getrieben "
-                       "(OBSBOT meldet ihn nicht zurück).")
+            _honest = ("Steuerung läuft live über rohes UVC (kein OBSBOT Center nötig) — "
+                       "Tracking inkl. echtem Readback.")
             if _names:
                 el["note"] = "🔍 Erkannt: " + ", ".join(_names) + " · " + _honest
             elif (_st or {}).get("reachable"):
@@ -1622,8 +1621,8 @@ class DeckCoreService:
                 return {"available": True,
                         "options": [{"key": "cameras", "label": "Kameras", "type": "number", "default": 2}],
                         "groups": [{"key": "functions", "label": "Funktionen je Kamera", "items": [
-                            {"id": "presets", "label": "Positions-Presets"}, {"id": "center", "label": "Zentrieren"},
-                            {"id": "wake", "label": "Wake/Sleep"}, {"id": "track", "label": "Tracking-Toggle"}]}]}
+                            {"id": "center", "label": "Zentrieren"}, {"id": "track", "label": "Tracking-Toggle"},
+                            {"id": "move", "label": "Schwenken (hoch/runter/links/rechts)"}]}]}
             if iid == "audio":
                 groups = [{"key": "audio", "label": "Windows-Lautstärke (Master-Fader)",
                            "items": [{"id": "volume", "label": "Windows-Lautstärke-Fader"}]}]
@@ -1886,8 +1885,7 @@ class DeckCoreService:
                 created += r.get("created", 0); updated += r.get("updated", 0)
                 # OBSBOT-Sync: Buttons ABGEWÄHLTER Funktionen über ALLE Kameras entfernen. Ein Funktions-
                 # Häkchen = mehrere Button-Suffixe je Cam → kein generisches 1:1-bid, daher hier speziell.
-                _fsuf = {"presets": ("preset0", "preset1", "preset2"), "center": ("recenter",),
-                         "wake": ("wake", "sleep"), "track": ("track",)}
+                _fsuf = {"center": ("recenter",), "track": ("track",), "move": ("up", "down", "left", "right")}
                 _drop = tuple("_" + s for fk, sufs in _fsuf.items() if fk not in funcs for s in sufs)
                 if _drop:
                     for bid in [b.get("id") for b in self._buttons]:
@@ -3705,13 +3703,13 @@ class DeckCoreService:
                 "categories": [c for c, _ in built], "color_mode": cm, "source": data.get("source")}
 
     def generate_obsbot_buttons(self, cameras: int = 2, only_funcs=None) -> dict:
-        """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera 3 Positions-Presets + Zentrieren +
-        Tracking-Toggle + Wake/Sleep. Jeder Button SPIEGELT den Live-Status (Monitor ``obsbot_cam``):
-        App/OSC nicht erreichbar → 🔌 dunkel · Kamera schläft → 💤 gedimmt · bereit → Cam-Farbe.
-        Der Tracking-Button zeigt den zuletzt ÜBERS DECK geschalteten Zustand (``obsbot_track``,
-        deck-getrieben — OBSBOT liefert KEINEN OSC-Tracking-Readback; verifiziert 2026-06-20).
-        Kamera-Labels = echter Gerätename, wenn OBSBOT Center antwortet, sonst „Cam N".
-        Farben = Theme-Akzente (unterscheidbar je Kamera, theme-bar). Idempotent (id ``obsbot_c<d>_<key>``)."""
+        """OBSBOT-Kamera-Buttons NUR in den Pool: pro Kamera Tracking-Toggle + Zentrieren +
+        4 Schwenk-Richtungen (hoch/runter/links/rechts). Alles via rohes UVC — KEIN OBSBOT Center.
+        Jeder Button SPIEGELT den Live-Status (Monitor ``obsbot_cam``): Cam nicht lesbar → 🔌 dunkel ·
+        Kamera schläft → 💤 gedimmt · bereit → Cam-Farbe. Der Tracking-Button hat über UVC ECHTES
+        Readback (byte24) → ``obsbot_track`` zeigt den realen Zustand. Kamera-Labels = echter
+        Gerätename, wenn lesbar, sonst „Cam N". Farben = Theme-Akzente (unterscheidbar je Kamera,
+        theme-bar). Idempotent (id ``obsbot_c<d>_<key>``). Presets/Wake via UVC nicht kartiert → weggelassen."""
         n = max(1, min(int(cameras or 2), 4))
         COLORS = ["accent", "accent2", "ok", "warn"]   # Cam 1–4 = unterscheidbare Theme-Akzente
         DIM, OFF = "off", "off"                          # schläft / App weg → Inaktiv-Farbe (theme-bar)
@@ -3735,12 +3733,13 @@ class DeckCoreService:
             camlbl = dev_names.get(d) or f"Cam {d + 1}"
             if cat not in cats_used:
                 cats_used.append(cat)
-            # Normale Buttons (Status über obsbot_cam): 3 Presets (Tiny 3 meldet 3 Speicherplätze) + Zentrieren + Wake/Sleep
-            normal = [(f"preset{p}", "📌", f"Pos {p + 1}", {"type": "obsbot", "obsbot_action": "preset", "device": d, "index": p}) for p in range(3)]
-            normal += [
+            # Normale Buttons (Status über obsbot_cam): Zentrieren + 4 Schwenk-Richtungen (alle via UVC).
+            normal = [
                 ("recenter", "🎯", "Zentrieren", {"type": "obsbot", "obsbot_action": "recenter", "device": d}),
-                ("wake", "☀", "Aufwecken", {"type": "obsbot", "obsbot_action": "wake", "device": d}),
-                ("sleep", "🌙", "Schlafen", {"type": "obsbot", "obsbot_action": "sleep", "device": d}),
+                ("up", "⬆", "Hoch", {"type": "obsbot", "obsbot_action": "gimbal_dir", "direction": "up", "device": d}),
+                ("down", "⬇", "Runter", {"type": "obsbot", "obsbot_action": "gimbal_dir", "direction": "down", "device": d}),
+                ("left", "⬅", "Links", {"type": "obsbot", "obsbot_action": "gimbal_dir", "direction": "left", "device": d}),
+                ("right", "➡", "Rechts", {"type": "obsbot", "obsbot_action": "gimbal_dir", "direction": "right", "device": d}),
             ]
             buttons = []
             for key, icon, title, action in normal:
@@ -3748,17 +3747,17 @@ class DeckCoreService:
                                 [{"when": {"op": "eq", "value": "on"}, "icon": icon, "title": title, "color": col},
                                  {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": title, "color": DIM}],
                                 {"icon": "🔌", "title": title, "color": OFF}))
-            # Tracking-Toggle: AN=SetAiMode (Porträt-Follow), AUS=Recenter (Home + Follow-Stop);
-            # Anzeige deck-getrieben (obsbot_track) — OSC hat keinen Tracking-Readback.
+            # Tracking-Toggle: AN=AI-Modus (Porträt-Follow), AUS=Follow-Stop. Anzeige über ECHTES
+            # UVC-Readback (obsbot_track, byte24) — zeigt den realen Zustand der Kamera.
             buttons.append(("track", {"type": "obsbot", "obsbot_action": "tracking", "mode": "toggle", "device": d},
                             {"type": "obsbot_track", "device": d},
                             [{"when": {"op": "eq", "value": "trackon"}, "icon": "🎯", "title": "Tracking AN", "color": "ok"},
                              {"when": {"op": "eq", "value": "trackoff"}, "icon": "👁", "title": "Tracking aus", "color": col},
                              {"when": {"op": "eq", "value": "sleep"}, "icon": "💤", "title": "schläft", "color": DIM}],
                             {"icon": "🔌", "title": "App aus", "color": OFF}))
-            if only_funcs is not None:   # Funktions-Auswahl (presets/center/wake/track) → Buttons filtern
-                _fmap = {"preset0": "presets", "preset1": "presets", "preset2": "presets",
-                         "recenter": "center", "wake": "wake", "sleep": "wake", "track": "track"}
+            if only_funcs is not None:   # Funktions-Auswahl (center/track/move) → Buttons filtern
+                _fmap = {"recenter": "center", "track": "track",
+                         "up": "move", "down": "move", "left": "move", "right": "move"}
                 _want = set(str(x) for x in only_funcs)
                 buttons = [b for b in buttons if _fmap.get(b[0]) in _want]
             for key, action, monitor, states, default in buttons:
@@ -4353,8 +4352,9 @@ class DeckCoreService:
         return {"success": False, "message": f"Unbekannte obs_action: {sub}"}
 
     def _act_obsbot(self, action: dict, btn: dict) -> dict:
-        # OBSBOT-Kamera direkt (OSC/UDP an die OBSBOT-App) — Gimbal/Zoom/Tracking/Preset/Wake-Sleep.
-        # ⚠ Die OBSBOT-App muss laufen UND „OSC" aktiviert haben (Default-Port 16284), sonst verpufft es.
+        # OBSBOT-Kamera direkt via rohes UVC (KEINE OBSBOT-Software) — Schwenken/Zoom/Zentrieren/Tracking.
+        # ⚠ OBSBOT Center darf NICHT laufen (greift sonst dieselbe Kamera) und die Cam muss in OBS o.ä. als
+        #   Quelle aktiv sein. Presets/Framing/Mirror/Record sind via UVC (noch) nicht kartiert (melden ehrlich).
         sub = str(action.get("obsbot_action") or "recenter")
         dev = action.get("device") or action.get("cam") or None
         def _on() -> bool:
@@ -4381,7 +4381,7 @@ class DeckCoreService:
         return {"success": False, "message": f"Unbekannte obsbot_action: {sub}"}
 
     def obsbot_status(self, probe: bool = False) -> dict:
-        """Best-effort-Status der OBSBOT-OSC-Anbindung (für die UI: läuft die App? letzter Send?)."""
+        """Best-effort-Status der OBSBOT-UVC-Anbindung (für die UI: ist eine Cam lesbar? letzter Send?)."""
         return self._obsbot.status()
 
     def set_obsbot_config(self, host: str | None = None, port: int | None = None) -> dict:
@@ -4389,7 +4389,7 @@ class DeckCoreService:
         return self._obsbot.set_config(host, port)
 
     def _mon_obsbot_cam(self, mon: dict, btn: dict):
-        """OBSBOT-Kamera-Status: 'off' (App/OSC nicht erreichbar oder Cam weg) · 'sleep' · 'on' (bereit)."""
+        """OBSBOT-Kamera-Status: 'off' (Cam nicht gefunden / UVC nicht verfügbar) · 'sleep' · 'on' (bereit)."""
         return self._obsbot.cam_status(mon.get("device"))
 
     def _mon_obsbot_track(self, mon: dict, btn: dict):

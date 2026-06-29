@@ -40,7 +40,7 @@ const ACTION_LABELS = {
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
   obs: '🎬 OBS (Szene wechseln / Quelle ein-aus / Stream / Aufnahme)',
-  obsbot: '📷 OBSBOT-Kamera (Tiny/Meet — Gimbal/Zoom/Tracking/Preset/Wake)',
+  obsbot: '📷 OBSBOT-Kamera (Tiny/Meet — Schwenken/Zoom/Tracking, Center-frei via UVC)',
   wavelink: '🎚 Wave Link (Mix/Channel: Mute / Level / Main-Output)',
   winaudio: '🔊 Windows-Standardgerät setzen (Ausgabe umschalten)',
   app_audio: '🎵 App-Lautstärke (pro Programm: Spotify · Spiel · Discord …)',
@@ -102,8 +102,8 @@ const MONITOR_INFO = {
   wavelink_meter: { text: 'Live-Pegel (VU) eines Wave-Link-Mix/Channels. Wird beim „🎚 Wave-Link-Fader generieren" automatisch gesetzt; am schönsten als „Darstellung → 🎚 Fader" (Schieber + Live-VU).', values: null, bool: false },
   wavelink_level: { text: 'Lautstärke (0..100) eines Wave-Link-Mix/Channels. Quelle setzt/umhängst du am bequemsten über den 🎚-Quellen-Picker an der Fader-Kachel oder den „🎚 Wave-Link-Fader"-Generator. {value} im Titel = aktuelle Lautstärke.', values: null, bool: false },
   wavelink_mute: { text: 'Liefert AN, wenn der Wave-Link-Mix/Channel stumm ist. Nutze „ist wahr/an" und „ist falsch/aus".', values: null, bool: true },
-  obsbot_cam: { text: 'OBSBOT-Kamera-Status: on (bereit) · sleep (Privacy) · off (App/OSC nicht erreichbar). Nutze „= gleich" + Wert für die Farbe. Kamera unten wählen.', values: ['on', 'sleep', 'off'], bool: false },
-  obsbot_track: { text: 'OBSBOT-Tracking: trackon · trackoff · sleep · off. Nutze „= gleich" + Wert. Kamera unten wählen. Hinweis: OBSBOT meldet keinen echten Tracking-Zustand zurück — der Status spiegelt, was zuletzt übers Deck gesetzt wurde.', values: ['trackon', 'trackoff', 'sleep', 'off'], bool: false },
+  obsbot_cam: { text: 'OBSBOT-Kamera-Status: on (bereit) · sleep (Linse geparkt) · off (Cam nicht gefunden / UVC nicht verfügbar). Nutze „= gleich" + Wert für die Farbe. Kamera unten wählen.', values: ['on', 'sleep', 'off'], bool: false },
+  obsbot_track: { text: 'OBSBOT-Tracking: trackon · trackoff · sleep · off. Nutze „= gleich" + Wert. Kamera unten wählen. Über UVC mit echtem Readback (byte24) — zeigt den realen Tracking-Zustand der Kamera.', values: ['trackon', 'trackoff', 'sleep', 'off'], bool: false },
   manual_count: { text: 'Zählt, wie oft das Manual-Event ausgelöst wurde. Setze {value} in den Titel (z. B. „Tode: {value}").', values: null, bool: false },
   weather: { text: 'Aktuelles Wetter „⛅ 18° Zürich" (Open-Meteo, gratis/ohne Key). Standort automatisch per IP oder manuell in der „🌤 Wetter"-Kategorie. Am schönsten als „Darstellung → 🪪 Status-Karte"; {value} = der Wetter-Text.', values: null, bool: false },
 }
@@ -2387,10 +2387,10 @@ export function StreamDeck() {
 }
 
 // ── Funktions-Editor-Bausteine (Aktion / Überwachung / Zustände) ─────────────
-// Live-OBSBOT-OSC-Status direkt im Editor. Wichtigster Mehrwert: trennt „Port blockiert" (ein alter/toter
-// OBSBOT-Prozess hält 16284, der frische Center kann nicht binden — der bekannte OBSBOT-Bug) von „OSC aus" —
-// zwei Fälle, die sonst identisch als „geht nicht" aussehen. Pollt /api/obsbot/status (im Cockpit vorhanden;
-// in schlanken Hosts ohne OBSBOT-Status → still nichts). Reine Anzeige (kein Auto-Kill): erkennen statt heilen.
+// Live-OBSBOT-UVC-Status direkt im Editor: zeigt, ob eine Kamera über rohes UVC steuerbar ist (ready),
+// keine Cam gefunden (no_cam — USB? in OBS aktiv? OBSBOT Center darf NICHT laufen) oder UVC fehlt
+// (unavailable — comtypes/pygrabber). Pollt /api/obsbot/status (in schlanken Hosts ohne Status → still
+// nichts). Reine Anzeige (kein Auto-Kill): erkennen statt heilen.
 function ObsbotStatusHint() {
   const [st, setSt] = useState(null)
   useEffect(() => {
@@ -2401,11 +2401,9 @@ function ObsbotStatusHint() {
   }, [])
   if (!st || !st.state) return null
   const M = {
-    ready:       ['var(--ok)',    '✓ OSC erreichbar — Steuerung aktiv'],
-    osc_blocked: ['var(--err)',   `⚠ Port ${st.port} ist von einem alten/toten OBSBOT-Prozess (PID ${st.blocker_pid}) blockiert → OBSBOT KOMPLETT beenden (alle Prozesse) und neu starten, dann bindet OSC wieder sauber.`],
-    osc_silent:  ['var(--warn)',  `OSC stumm — in OBSBOT Center „OSC" aktivieren (Empfangs-Port ${st.port}).`],
-    plugin_only: ['var(--warn)',  'Nur das Stream-Deck-Plugin läuft (kein OSC) — OBSBOT Center starten.'],
-    no_app:      ['var(--muted)', 'Keine OBSBOT-App läuft — OBSBOT Center starten.'],
+    ready:       ['var(--ok)',    '✓ UVC aktiv — Kamera steuerbar (kein OBSBOT Center nötig)'],
+    no_cam:      ['var(--warn)',  '⚠ Keine OBSBOT-Kamera gefunden — per USB verbunden? In OBS als Quelle aktiv? (OBSBOT Center darf NICHT laufen.)'],
+    unavailable: ['var(--muted)', 'UVC nicht verfügbar — comtypes/pygrabber fehlen (nur Windows).'],
   }
   const [col, txt] = M[st.state] || ['var(--muted)', st.state]
   return (
@@ -2887,11 +2885,11 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
                   ? [<option value="0">Preset 1</option>, <option value="1">Preset 2</option>, <option value="2">Preset 3</option>]
                   : [<option value="0">Kamera 1</option>, <option value="1">Kamera 2</option>, <option value="2">Kamera 3</option>, <option value="3">Kamera 4</option>]}
               </select>
-              {action.obsbot_action === 'preset' && <span class="muted" style="font-size:11px">Presets in OBSBOT Center anlegen</span>}
+              {action.obsbot_action === 'preset' && <span class="muted" style="font-size:11px">⚠ Presets via UVC (noch) nicht verfügbar</span>}
             </div>
           )}
-          <p class="muted sd-help">OBSBOT-App muss laufen + <b>OSC aktiv</b> (UDP, Port 16284). Bei zwei
-            baugleichen Kameras in OBSBOT die <b>Positions-Sperre</b> setzen, damit „Kamera 1" stabil bleibt.</p>
+          <p class="muted sd-help"><b>⚠ OBSBOT Center darf NICHT laufen</b> (greift sonst die Kamera). Die Kamera
+            muss in OBS o.ä. als Quelle aktiv sein. Steuerung läuft direkt über UVC — keine OBSBOT-Software nötig.</p>
           <ObsbotStatusHint />
         </>
       )}
