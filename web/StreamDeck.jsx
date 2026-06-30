@@ -2499,6 +2499,62 @@ function HotkeyCapture({ value, onCapture }) {
   )
 }
 
+// Treiber-Panel: Status + Tastatur-Kalibrierung + DLL-Pfad für den Interception-Sende-Weg.
+// Nötig für Apps, die OS-simulierte Tasten verwerfen (TikTok Live Studio). Public-clean:
+// die DLL wird nicht gebündelt, sondern aus Config-Pfad/Standardort geladen.
+function InterceptionPanel() {
+  const [st, setSt] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const [dll, setDll] = useState('')
+  const load = () => getJSON('/api/interception/status')
+    .then((d) => { setSt(d); setDll(d.dll_path || '') })
+    .catch(() => setSt({ available: false, error: 'Status nicht abrufbar', keyboards: [] }))
+  useEffect(() => { load() }, [])
+  const calibrate = () => {
+    setBusy(true); setMsg('● Jetzt EINE Taste auf deiner Tastatur drücken…')
+    postJSON('/api/interception/calibrate', { timeout_ms: 8000 })
+      .then((d) => { setMsg(d.ok ? '✅ Tastatur gemerkt' : '⚠ ' + (d.error || 'fehlgeschlagen')); return load() })
+      .catch((e) => setMsg('⚠ ' + e.message))
+      .finally(() => setBusy(false))
+  }
+  const saveDll = () => {
+    setBusy(true)
+    postJSON('/api/interception/config', { dll_path: dll }).then(() => load()).finally(() => setBusy(false))
+  }
+  const avail = !!(st && st.available)
+  const cal = !!(st && st.keyboard_hwid)
+  return (
+    <div class="sd-itc">
+      <div class="sd-itc-row">
+        <span class={'sd-itc-dot ' + (avail ? 'ok' : 'bad')}></span>
+        <b>{avail ? 'Treiber bereit' : 'Treiber nicht bereit'}</b>
+        {st && !avail && st.error && <span class="muted">— {st.error}</span>}
+      </div>
+      <div class="sd-itc-row">
+        <span class="muted">Tastatur:</span>
+        {cal
+          ? <kbd class="sd-kbd" title={st.keyboard_hwid}>kalibriert ✓</kbd>
+          : <span class="muted">nicht kalibriert → erste erkannte</span>}
+        <button type="button" class="btn ghost small" disabled={busy} onClick={calibrate}>🎯 Tastatur kalibrieren</button>
+      </div>
+      {msg && <p class="muted" style="margin:2px 0">{msg}</p>}
+      <details class="sd-itc-adv">
+        <summary class="muted">DLL-Pfad (nur falls nicht automatisch gefunden)</summary>
+        <div class="sd-itc-row" style="margin-top:4px">
+          <input class="reward-input" style="flex:1;min-width:0" value={dll}
+                 placeholder={(st && st.resolved_dll) || 'C:\\…\\library\\x64\\interception.dll'}
+                 onInput={(e) => setDll(e.currentTarget.value)} />
+          <button type="button" class="btn ghost small" disabled={busy} onClick={saveDll}>speichern</button>
+        </div>
+      </details>
+      <p class="muted sd-help">Einmalig: <b>Interception-Treiber</b> installieren + Rechner neu starten, dann hier
+        <b> Tastatur kalibrieren</b>. Danach sendet RigzDeck die Tasten als <b>echte Hardware</b> — nötig für
+        <b> TikTok&nbsp;Live&nbsp;Studio</b>, das OS-simulierte Tasten ignoriert.</p>
+    </div>
+  )
+}
+
 function HotkeyEditor({ action, onChange }) {
   // Lokale Zeilen-Liste (erlaubt leere Schritte beim Bauen); persistiert kompakt nach action:
   // 1 Kombo → {keys}; mehrere → {steps:[{keys,delay}]}.
@@ -2544,11 +2600,20 @@ function HotkeyEditor({ action, onChange }) {
         <button type="button" class="btn ghost small" onClick={addRow}>➕ Schritt (Makro)</button>
         <span class="muted" style="font-size:12px">Mehrere Schritte = Makro: werden beim Druck der Reihe nach gesendet.</span>
       </div>
+      <div class="reward-row" style="margin:8px 0 2px;align-items:center">
+        <span class="muted" style="font-size:12px">Senden über:</span>
+        <select class="so-delay" value={action.send_via === 'driver' ? 'driver' : 'standard'}
+                onChange={(e) => onChange({ send_via: e.currentTarget.value === 'driver' ? 'driver' : undefined })}>
+          <option value="standard">Standard (SendInput)</option>
+          <option value="driver">🛡 Hardware-Treiber (Interception)</option>
+        </select>
+      </div>
+      {action.send_via === 'driver' && <InterceptionPanel />}
       <p class="muted sd-help">Feld anklicken und die <b>echte Tastenkombination drücken</b> — RigzDeck tippt sie
-        beim Druck selbst. Die Kombo wird <b>system-weit</b> gesendet (wie ein echtes Stream Deck): Programme mit
-        globalen Hotkeys — z.&nbsp;B. <b>TikTok&nbsp;Live&nbsp;Studio</b> oder OBS — reagieren auch <b>im Hintergrund</b>,
-        das Fenster muss <b>nicht</b> im Vordergrund sein. Setup: in TikTok Live Studio unter Einstellungen → Hotkeys
-        eine Kombo für „Live starten" / Szene wechseln vergeben und hier <b>dieselbe</b> Kombo aufnehmen.</p>
+        beim Druck selbst, <b>system-weit</b> (das Fenster muss nicht im Vordergrund sein). Für <b>OBS</b> und die
+        meisten Programme reicht <b>Standard</b>. <b>TikTok&nbsp;Live&nbsp;Studio</b> verwirft OS-simulierte Tasten —
+        dafür <b>„Senden über → 🛡 Hardware-Treiber"</b> wählen (Interception, einmalig kalibrieren). Setup: in der
+        Ziel-App unter Hotkeys eine Kombo vergeben und hier <b>dieselbe</b> aufnehmen.</p>
     </>
   )
 }

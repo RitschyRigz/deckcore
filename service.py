@@ -1275,6 +1275,27 @@ def _send_vk_combo(vks: list, hold_ms: int = 18) -> bool:
             return False
 
 
+def _vks_to_scans(vks: list):
+    """VK-Codes → Liste ``(scancode, extended)`` via ``MapVirtualKey`` (für den Interception-Weg,
+    der echte Scancodes braucht). None, wenn eine Taste keinen Scancode hat (z.B. reine Media-VKs)
+    oder nicht unter Windows — dann ist der Treiber-Weg nicht möglich."""
+    if not vks:
+        return None
+    try:
+        import ctypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        MAPVK_VK_TO_VSC = 0
+        out = []
+        for vk in vks:
+            scan = int(user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)) & 0xFF
+            if not scan:
+                return None
+            out.append((scan, vk in _EXT_VKS))
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class DeckCoreService:
     """Generischer Stream-Deck-Kern: Registry + Monitor-Evaluation + Aktions-Ausführung.
     Eine Hülle (z.B. die RigzDeck-App) erbt davon und registriert über
@@ -1325,6 +1346,8 @@ class DeckCoreService:
         self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
         self._obsbot = ObsBotUVC()   # OBSBOT-Kamerasteuerung CENTER-FREI (rohes UVC, eigener COM-Worker, echtes byte24-Readback)
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
+        self._interception = None   # Interception-Treiber (lazy) — Hardware-Tasten für Apps, die SendInput verwerfen (TTLS)
+        self._itc_cfg: Optional[dict] = None   # runtime/interception.json (dll_path + keyboard_hwid), lazy geladen
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
@@ -4418,6 +4441,10 @@ class DeckCoreService:
         #       {"steps": [{"keys": "ctrl+1"}, {"keys": "ctrl+2", "delay": 250}]}
         #     ``delay`` = Pause NACH dem Schritt in ms (0..5000, Default 40). Press läuft in
         #     to_thread → die Sleeps blockieren keine andere Verarbeitung.
+        # ``send_via`` (optional, gilt fürs ganze Makro): "driver" = Interception-Hardware-Treiber
+        #   (für Apps, die OS-injizierte Tasten verwerfen, z.B. TikTok Live Studio); sonst SendInput.
+        send_via = str(action.get("send_via") or "").strip().lower()
+        tag = "🛡 " if send_via == "driver" else ""
         steps = action.get("steps")
         if isinstance(steps, list) and steps:
             import time
@@ -4428,7 +4455,7 @@ class DeckCoreService:
                 spec = str((step or {}).get("keys") or "").strip()
                 total += 1
                 vks = _parse_hotkey(spec)
-                ok = _send_vk_combo(vks) if vks else False
+                ok = self._send_combo(vks, send_via=send_via) if vks else False
                 if ok:
                     done += 1
                 parts.append(spec if ok else f"{spec}✗")
@@ -4442,14 +4469,113 @@ class DeckCoreService:
                         time.sleep(d / 1000.0)
             if total == 0:
                 return {"success": False, "message": "Makro ohne gültige Schritte"}
-            return {"success": done == total, "message": f"Makro: {' -> '.join(parts)}"}
+            msg = f"{tag}Makro: {' -> '.join(parts)}"
+            if done < total and send_via == "driver":
+                msg += "  (Hardware-Treiber nicht bereit? Im Makro-Editor kalibrieren)"
+            return {"success": done == total, "message": msg}
         # Einzel-Kombo (Back-compat)
         spec = str(action.get("keys") or action.get("combo") or "").strip()
         vks = _parse_hotkey(spec)
         if not vks:
             return {"success": False, "message": f"Hotkey nicht erkannt: {spec or '(leer)'}"}
-        ok = _send_vk_combo(vks)
-        return {"success": ok, "message": f"Hotkey: {spec}" if ok else "Hotkey nur unter Windows"}
+        ok = self._send_combo(vks, send_via=send_via)
+        if ok:
+            return {"success": True, "message": f"{tag}Hotkey: {spec}"}
+        if send_via == "driver":
+            return {"success": False, "message": "Hardware-Treiber nicht bereit (Interception?) — im Makro-Editor prüfen/kalibrieren"}
+        return {"success": False, "message": "Hotkey nur unter Windows"}
+
+    # ── Sende-Weg-Dispatch (Standard SendInput vs. Interception-Hardware-Treiber) ──────────────
+    def _send_combo(self, vks: list, *, send_via: str = "", hold_ms: int = 18) -> bool:
+        """Eine VK-Kombo senden. ``send_via=="driver"`` → Interception (echte Hardware-Scancodes,
+        für Apps die OS-Injektion verwerfen); sonst der Standard-Weg ``_send_vk_combo`` (SendInput).
+        Bei gewünschtem Treiber-Weg KEIN stiller SendInput-Fallback (sonst „Erfolg" gemeldet, obwohl
+        die Ziel-App nichts bekommt) → False, wenn der Treiber nicht bereit ist."""
+        if str(send_via).strip().lower() == "driver":
+            scans = _vks_to_scans(vks)
+            if scans is None:
+                return False
+            itc = self._get_interception()
+            if itc is None:
+                return False
+            hwid = (self._interception_cfg() or {}).get("keyboard_hwid") or None
+            return bool(itc.send_scancodes(scans, hold_ms=hold_ms, prefer_hwid=hwid))
+        return _send_vk_combo(vks, hold_ms=hold_ms)
+
+    # ── Interception-Treiber: Config (runtime/interception.json) + Status/Kalibrierung ─────────
+    def _interception_cfg(self) -> dict:
+        if self._itc_cfg is None:
+            f = self._runtime / "interception.json"
+            try:
+                self._itc_cfg = json.loads(f.read_text("utf-8")) if f.exists() else {}
+            except Exception:  # noqa: BLE001
+                self._itc_cfg = {}
+        return self._itc_cfg
+
+    def _save_interception_cfg(self) -> None:
+        f = self._runtime / "interception.json"
+        try:
+            f.write_text(json.dumps(self._itc_cfg or {}, indent=2, ensure_ascii=False), "utf-8")
+        except Exception as e:  # noqa: BLE001
+            log.warning("interception.json nicht speicherbar: %s", e)
+
+    def _get_interception(self):
+        """Lazy-Singleton des Interception-Wrappers (Modul ist optional)."""
+        try:
+            from . import interception as _itc_mod
+        except Exception:  # noqa: BLE001
+            return None
+        dll_path = (self._interception_cfg() or {}).get("dll_path") or None
+        if self._interception is None:
+            self._interception = _itc_mod.Interception(dll_path=dll_path)
+        else:
+            self._interception.configure(dll_path)
+        return self._interception
+
+    def interception_set_config(self, *, dll_path: Optional[str] = None,
+                                keyboard_hwid: Optional[str] = None) -> dict:
+        """DLL-Pfad und/oder kalibrierte Tastatur-Hardware-ID setzen (nur übergebene Felder)."""
+        cfg = self._interception_cfg()
+        if dll_path is not None:
+            cfg["dll_path"] = str(dll_path).strip()
+        if keyboard_hwid is not None:
+            cfg["keyboard_hwid"] = str(keyboard_hwid).strip()
+        self._itc_cfg = cfg
+        self._save_interception_cfg()
+        if self._interception is not None:
+            self._interception.configure(cfg.get("dll_path") or None)
+        return dict(cfg)
+
+    def interception_calibrate(self, timeout_ms: int = 8000) -> dict:
+        """Wartet auf einen echten Tastendruck, merkt sich die Hardware-ID der Tastatur und gibt sie
+        zurück. Blockiert bis ``timeout_ms`` → vom Host in einen Thread auslagern."""
+        itc = self._get_interception()
+        if itc is None:
+            return {"ok": False, "error": "Interception-Modul nicht ladbar"}
+        res = itc.learn_keyboard(timeout_ms=int(timeout_ms or 8000))
+        if not res:
+            return {"ok": False, "error": itc.last_error or "kein Tastendruck erkannt (Timeout)"}
+        dev, hwid = res
+        self.interception_set_config(keyboard_hwid=hwid or "")
+        return {"ok": True, "device": dev, "keyboard_hwid": hwid or ""}
+
+    def interception_status(self) -> dict:
+        """Treiber-/Kalibrier-Status für den Makro-Editor."""
+        cfg = self._interception_cfg() or {}
+        itc = self._get_interception()
+        if itc is None:
+            return {"available": False, "error": "Modul nicht ladbar",
+                    "dll_path": cfg.get("dll_path") or "", "keyboard_hwid": cfg.get("keyboard_hwid") or "",
+                    "resolved_dll": "", "keyboards": []}
+        avail = itc.available()
+        return {
+            "available": bool(avail),
+            "dll_path": cfg.get("dll_path") or "",
+            "resolved_dll": itc.resolved_path,
+            "keyboard_hwid": cfg.get("keyboard_hwid") or "",
+            "keyboards": [{"device": d, "hwid": h} for d, h in itc.list_keyboards()],
+            "error": "" if avail else (itc.last_error or ""),
+        }
 
     def _act_obs(self, action: dict, btn: dict) -> dict:
         # OBS direkt (obs-websocket) — Szene wechseln / Quelle ein-aus / Stream / Aufnahme.

@@ -833,3 +833,12 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-hk-delay { flex: none; display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
 .sd-hk-delay input { width: 56px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line);
   background: var(--bg); color: var(--fg); font-size: 12px; }
+/* Interception-Hardware-Treiber-Panel (Makro „Senden über → 🛡 Hardware-Treiber") */
+.sd-itc { margin: 4px 0 2px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent2) 6%, var(--bg)); }
+.sd-itc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 3px 0; font-size: 13px; }
+.sd-itc-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; }
+.sd-itc-dot.ok { background: var(--ok, #4ec07a); box-shadow: 0 0 6px var(--ok, #4ec07a); }
+.sd-itc-dot.bad { background: var(--err, #e0556b); box-shadow: 0 0 6px var(--err, #e0556b); }
+.sd-itc-adv { margin: 2px 0; }
+.sd-itc-adv > summary { cursor: pointer; font-size: 12px; }

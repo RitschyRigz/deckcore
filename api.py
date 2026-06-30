@@ -152,6 +152,32 @@ def build_streamdeck_router(
     def obsbot_status(request: Request) -> JSONResponse:
         return JSONResponse(get_service(request).obsbot_status())
 
+    # ── Interception-Hardware-Treiber (Makro-Editor „Senden über → 🛡 Hardware-Treiber") ──────
+    @r.get("/api/interception/status")
+    def interception_status(request: Request) -> JSONResponse:
+        """Treiber-/Kalibrier-Status: {available, dll_path, resolved_dll, keyboard_hwid, keyboards, error}."""
+        return JSONResponse(get_service(request).interception_status())
+
+    @r.post("/api/interception/config")
+    def interception_config(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """DLL-Pfad / kalibrierte Tastatur-HardwareID setzen (nur übergebene Felder). {dll_path?, keyboard_hwid?}"""
+        b = body or {}
+        return JSONResponse(get_service(request).interception_set_config(
+            dll_path=b.get("dll_path"), keyboard_hwid=b.get("keyboard_hwid")))
+
+    @r.post("/api/interception/calibrate")
+    async def interception_calibrate(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Tastatur kalibrieren: wartet auf EINEN echten Tastendruck und merkt sich die HardwareID.
+        Blockiert bis Timeout → in einen Thread ausgelagert. {timeout_ms?} → {ok, device?, keyboard_hwid?, error?}."""
+        svc = get_service(request)
+        try:
+            ms = int((body or {}).get("timeout_ms") or 8000)
+        except (TypeError, ValueError):
+            ms = 8000
+        ms = max(1000, min(20000, ms))
+        res = await asyncio.to_thread(svc.interception_calibrate, ms)
+        return JSONResponse(res)
+
     # ── Decks: Liste + literale Routen (VOR den /{deck_id}-Routen) ─────────
     @r.post("/api/streamdeck/decks")
     def streamdeck_decks(request: Request, body: dict = Body(...)) -> JSONResponse:
