@@ -4485,7 +4485,7 @@ class DeckCoreService:
         mpv_path = (self._mediaplayer_cfg() or {}).get("mpv_path") or None
         res = _mp.play(str(action.get("file") or ""), slot=slot,
                        loop=bool(action.get("loop")), fullscreen=bool(action.get("fullscreen")),
-                       mpv_path=mpv_path)
+                       mpv_path=mpv_path, extra_args=action.get("mpv_args"))
         return {"success": bool(res.get("ok")), "message": res.get("message", "")}
 
     # ── Media-Player (mpv) Config (runtime/media_player.json) + Status ─────────────────────────

@@ -2714,6 +2714,22 @@ function PlayMediaEditor({ action, onChange }) {
                onInput={(e) => onChange({ slot: e.currentTarget.value || undefined })} />
         <span class="muted" style="font-size:12px">TTLS-Fensterquelle auf „RigzDeck Media: {action.slot || 'media'}"</span>
       </div>
+      {mode !== 'stop' && (
+        <details class="sd-itc-adv" open={!!action.mpv_args}>
+          <summary class="muted">🌈 HDR / erweiterte mpv-Optionen</summary>
+          <div class="reward-row" style="margin-top:4px">
+            <input class="reward-input" placeholder="z. B. --vo=gpu-next --target-colorspace-hint=yes"
+                   value={action.mpv_args || ''} onInput={(e) => onChange({ mpv_args: e.currentTarget.value || undefined })} />
+          </div>
+          <div class="reward-row">
+            <button type="button" class="btn ghost small" onClick={() => onChange({ mpv_args: '--vo=gpu-next --target-colorspace-hint=yes' })}>🌈 HDR-Fix setzen</button>
+            <button type="button" class="btn ghost small" onClick={() => onChange({ mpv_args: undefined })}>leeren</button>
+          </div>
+          <p class="muted" style="font-size:12px;margin:4px 0 0">Bei <b>aktivem HDR</b> wirkt SDR-Video im Capture überbelichtet —
+            der HDR-Fix signalisiert dem Desktop die echte SDR-Farbe (kein HDR-Abschalten nötig). ⚠ Greift nur beim
+            <b> Frischstart</b>: nach Änderung den Player einmal mit Modus „⏹ Stoppen" beenden, dann neu abspielen.</p>
+        </details>
+      )}
       <div class="sd-itc">
         <div class="sd-itc-row">
           <span class={'sd-itc-dot ' + (st && st.available ? 'ok' : 'bad')}></span>

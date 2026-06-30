@@ -100,8 +100,21 @@ def _alive(slot: str) -> bool:
     return p is not None and p.poll() is None
 
 
+def _parse_extra_args(extra) -> list:
+    """``extra_args`` (String ODER Liste) → Liste von mpv-Flags. Shlex-getrennt (Quotes ok)."""
+    if not extra:
+        return []
+    if isinstance(extra, (list, tuple)):
+        return [str(a) for a in extra if str(a).strip()]
+    try:
+        import shlex
+        return [a for a in shlex.split(str(extra), posix=False) if a.strip()]
+    except Exception:  # noqa: BLE001
+        return [a for a in str(extra).split() if a.strip()]
+
+
 def play(file: str, *, slot: str = "media", loop: bool = False,
-         fullscreen: bool = False, mpv_path: str | None = None) -> dict:
+         fullscreen: bool = False, mpv_path: str | None = None, extra_args=None) -> dict:
     """Datei von VORN abspielen. Laeuft das Slot-Fenster schon → in-place neu starten (IPC,
     kein Flackern); sonst mpv frisch starten. ``slot`` = Fenster-Identitaet (Titel
     ``RigzDeck Media: <slot>`` → in TTLS als Fensterquelle waehlbar)."""
@@ -140,6 +153,9 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
             "--loop-file=inf" if loop else "--loop-file=no",
             "--fullscreen=yes" if fullscreen else "--fullscreen=no",
         ]
+        # Zusätzliche mpv-Flags (z.B. HDR-Capture-Fix: --vo=gpu-next --target-colorspace-hint=yes).
+        # Werden NUR beim Frischstart angewandt — nach Änderung den Player einmal stoppen + neu starten.
+        args += _parse_extra_args(extra_args)
         try:
             CREATE_NO_WINDOW = 0x08000000     # nur die Konsole unterdruecken — mpv hat sein eigenes GUI-Fenster
             p = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW,
