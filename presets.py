@@ -35,6 +35,21 @@ def _state(op: str, value, icon: str, title: str) -> dict:
     return {"when": when, "icon": icon, "title": title, "color": GREEN}
 
 
+# Interception-Treiber-Status (Monitor ``interception_status``) → Kachel-Ampel für Makro-Buttons:
+#  • ready (= Default, kein State-Treffer) → normale/aktive Optik (grün)
+#  • fallback (Treiber da, kalibrierte Tastatur fehlt → erstes Gerät) → Bernstein + ⚠
+#  • unavailable (Treiber nicht bereit) → rot + ⛔
+# (State ersetzt icon/title/color VOLLSTÄNDIG → jeder State trägt alle drei.)
+_AMBER = "#d9a441"
+
+
+def _interception_states(icon: str, title: str) -> list:
+    return [
+        {"when": {"op": "eq", "value": "fallback"}, "icon": icon, "title": f"{title} ⚠", "color": _AMBER},
+        {"when": {"op": "eq", "value": "unavailable"}, "icon": icon, "title": f"{title} ⛔", "color": RED},
+    ]
+
+
 def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
     """``{monitor, states, default}`` (+ optional ``render``) für die gegebene Aktion.
 
@@ -113,6 +128,11 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
             title = str(steps[0].get("keys"))
         else:
             title = a.get("keys") or "Makro"
+        if str(a.get("send_via") or "").strip().lower() == "driver":
+            # Treiber-Makro: Status-Monitor mitliefern → die Kachel zeigt Fallback/Treiber-aus an.
+            return {"monitor": {"type": "interception_status"},
+                    "states": _interception_states("⌨", title),
+                    "default": {"icon": "⌨", "title": title, "color": GREEN}}
         return {"monitor": {"type": "none"}, "states": [],
                 "default": {"icon": "⌨", "title": title}}
 

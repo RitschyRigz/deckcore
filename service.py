@@ -1348,6 +1348,7 @@ class DeckCoreService:
         self._winaudio = WinAudio()   # Windows-Standard-Ausgabegerät (Kopplung „WL folgt Standard" + Setzen-Knöpfe)
         self._interception = None   # Interception-Treiber (lazy) — Hardware-Tasten für Apps, die SendInput verwerfen (TTLS)
         self._itc_cfg: Optional[dict] = None   # runtime/interception.json (dll_path + keyboard_hwid), lazy geladen
+        self._itc_state_cache: tuple = (None, 0.0)   # (button-state, monotonic) — Treiber-Status-Monitor gecacht (~5s)
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
@@ -1366,6 +1367,7 @@ class DeckCoreService:
         self._integrations_seed_all = bool(integrations_seed_all)
         self._extra_integrations: list[dict] = []   # eine Host-App injiziert via _register_extra_integrations()
         self._integrations_enabled: set[str] = set()
+        self._integrations_seen: set[str] = set()   # je gesehene Integrationen → NEUE einmalig korrekt seeden
         self._register_extra_integrations()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._eval_task: Optional[asyncio.Task] = None
@@ -1433,6 +1435,7 @@ class DeckCoreService:
         M("app_volume", self._mon_app_volume)
         M("obsbot_cam", self._mon_obsbot_cam)
         M("obsbot_track", self._mon_obsbot_track)
+        M("interception_status", self._mon_interception_status)   # Hardware-Treiber-Status für Makro-Buttons
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -1460,36 +1463,60 @@ class DeckCoreService:
         """Vollständige Integrations-Liste (Basis + generische + host-injizierte)."""
         return _integrations.all_integrations(self._extra_integrations)
 
+    def _used_integration_ids(self, ids: set) -> set:
+        """Teilmenge von ``ids``, deren Caps von BESTEHENDEN Buttons genutzt werden (egal ob seed_all).
+        → garantiert, dass kein in Benutzung befindlicher Button-Typ aus dem Editor verschwindet."""
+        ids = set(ids)
+        owners = _integrations.cap_owners(self.integrations())
+        used: set[str] = set()
+        for b in self._buttons:
+            for cap in ((b.get("action") or {}).get("type"), (b.get("monitor") or {}).get("type")):
+                if owners.get(cap) in ids:
+                    used.add(owners[cap])
+        return used
+
+    def _seed_default_enabled(self, ids: set) -> set:
+        """Welche der ``ids`` sollen standardmäßig AN sein? Host mit ``integrations_seed_all`` → alle;
+        sonst nur die, deren Caps bestehende Buttons schon nutzen (kein Button-Typ verschwindet)."""
+        return set(ids) if self._integrations_seed_all else self._used_integration_ids(ids)
+
     def _load_integrations(self) -> None:
-        """Lädt ``runtime/integrations.json`` (``{enabled:[id,…]}``). Fehlt die Datei → einmalige
-        Migration: Aktiv-Stand seeden + schreiben. Host-Seed: ``integrations_seed_all=True`` (große
-        App) → ALLE Integrationen an; sonst nur die, deren Caps bestehende Buttons schon nutzen →
-        es verschwindet nie ein bestehender Button-Typ aus dem Editor."""
+        """Lädt ``runtime/integrations.json`` (``{enabled:[…], seen:[…]}``). Fehlt die Datei → einmalige
+        Voll-Migration. Existiert sie → der gespeicherte Aktiv-Stand gilt, ABER **neu eingeführte**
+        Integrationen (nicht in ``seen``) werden einmalig korrekt geseedet (``seen`` fehlt ganz =
+        Alt-Datei → nur in-Benutzung-aber-fehlende nachziehen, damit kein Button-Typ aus dem Editor
+        verschwindet). So bleiben bewusste User-Abschaltungen bekannter Integrationen erhalten."""
+        non_base_ids = {it["id"] for it in self.integrations() if not it.get("base")}
         f = self._runtime / "integrations.json"
-        if f.exists():
-            try:
-                raw = json.loads(f.read_text(encoding="utf-8-sig"))
-                self._integrations_enabled = {str(x) for x in (raw.get("enabled") or [])}
-                return
-            except Exception as e:  # noqa: BLE001
-                log.warning("integrations.json unlesbar: %s", e)
-        non_base = [it for it in self.integrations() if not it.get("base")]
-        if self._integrations_seed_all:
-            self._integrations_enabled = {it["id"] for it in non_base}
+        if not f.exists():
+            self._integrations_enabled = self._seed_default_enabled(non_base_ids)
+            self._integrations_seen = set(non_base_ids)
+            self._save_integrations()
+            return
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8-sig"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("integrations.json unlesbar: %s", e)
+            raw = {}
+        self._integrations_enabled = {str(x) for x in (raw.get("enabled") or [])}
+        has_seen = "seen" in (raw or {})
+        self._integrations_seen = {str(x) for x in (raw.get("seen") or [])}
+        if has_seen:
+            new_ids = non_base_ids - self._integrations_seen          # echte Neuzugänge
+            if new_ids:
+                self._integrations_enabled |= self._seed_default_enabled(new_ids)
         else:
-            owners = _integrations.cap_owners(self.integrations())
-            used: set[str] = set()
-            for b in self._buttons:
-                for cap in ((b.get("action") or {}).get("type"), (b.get("monitor") or {}).get("type")):
-                    if cap in owners:
-                        used.add(owners[cap])
-            self._integrations_enabled = used
+            # Alt-Datei ohne seen-Tracking: konservativ — NUR in-Benutzung-aber-fehlende nachziehen
+            # (ignoriert seed_all, damit bewusst abgeschaltete bekannte Integrationen AUS bleiben).
+            self._integrations_enabled |= self._used_integration_ids(non_base_ids)
+        self._integrations_seen = set(non_base_ids)
         self._save_integrations()
 
     def _save_integrations(self) -> None:
         f = self._runtime / "integrations.json"
         try:
-            f.write_text(json.dumps({"enabled": sorted(self._integrations_enabled)}, indent=2,
+            f.write_text(json.dumps({"enabled": sorted(self._integrations_enabled),
+                                     "seen": sorted(self._integrations_seen)}, indent=2,
                                     ensure_ascii=False), encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             log.warning("integrations.json nicht speicherbar: %s", e)
@@ -1560,6 +1587,13 @@ class DeckCoreService:
             if iid == "audio":
                 ok = bool((self.winaudio_status() or {}).get("available"))
                 return {"state": "ok", "detail": "Windows-Audio steuerbar" if ok else "Windows-Audio nicht steuerbar"}
+            if iid == "hotkey":
+                # Makros gehen IMMER (SendInput) — der Treiber ist optional. „ok" wenn Hardware-Treiber
+                # bereit (TTLS-tauglich), sonst neutral (grau): Standard-Tasten funktionieren trotzdem.
+                st = self.interception_status() or {}
+                if st.get("available"):
+                    return {"state": "ok", "detail": "Hardware-Treiber bereit (Interception)"}
+                return {"state": "unknown", "detail": "Standard-Tasten (SendInput) · Treiber optional"}
         except Exception as e:  # noqa: BLE001
             return {"state": "off", "detail": f"Status-Fehler: {e}"}
         return {"state": "unknown", "detail": ""}   # Host-eigene Integrationen ohne externe Voraussetzung
@@ -4640,6 +4674,33 @@ class DeckCoreService:
             return st
         return "trackon" if self._obsbot.tracking_state(mon.get("device")) else "trackoff"
 
+    def _mon_interception_status(self, mon: dict, btn: dict):
+        """Hardware-Treiber-Status für die Button-Anzeige: 'ready' (Treiber da + kalibrierte Tastatur
+        präsent / oder keine Kalibrierung nötig) · 'fallback' (Treiber da, aber kalibrierte Tastatur
+        fehlt → erstes erkanntes Gerät) · 'unavailable' (Treiber nicht bereit)."""
+        return self.interception_button_state()
+
+    def interception_button_state(self) -> str:
+        """Gecachte (~5s) Ampel für den Treiber-Status-Monitor — teilt EINEN Treiber-Probe über
+        alle Buttons/Ticks (sonst pro Tick je Button ein Context-Auf-/Abbau)."""
+        now = time.monotonic()
+        state, ts = self._itc_state_cache
+        if state is not None and now - ts < 5.0:
+            return state
+        st = self.interception_status() or {}
+        if not st.get("available"):
+            state = "unavailable"
+        else:
+            hwid = (st.get("keyboard_hwid") or "").strip()
+            if not hwid:
+                state = "ready"                                  # keine Kalibrierung → erste Tastatur (ok)
+            else:
+                key = hwid.split("&REV")[0]
+                present = any((k.get("hwid") or "").split("&REV")[0] == key for k in (st.get("keyboards") or []))
+                state = "ready" if present else "fallback"
+        self._itc_state_cache = (state, now)
+        return state
+
     def _act_open_deck(self, action: dict, btn: dict) -> dict:
         # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
         # passiert im Touch-Panel (es liest action.deck/mode direkt aus der Registry) — serverseitig
@@ -4748,7 +4809,7 @@ class DeckCoreService:
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
-                          "scene_suggest", "obsbot_cam", "obsbot_track", "displayfusion_profile", "none"]
+                          "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         # Integrations-Gating (P2): ein Cap-Typ erscheint im Editor nur, wenn er KEINER Integration

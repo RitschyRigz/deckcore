@@ -77,6 +77,7 @@ const MONITOR_LABELS = {
   obsbot_cam: 'OBSBOT-Kamera-Status (bereit / schläft / aus) — Kamera wählbar',
   obsbot_track: 'OBSBOT-Tracking (an / aus / schläft) — Kamera wählbar',
   weather: 'Wetter am Standort (Open-Meteo) — als „🪪 Status-Karte"',
+  interception_status: '🛡 Hardware-Treiber-Status (bereit / Fallback / aus) — für Treiber-Makros',
 }
 const MONITOR_INFO = {
   aggregate: { text: 'Kombiniert mehrere Überwachungen zu EINEM Status. „Bedingung je Monitor" (z. B. „= trackon") wird auf JEDEN Sub-Monitor angewandt; „Verknüpfung" reduziert: ALLE (UND) → an/aus (truthy/falsy) · EINE (ODER) → an/aus · Anzahl → Zahl (gt/lt/eq) · Stufen → all/some/none (eq). Beispiel: „nur wenn BEIDE Kameras tracken" = ALLE + Bedingung „= trackon".', values: null, bool: true },
@@ -106,6 +107,7 @@ const MONITOR_INFO = {
   obsbot_track: { text: 'OBSBOT-Tracking: trackon · trackoff · sleep · off. Nutze „= gleich" + Wert. Kamera unten wählen. Über UVC mit echtem Readback (byte24) — zeigt den realen Tracking-Zustand der Kamera.', values: ['trackon', 'trackoff', 'sleep', 'off'], bool: false },
   manual_count: { text: 'Zählt, wie oft das Manual-Event ausgelöst wurde. Setze {value} in den Titel (z. B. „Tode: {value}").', values: null, bool: false },
   weather: { text: 'Aktuelles Wetter „⛅ 18° Zürich" (Open-Meteo, gratis/ohne Key). Standort automatisch per IP oder manuell in der „🌤 Wetter"-Kategorie. Am schönsten als „Darstellung → 🪪 Status-Karte"; {value} = der Wetter-Text.', values: null, bool: false },
+  interception_status: { text: 'Status des Interception-Hardware-Treibers (für Treiber-Makros): ready (Treiber da + kalibrierte Tastatur erkannt) · fallback (Treiber da, aber kalibrierte Tastatur fehlt → erstes Gerät) · unavailable (Treiber nicht bereit). Nutze „= gleich" + Wert für die Farbe. Kalibrieren in der Kategorie „⌨ Makro / Hotkey".', values: ['ready', 'fallback', 'unavailable'], bool: false },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -1468,29 +1470,32 @@ function DeckGrid({ deck, pool, poolCategories, resolved, onReload, dfAvailable,
 //  BUTTON-POOL (Funktionen) — global, einmal definiert
 // ══════════════════════════════════════════════════════════════════════════════
 
-function PoolList({ buttons, resolved, options, onReload }) {
-  // Eigene Buttons EINE flache Liste („Custom Buttons") — KEINE eigenen Pool-Kategorien mehr
-  // (2026-06-21). Generierte Buttons ordnet das System über ihre Integration; eigene landen hier.
+function PoolList({ buttons, resolved, options, onReload, title, hint, seedAction, emptyHint }) {
+  // Eine flache Liste hand-gemachter (owner-loser) Buttons. Standard = „Custom Buttons" (alle Typen
+  // ohne eigene Integration); eine Integration kann SIE über ``title``/``seedAction`` als ihre eigene
+  // Buttons-Liste rendern (z.B. „⌨ Makro / Hotkey"). Generische Naht — kein typ-spezifischer Sonderfall.
   const [adding, setAdding] = useState(false)
+  const catName = title || catLabel(CUSTOM_CAT)
+  const seed = () => { const b = blankButton(); if (seedAction) b.action = { ...b.action, ...seedAction }; return b }
   return (
     <div>
       <div class="conn-toolbar">
         <button class="btn ghost small" onClick={() => setAdding(true)}>➕ Neuer Button</button>
       </div>
       <div class="conn-toolbar" style="margin-top:-8px">
-        <span class="muted">{buttons.length} eigene Buttons. Zum Bearbeiten aufklappen, Platzierung aufs Deck per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab. Generierte Buttons (OBS · Wave Link · HWiNFO · …) ordnet das System in ihren eigenen <b>Kategorien</b> — eigene Kategorien gibt es bewusst nicht mehr.</span>
+        <span class="muted">{hint || <>{buttons.length} eigene Buttons. Zum Bearbeiten aufklappen, Platzierung aufs Deck per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab. Generierte Buttons (OBS · Wave Link · HWiNFO · …) ordnet das System in ihren eigenen <b>Kategorien</b> — eigene Kategorien gibt es bewusst nicht mehr.</>}</span>
       </div>
       {adding && (
-        <FunctionEditor button={blankButton()} options={options} isNew
+        <FunctionEditor button={seed()} options={options} isNew
           onSaved={() => { setAdding(false); onReload && onReload() }} onCancel={() => setAdding(false)} />
       )}
       <div class="sd-poolcat">
         <div class="sd-poolcat-h">
-          <span class="sd-poolcat-name">{catLabel(CUSTOM_CAT)}</span>
+          <span class="sd-poolcat-name">{catName}</span>
           <span class="muted" style="font-size:11px">({buttons.length})</span>
         </div>
         {buttons.length === 0
-          ? <div class="sd-wys-empty">— noch keine eigenen Buttons — „➕ Neuer Button" —</div>
+          ? <div class="sd-wys-empty">{emptyHint || '— noch keine eigenen Buttons — „➕ Neuer Button" —'}</div>
           : <div class="cards">{buttons.map((b) => <PoolCard key={b.id} b={b} vis={resolved[b.id]} options={options}
                                                              allIds={buttons.map((x) => x.id)} onChanged={onReload} />)}</div>}
       </div>
@@ -1974,6 +1979,10 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
   if (err) return <p class="fatal">Kategorien nicht erreichbar: {err}</p>
   if (!items) return <p class="muted">Lade Kategorien…</p>
   const list = items.slice().sort((a, b) => (a.base ? -1 : b.base ? 1 : a.label.localeCompare(b.label)))
+  // Action-Typen, die einer NICHT-Basis-Integration gehören → diese hand-gemachten Buttons wandern aus
+  // „Custom Buttons" in das Panel ihrer Integration (generisch, kein typ-spezifischer Sonderfall).
+  const ownedTypes = new Set()
+  items.forEach((it) => { if (!it.base) (it.actions || []).forEach((t) => ownedTypes.add(t)) })
   const q = search.trim().toLowerCase()
   const filtered = q ? list.filter((i) => i.label.toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q)) : list
   const current = list.find((i) => i.id === sel)
@@ -2003,7 +2012,7 @@ function Integrations({ onReload, buttons, poolCategories, resolved, options }) 
       </div>
       {current
         ? <IntegrationPanel key={current.id} it={current} status={statuses[current.id]} busy={busy === current.id}
-            onToggle={() => toggle(current)} onReload={onReload}
+            onToggle={() => toggle(current)} onReload={onReload} ownedTypes={ownedTypes}
             buttons={buttons} poolCategories={poolCategories} resolved={resolved} options={options} />
         : <p class="hint" style="margin-top:12px">↑ Wähle oben eine Kategorie, um Voraussetzungen zu prüfen + Buttons zu generieren.</p>}
     </div>
@@ -2153,7 +2162,7 @@ function FamilyPaletteEditor({ mode }) {
   )
 }
 
-function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolCategories, resolved, options }) {
+function IntegrationPanel({ it, status, busy, onToggle, onReload, ownedTypes, buttons, poolCategories, resolved, options }) {
   const [el, setEl] = useState(null)
   const [checked, setChecked] = useState({})   // {groupKey: {id:bool}}
   const [toggles, setToggles] = useState({})
@@ -2162,9 +2171,13 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
   const [obsOpen, setObsOpen] = useState(false)
   const [genBusy, setGenBusy] = useState(false)
   const [msg, setMsg] = useState(null)
+  // Hand-gemachte (owner-lose) Buttons, deren Aktionstyp DIESE Integration besitzt → ihre eigene Liste.
+  const ownActs = it.actions || []
+  const ownButtons = (buttons || []).filter((b) => !b.owner && ownActs.includes(((b.action || {}).type)))
+  const ownsButtons = !it.base && ownActs.length > 0
   useEffect(() => {
     setEl(null); setMsg(null); setObsOpen(false)
-    if (it.custom || !it.enabled) return
+    if (it.custom || it.id === 'hotkey' || !it.enabled) return   // hotkey: kein Generator, eigenes Panel
     getJSON('/api/integrations/' + it.id + '/elements').then((d) => {
       setEl(d)
       const c = {}; (d.groups || []).forEach((g) => { c[g.key] = {}; g.items.forEach((x) => { c[g.key][x.id] = ('present' in x) ? !!x.present : ('recommend' in x ? !!x.recommend : true) }) })
@@ -2203,7 +2216,8 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
         <span class="sd-int-status na" title="Grundfunktion — immer verfügbar">immer aktiv</span>
       </div>
       <div class="sd-int-desc">{it.description}</div>
-      <PoolList buttons={(buttons || []).filter((b) => !b.owner)} poolCategories={poolCategories || []}
+      <PoolList buttons={(buttons || []).filter((b) => !b.owner && !(ownedTypes && ownedTypes.has((b.action || {}).type)))}
+                poolCategories={poolCategories || []}
                 resolved={resolved || {}} options={options || {}} onReload={onReload} />
     </div>
   )
@@ -2222,10 +2236,24 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, buttons, poolC
       </div>
       <div class="sd-int-desc">{it.description}</div>
       {it.requires && <div class="sd-int-req">🔌 Voraussetzung: {it.requires}</div>}
-      {!it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
+      {!it.enabled && it.id !== 'hotkey' && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
       {it.id === 'audio' && <AudioMixerControl onReload={onReload} />}
       {it.id === 'weather' && <WeatherControl onReload={onReload} />}
-      {it.enabled && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
+      {it.id === 'hotkey' && <InterceptionPanel />}
+      {it.id === 'hotkey' && !it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — bestehende Makro-Buttons laufen weiter; zum Anlegen/Bearbeiten oben aktivieren.</p>}
+      {it.enabled && ownsButtons && (ownButtons.length > 0 || it.id === 'hotkey') && (
+        <div style="margin-top:14px">
+          <div class="sd-int-grp-h" style="border-top:0.5px solid var(--line);padding-top:12px">
+            <span>{it.emoji} {it.label}-Buttons <span class="muted">— landen im Pool, aufs Deck ziehbar (Decks &amp; Layout)</span></span>
+          </div>
+          <PoolList buttons={ownButtons} options={options} resolved={resolved || {}} onReload={onReload}
+                    title={it.label + '-Buttons'}
+                    seedAction={ownActs.length === 1 ? { type: ownActs[0] } : undefined}
+                    hint={<>{ownButtons.length} eigene Button(s). „➕ Neuer Button" legt direkt einen vom Typ <b>{ownActs.join(' / ')}</b> an; Platzierung per Drag&amp;Drop im <b>Decks &amp; Layout</b>-Tab.</>}
+                    emptyHint={'— noch keine — „➕ Neuer Button" —'} />
+        </div>
+      )}
+      {it.enabled && it.id !== 'hotkey' && el === null && <p class="muted" style="margin-top:10px">Lese verfügbare Elemente…</p>}
       {it.enabled && el && !el.available && <p class="sd-int-status off" style="margin-top:10px">🔴 {el.reason}</p>}
       {it.enabled && el && el.available && el.note && <p class="hint" style="margin:10px 0 0">{el.note}</p>}
       {it.enabled && el && el.available && it.id !== 'weather' && (

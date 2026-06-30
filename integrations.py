@@ -29,8 +29,23 @@ BASE = {
     "id": "base", "emoji": "🧱", "label": "Basis", "base": True,
     "description": "Grundfunktionen ohne externe Abhängigkeit — immer verfügbar.",
     "actions": ["launch", "open_folder", "open_deck", "http", "flag_toggle", "flag_set",
-                "media", "hotkey", "none"],
+                "media", "none"],
     "monitors": ["flag", "file_field", "poll", "sse_field", "none"],
+}
+
+# ── Makro / Hotkey — eigene, abschaltbare Kategorie (vorher in der Basis) ───────────────────────
+# Bündelt den ``hotkey``-Aktionstyp (Tastenkürzel/Makros system-weit) + den Treiber-Status-Monitor
+# ``interception_status`` (Button-Anzeige bereit/Fallback/aus). Abschalten = reines Editor-Gating
+# (Typ aus den Auswahllisten); bestehende Makro-Buttons laufen weiter. Die Interception-Treiber-
+# Einstellungen (DLL-Pfad + Tastatur-Kalibrierung) leben im Panel DIESER Kategorie (integration-scoped).
+HOTKEY = {
+    "id": "hotkey", "emoji": "⌨", "label": "Makro / Hotkey",
+    "description": "Tastenkürzel & Makros system-weit senden — löst globale Hotkeys auch im "
+                   "Hintergrund aus (OBS, Spiele …). Optional über den Interception-Hardware-Treiber, "
+                   "damit auch Apps reagieren, die OS-simulierte Tasten verwerfen (z.B. TikTok Live "
+                   "Studio). Treiber-Einstellungen + Tastatur-Kalibrierung findest du unten.",
+    "actions": ["hotkey"],
+    "monitors": ["interception_status"],
 }
 
 # ── Windows-Audio — eigene Kategorie (base=True → immer da, kein externes Programm nötig). ──────
@@ -130,8 +145,9 @@ CORE_INTEGRATIONS = [
 
 
 def all_integrations(extra=None):
-    """Vollständige Liste: Basis + Windows-Audio + Eigene + Ordner + generische Integrationen + host-injizierte (``extra``)."""
-    return [BASE, WINDOWS_AUDIO, CUSTOM, FOLDERS] + list(CORE_INTEGRATIONS) + list(extra or [])
+    """Vollständige Liste: Basis + Windows-Audio + Eigene + Ordner + Makro/Hotkey + generische
+    Integrationen + host-injizierte (``extra``)."""
+    return [BASE, WINDOWS_AUDIO, CUSTOM, FOLDERS, HOTKEY] + list(CORE_INTEGRATIONS) + list(extra or [])
 
 
 def cap_owners(integrations):
