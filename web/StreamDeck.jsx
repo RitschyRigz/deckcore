@@ -36,6 +36,7 @@ const ACTION_LABELS = {
   open_deck: '📁 Ordner öffnen (Sub-Deck / Radial-Menü)',
   displayfusion: '🖥 DisplayFusion — Monitor-Profil laden',
   media: '⏯ Media-Taste (Play/Pause · ⏭⏮ · Lauter/Leiser · Mute)',
+  play_media: '▶ Video im Fenster abspielen (mpv-Fensterquelle, Restart von vorn)',
   hotkey: '⌨ Makro / Tastenkürzel senden (Stream-Deck-Stil, system-weit)',
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
@@ -2646,6 +2647,79 @@ function HotkeyEditor({ action, onChange }) {
   )
 }
 
+// Video in randlosem mpv-Fenster abspielen (Fensterquelle, In-Place-Restart). Umgeht, dass z.B.
+// TikTok Live Studio eingebettete Videos beim Szenenwechsel nicht zurücksetzt — mpv spielt auf Druck
+// von vorn im SELBEN Fenster (kein Flackern). mpv aus Config-Pfad/Standardort (public-clean).
+function PlayMediaEditor({ action, onChange }) {
+  const [picking, setPicking] = useState(false)
+  const [st, setSt] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [mpvPath, setMpvPath] = useState('')
+  const load = () => getJSON('/api/mediaplayer/status')
+    .then((d) => { setSt(d); setMpvPath(d.configured_path || '') })
+    .catch(() => setSt({ available: false }))
+  useEffect(() => { load() }, [])
+  const pick = () => {
+    setPicking(true)
+    postJSON('/api/streamdeck/pick_media', {})
+      .then((r) => { if (r && r.ok && r.path) onChange({ file: r.path }) })
+      .catch(() => {}).finally(() => setPicking(false))
+  }
+  const saveMpv = () => { setBusy(true); postJSON('/api/mediaplayer/config', { mpv_path: mpvPath }).then(() => load()).finally(() => setBusy(false)) }
+  const mode = action.mode === 'stop' ? 'stop' : 'play'
+  return (
+    <>
+      {mode !== 'stop' && (
+        <div class="reward-row">
+          <span class="muted conn-label">Video</span>
+          <input class="reward-input" placeholder="Pfad zur Videodatei (.mp4 / .mkv / .webm …)" value={action.file || ''}
+                 onInput={(e) => onChange({ file: e.currentTarget.value })} />
+          <button class="btn ghost small" disabled={picking} onClick={pick}>{picking ? '… wählt' : '📂 Video wählen'}</button>
+        </div>
+      )}
+      <div class="reward-row" style="align-items:center;gap:14px">
+        <label class="muted" style="font-size:12px">Modus
+          <select class="so-delay" style="margin-left:6px" value={mode}
+                  onChange={(e) => onChange({ mode: e.currentTarget.value === 'stop' ? 'stop' : undefined })}>
+            <option value="play">▶ Abspielen (von vorn)</option>
+            <option value="stop">⏹ Stoppen / Fenster schließen</option>
+          </select>
+        </label>
+        {mode !== 'stop' && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!action.loop} onChange={(e) => onChange({ loop: e.currentTarget.checked || undefined })} /> 🔁 Loop</label>}
+        {mode !== 'stop' && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!action.fullscreen} onChange={(e) => onChange({ fullscreen: e.currentTarget.checked || undefined })} /> ⛶ Vollbild</label>}
+      </div>
+      <div class="reward-row">
+        <span class="muted conn-label">Fenster</span>
+        <input class="reward-input" placeholder="media" value={action.slot || ''}
+               onInput={(e) => onChange({ slot: e.currentTarget.value || undefined })} />
+        <span class="muted" style="font-size:12px">TTLS-Fensterquelle auf „RigzDeck Media: {action.slot || 'media'}"</span>
+      </div>
+      <div class="sd-itc">
+        <div class="sd-itc-row">
+          <span class={'sd-itc-dot ' + (st && st.available ? 'ok' : 'bad')}></span>
+          <b>{st && st.available ? 'mpv bereit' : 'mpv nicht gefunden'}</b>
+          {st && st.mpv_path && <span class="muted" style="font-size:11px">{st.mpv_path}</span>}
+        </div>
+        {st && !st.available && (
+          <details class="sd-itc-adv" open>
+            <summary class="muted">mpv-Pfad setzen / installieren</summary>
+            <div class="sd-itc-row" style="margin-top:4px">
+              <input class="reward-input" style="flex:1;min-width:0" value={mpvPath}
+                     placeholder="C:\\Program Files\\MPV Player\\mpv.exe" onInput={(e) => setMpvPath(e.currentTarget.value)} />
+              <button class="btn ghost small" disabled={busy} onClick={saveMpv}>speichern</button>
+            </div>
+            <p class="muted" style="font-size:12px;margin:4px 0 0">Installieren: <code>winget install shinchiro.mpv</code> (einmalig).</p>
+          </details>
+        )}
+      </div>
+      <p class="muted sd-help">Spielt die Datei in einem <b>randlosen mpv-Fenster</b> ab — als <b>Fensterquelle</b> für
+        TikTok&nbsp;Live&nbsp;Studio &amp; Co. Jeder Druck startet <b>von vorn im selben Fenster</b> (kein Flackern) → umgeht,
+        dass TTLS eingebettete Videos nicht zurücksetzt. In TTLS eine <b>Fensterquelle</b> auf
+        „RigzDeck Media: {action.slot || 'media'}" legen.</p>
+    </>
+  )
+}
+
 function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const t = action.type || 'none'
   const proc = (options.processes || []).find((p) => p.key === action.process)
@@ -2906,6 +2980,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             Media-Player (Spotify, YouTube, Wave Link …).</p>
         </>
       )}
+      {t === 'play_media' && <PlayMediaEditor action={action} onChange={onChange} />}
       {t === 'hotkey' && <HotkeyEditor action={action} onChange={onChange} />}
       {t === 'flag_toggle' && (
         <div class="reward-row">

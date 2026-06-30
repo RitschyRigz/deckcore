@@ -136,6 +136,13 @@ def button_preset(action: dict, *, deck_label: str | None = None) -> dict:
         return {"monitor": {"type": "none"}, "states": [],
                 "default": {"icon": "⌨", "title": title}}
 
+    if t == "play_media":
+        raw = (a.get("file") or "").strip().strip('"').replace("/", "\\")
+        name = raw.split("\\")[-1] if raw else "Video"
+        stop = str(a.get("mode") or "play").strip().lower() == "stop"
+        return {"monitor": {"type": "none"}, "states": [],
+                "default": {"icon": "⏹" if stop else "▶", "title": ("Stop" if stop else name)}}
+
     if t == "http":
         return {"monitor": {"type": "none"}, "states": [],
                 "default": {"icon": "🌐", "title": "HTTP"}}

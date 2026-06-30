@@ -1349,6 +1349,7 @@ class DeckCoreService:
         self._interception = None   # Interception-Treiber (lazy) — Hardware-Tasten für Apps, die SendInput verwerfen (TTLS)
         self._itc_cfg: Optional[dict] = None   # runtime/interception.json (dll_path + keyboard_hwid), lazy geladen
         self._itc_state_cache: tuple = (None, 0.0)   # (button-state, monotonic) — Treiber-Status-Monitor gecacht (~5s)
+        self._mp_cfg: Optional[dict] = None   # runtime/media_player.json (mpv_path), lazy geladen
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
@@ -1401,6 +1402,7 @@ class DeckCoreService:
         A("open_folder", self._act_open_folder)
         A("displayfusion", self._act_displayfusion)
         A("media", self._act_media)
+        A("play_media", self._act_play_media)   # Videodatei in randlosem mpv-Fenster (Fensterquelle), In-Place-Restart
         A("hotkey", self._act_hotkey)
         A("flag_toggle", self._act_flag_toggle)
         A("flag_set", self._act_flag_set)
@@ -4467,6 +4469,57 @@ class DeckCoreService:
         ok = _send_vk_combo([vk])
         return {"success": ok, "message": f"Media: {key}" if ok else "Media-Taste nur unter Windows"}
 
+    def _act_play_media(self, action: dict, btn: dict) -> dict:
+        # Videodatei in einem randlosen, DAUERHAFTEN mpv-Fenster abspielen — gedacht als Fensterquelle
+        # (z.B. TikTok Live Studio), das eingebettete Videos beim Szenenwechsel NICHT zurücksetzt.
+        # mpv spielt auf Druck IN-PLACE von vorn (IPC) statt das Fenster neu zu öffnen → kein Flackern.
+        # config: file (Pfad) · slot (Fenster-Identität, Default „media") · loop · fullscreen · mode play|stop.
+        try:
+            from . import mediaplayer as _mp
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "message": f"Media-Player nicht ladbar: {e}"}
+        slot = str(action.get("slot") or "media").strip() or "media"
+        if str(action.get("mode") or "play").strip().lower() == "stop":
+            res = _mp.stop(slot=slot)
+            return {"success": bool(res.get("ok")), "message": res.get("message", "")}
+        mpv_path = (self._mediaplayer_cfg() or {}).get("mpv_path") or None
+        res = _mp.play(str(action.get("file") or ""), slot=slot,
+                       loop=bool(action.get("loop")), fullscreen=bool(action.get("fullscreen")),
+                       mpv_path=mpv_path)
+        return {"success": bool(res.get("ok")), "message": res.get("message", "")}
+
+    # ── Media-Player (mpv) Config (runtime/media_player.json) + Status ─────────────────────────
+    def _mediaplayer_cfg(self) -> dict:
+        if getattr(self, "_mp_cfg", None) is None:
+            f = self._runtime / "media_player.json"
+            try:
+                self._mp_cfg = json.loads(f.read_text("utf-8")) if f.exists() else {}
+            except Exception:  # noqa: BLE001
+                self._mp_cfg = {}
+        return self._mp_cfg
+
+    def mediaplayer_set_config(self, *, mpv_path: Optional[str] = None) -> dict:
+        cfg = self._mediaplayer_cfg()
+        if mpv_path is not None:
+            cfg["mpv_path"] = str(mpv_path).strip()
+        self._mp_cfg = cfg
+        try:
+            (self._runtime / "media_player.json").write_text(
+                json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+        except Exception as e:  # noqa: BLE001
+            log.warning("media_player.json nicht speicherbar: %s", e)
+        return dict(cfg)
+
+    def mediaplayer_status(self) -> dict:
+        cfg = self._mediaplayer_cfg() or {}
+        try:
+            from . import mediaplayer as _mp
+            st = _mp.status(cfg.get("mpv_path") or None)
+        except Exception as e:  # noqa: BLE001
+            return {"available": False, "error": str(e), "mpv_path": cfg.get("mpv_path") or ""}
+        st["configured_path"] = cfg.get("mpv_path") or ""
+        return st
+
     def _act_hotkey(self, action: dict, btn: dict) -> dict:
         # Makro/Tastenkürzel SYSTEM-WEIT senden (wie ein Stream Deck) — löst globale Hotkeys auch
         # im Hintergrund aus (TikTok Live Studio, OBS …). Zwei Formen:
@@ -4803,7 +4856,7 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         _ACTION_ORDER = ["multi", "process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
-                         "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
+                         "play_media", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",

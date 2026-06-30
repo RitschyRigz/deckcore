@@ -29,7 +29,7 @@ BASE = {
     "id": "base", "emoji": "🧱", "label": "Basis", "base": True,
     "description": "Grundfunktionen ohne externe Abhängigkeit — immer verfügbar.",
     "actions": ["launch", "open_folder", "open_deck", "http", "flag_toggle", "flag_set",
-                "media", "none"],
+                "media", "play_media", "none"],
     "monitors": ["flag", "file_field", "poll", "sse_field", "none"],
 }
 

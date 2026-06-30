@@ -178,6 +178,48 @@ def build_streamdeck_router(
         res = await asyncio.to_thread(svc.interception_calibrate, ms)
         return JSONResponse(res)
 
+    # ── Media-Player (mpv) — play_media-Aktion „Video im Fenster (Fensterquelle)" ──────────────
+    @r.get("/api/mediaplayer/status")
+    def mediaplayer_status(request: Request) -> JSONResponse:
+        """{available, mpv_path, active_slots, configured_path} — mpv gefunden? welche Fenster laufen?"""
+        return JSONResponse(get_service(request).mediaplayer_status())
+
+    @r.post("/api/mediaplayer/config")
+    def mediaplayer_config(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """mpv-Pfad setzen (falls nicht automatisch gefunden). {mpv_path?}"""
+        return JSONResponse(get_service(request).mediaplayer_set_config(mpv_path=(body or {}).get("mpv_path")))
+
+    @r.post("/api/streamdeck/pick_media")
+    async def streamdeck_pick_media() -> JSONResponse:
+        """Nativer Datei-Dialog (Windows) für eine Videodatei (play_media). {path, name} (cancelled=true)."""
+        ps = r'''
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.OpenFileDialog
+$f.Title = 'Videodatei waehlen'
+$f.Filter = 'Videos|*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.gif|Alle Dateien|*.*'
+if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
+(@{ path = $f.FileName } | ConvertTo-Json -Compress)
+'''
+        import subprocess
+
+        def _run() -> str:
+            try:
+                pr = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps],
+                                    capture_output=True, text=True, timeout=180,
+                                    creationflags=0x08000000)
+                return (pr.stdout or "").strip()
+            except Exception:  # noqa: BLE001
+                return ""
+        out = await asyncio.to_thread(_run)
+        try:
+            data = json.loads(out) if out else {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return JSONResponse({"ok": False, "cancelled": True})
+        return JSONResponse({"ok": True, "path": path, "name": Path(path).name})
+
     # ── Decks: Liste + literale Routen (VOR den /{deck_id}-Routen) ─────────
     @r.post("/api/streamdeck/decks")
     def streamdeck_decks(request: Request, body: dict = Body(...)) -> JSONResponse:
