@@ -65,9 +65,13 @@ def _pipe_name(slot: str) -> str:
     return r"\\.\pipe\rigzdeck-mpv-" + _slug(slot)
 
 
-def _ipc_send(slot: str, command_obj: dict) -> bool:
-    """EIN JSON-Kommando an ein laufendes mpv (Named Pipe) schicken. False, wenn die Pipe nicht
-    erreichbar ist (mpv laeuft (noch) nicht)."""
+def _ipc_send(slot: str, *commands: dict) -> bool:
+    """Ein ODER MEHRERE JSON-Kommandos an ein laufendes mpv (Named Pipe) schicken — alle in EINER
+    Verbindung (newline-getrennt), damit nicht mehrere schnelle Pipe-Öffnungen auf eine Busy-Pipe
+    treffen. False, wenn die Pipe nicht erreichbar ist (mpv laeuft (noch) nicht). Blockiert nie:
+    CreateFileW kehrt sofort zurück (kein WaitNamedPipe)."""
+    if not commands:
+        return False
     name = _pipe_name(slot)
     GENERIC_RW = 0xC0000000
     OPEN_EXISTING = 3
@@ -83,7 +87,7 @@ def _ipc_send(slot: str, command_obj: dict) -> bool:
     if not h or h == invalid:
         return False
     try:
-        data = (json.dumps(command_obj) + "\n").encode("utf-8")
+        data = "".join(json.dumps(c) + "\n" for c in commands).encode("utf-8")
         written = wintypes.DWORD(0)
         ok = k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
         return bool(ok)
@@ -111,16 +115,22 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
         return {"ok": False, "message": "mpv nicht gefunden — Pfad in den Player-Einstellungen setzen oder mpv installieren"}
     slot = _slug(slot)
     with _LOCK:
-        if _alive(slot):
-            if _ipc_send(slot, {"command": ["loadfile", f, "replace"]}):
-                _ipc_send(slot, {"command": ["set_property", "loop-file", "inf" if loop else "no"]})
-                return {"ok": True, "message": f"Replay: {os.path.basename(f)}"}
-            # Pipe tot → alten Prozess aufraeumen, gleich frisch starten
+        # 1) In-Place-Restart ZUERST über die IPC-Pipe (NICHT über _PROCS/poll, das ist auf manchen
+        #    Setups unzuverlässig — mpv.exe kann einen Kindprozess starten, der getrackte „stirbt").
+        #    Läuft eine mpv-Instanz mit diesem Slot → von vorn im SELBEN Fenster. Übersteht sogar
+        #    Cockpit-Neustarts (findet das laufende mpv an seiner Named Pipe wieder).
+        if _ipc_send(slot,
+                     {"command": ["loadfile", f, "replace"]},
+                     {"command": ["set_property", "loop-file", "inf" if loop else "no"]},
+                     {"command": ["set_property", "pause", "no"]}):
+            return {"ok": True, "message": f"Replay: {os.path.basename(f)}"}
+        # 2) Keine erreichbare Instanz → evtl. toten Track aufraeumen, dann frisch starten.
+        old = _PROCS.pop(slot, None)
+        if old is not None:
             try:
-                _PROCS[slot].kill()
+                old.kill()
             except Exception:  # noqa: BLE001
                 pass
-            _PROCS.pop(slot, None)
         args = [
             mpv, f,
             "--no-border", "--force-window=yes", "--keep-open=yes", "--idle=yes",
@@ -143,15 +153,14 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
 def stop(slot: str = "media") -> dict:
     slot = _slug(slot)
     with _LOCK:
-        if _alive(slot):
-            if not _ipc_send(slot, {"command": ["quit"]}):
-                try:
-                    _PROCS[slot].kill()
-                except Exception:  # noqa: BLE001
-                    pass
-            _PROCS.pop(slot, None)
-            return {"ok": True, "message": "Player gestoppt"}
-    return {"ok": True, "message": "Player war nicht aktiv"}
+        sent = _ipc_send(slot, {"command": ["quit"]})    # laufendes mpv über die Pipe beenden
+        old = _PROCS.pop(slot, None)
+        if old is not None and not sent:
+            try:
+                old.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        return {"ok": True, "message": "Player gestoppt" if (sent or old is not None) else "Player war nicht aktiv"}
 
 
 def status(configured: str | None = None) -> dict:
