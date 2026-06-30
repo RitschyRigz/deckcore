@@ -188,6 +188,14 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
         args = [
             mpv, f,
             "--no-border", "--force-window=yes",
+            # --d3d11-flip=no: CAPTURE-fähig machen. Default (flip-model) presentiert über einen
+            # DXGI-Flip-/MPO-Swapchain, den der Display-Controller direkt ausscannt — er UMGEHT die
+            # DWM-Komposition, die eine Fensterquelle (TTLS / OBS Window-Capture) abgreift. Ergebnis:
+            # die Capture friert auf dem ERSTEN Frame ein (Standbild), obwohl mpv flüssig spielt. Der
+            # bitblt-Model geht durch die Komposition → jeder Frame ist greifbar. Nebeneffekt: der
+            # HDR-PQ-Swapchain entfällt (PQ wird im bitblt-Model nicht unterstützt → SDR-Fallback).
+            # Dieser Player EXISTIERT zum Gecaptured-Werden → capture-freundlich ist hier der Default.
+            "--d3d11-flip=no",
             "--keep-open=no" if close_on_end else "--keep-open=yes",
             "--idle=no" if close_on_end else "--idle=yes",
             "--no-osc", "--ontop=no", "--no-input-default-bindings",
