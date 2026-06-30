@@ -189,6 +189,12 @@ def build_streamdeck_router(
         """mpv-Pfad setzen (falls nicht automatisch gefunden). {mpv_path?}"""
         return JSONResponse(get_service(request).mediaplayer_set_config(mpv_path=(body or {}).get("mpv_path")))
 
+    @r.get("/api/mediaplayer/browse")
+    def mediaplayer_browse(request: Request) -> JSONResponse:
+        """In-App-Datei-Browser (Ordner + Videodateien) für den play_media-Editor — robuster
+        Ersatz fürs OS-Dialog. ``?dir=`` (leer = Home). {dir, parent, folders[], files[], drives[]}."""
+        return JSONResponse(get_service(request).mediaplayer_browse(request.query_params.get("dir") or ""))
+
     @r.post("/api/streamdeck/pick_media")
     async def streamdeck_pick_media() -> JSONResponse:
         """Nativer Datei-Dialog (Windows) für eine Videodatei (play_media). {path, name} (cancelled=true)."""

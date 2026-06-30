@@ -4520,6 +4520,48 @@ class DeckCoreService:
         st["configured_path"] = cfg.get("mpv_path") or ""
         return st
 
+    _MEDIA_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".gif", ".ts", ".flv", ".wmv", ".mpg", ".mpeg"}
+
+    def mediaplayer_browse(self, dir_path: str = "") -> dict:
+        """Verzeichnis listen (Unterordner + Videodateien) für den In-App-Datei-Browser des
+        play_media-Editors — robuster Ersatz für den unzuverlässigen OS-Dialog. Lokal-only
+        (127.0.0.1) → Dateisystem-Browsing ist im Operator-Kontext ok. ``dir_path`` leer →
+        Startordner (Home). Liefert {dir, parent, folders[], files[], drives[]}."""
+        import os
+        raw = str(dir_path or "").strip().strip('"')
+        try:
+            p = Path(raw).expanduser() if raw else Path.home()
+            if not p.exists():
+                p = p.parent if p.parent.exists() else Path.home()
+            if p.is_file():               # versehentlich eine Datei → ihr Ordner
+                p = p.parent
+        except Exception:  # noqa: BLE001
+            p = Path.home()
+        folders: list = []
+        files: list = []
+        try:
+            for entry in sorted(p.iterdir(), key=lambda e: e.name.lower()):
+                try:
+                    if entry.name.startswith(".") or entry.name.startswith("$"):
+                        continue
+                    if entry.is_dir():
+                        folders.append({"name": entry.name, "path": str(entry)})
+                    elif entry.suffix.lower() in self._MEDIA_EXTS:
+                        files.append({"name": entry.name, "path": str(entry)})
+                except (OSError, PermissionError):
+                    continue
+        except (OSError, PermissionError):
+            pass
+        drives: list = []
+        if os.name == "nt":
+            import string
+            for d in string.ascii_uppercase:
+                dp = f"{d}:\\"
+                if os.path.exists(dp):
+                    drives.append(dp)
+        parent = str(p.parent) if str(p.parent) != str(p) else ""
+        return {"dir": str(p), "parent": parent, "folders": folders, "files": files, "drives": drives}
+
     def _act_hotkey(self, action: dict, btn: dict) -> dict:
         # Makro/Tastenkürzel SYSTEM-WEIT senden (wie ein Stream Deck) — löst globale Hotkeys auch
         # im Hintergrund aus (TikTok Live Studio, OBS …). Zwei Formen:

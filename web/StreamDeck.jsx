@@ -2651,19 +2651,20 @@ function HotkeyEditor({ action, onChange }) {
 // TikTok Live Studio eingebettete Videos beim Szenenwechsel nicht zurücksetzt — mpv spielt auf Druck
 // von vorn im SELBEN Fenster (kein Flackern). mpv aus Config-Pfad/Standardort (public-clean).
 function PlayMediaEditor({ action, onChange }) {
-  const [picking, setPicking] = useState(false)
   const [st, setSt] = useState(null)
   const [busy, setBusy] = useState(false)
   const [mpvPath, setMpvPath] = useState('')
+  const [browsing, setBrowsing] = useState(false)
+  const [bd, setBd] = useState(null)        // {dir, parent, folders[], files[], drives[]}
   const load = () => getJSON('/api/mediaplayer/status')
     .then((d) => { setSt(d); setMpvPath(d.configured_path || '') })
     .catch(() => setSt({ available: false }))
   useEffect(() => { load() }, [])
-  const pick = () => {
-    setPicking(true)
-    postJSON('/api/streamdeck/pick_media', {})
-      .then((r) => { if (r && r.ok && r.path) onChange({ file: r.path }) })
-      .catch(() => {}).finally(() => setPicking(false))
+  const loadDir = (d) => getJSON('/api/mediaplayer/browse?dir=' + encodeURIComponent(d || ''))
+    .then(setBd).catch(() => setBd({ dir: '', parent: '', folders: [], files: [], drives: [] }))
+  const openBrowse = () => {
+    const cur = (action.file || '').replace(/[\\/][^\\/]*$/, '')   // Ordner der aktuellen Datei
+    loadDir(cur); setBrowsing(true)
   }
   const saveMpv = () => { setBusy(true); postJSON('/api/mediaplayer/config', { mpv_path: mpvPath }).then(() => load()).finally(() => setBusy(false)) }
   const mode = action.mode === 'stop' ? 'stop' : 'play'
@@ -2674,7 +2675,26 @@ function PlayMediaEditor({ action, onChange }) {
           <span class="muted conn-label">Video</span>
           <input class="reward-input" placeholder="Pfad zur Videodatei (.mp4 / .mkv / .webm …)" value={action.file || ''}
                  onInput={(e) => onChange({ file: e.currentTarget.value })} />
-          <button class="btn ghost small" disabled={picking} onClick={pick}>{picking ? '… wählt' : '📂 Video wählen'}</button>
+          <button class="btn ghost small" onClick={() => (browsing ? setBrowsing(false) : openBrowse())}>{browsing ? '✖ schließen' : '📂 Durchsuchen'}</button>
+        </div>
+      )}
+      {mode !== 'stop' && browsing && bd && (
+        <div class="sd-browse">
+          <div class="sd-browse-bar">
+            <button class="btn ghost small" disabled={!bd.parent} onClick={() => loadDir(bd.parent)}>⬆ ..</button>
+            <span class="sd-browse-path" title={bd.dir}>{bd.dir || '—'}</span>
+            {(bd.drives || []).map((dv) => <button class="btn ghost small" onClick={() => loadDir(dv)}>{dv}</button>)}
+          </div>
+          <div class="sd-browse-list">
+            {(bd.folders || []).map((f) => (
+              <button class="sd-browse-item folder" title={f.path} onClick={() => loadDir(f.path)}>📁 {f.name}</button>
+            ))}
+            {(bd.files || []).map((f) => (
+              <button class={'sd-browse-item file' + (action.file === f.path ? ' sel' : '')} title={f.path}
+                      onClick={() => { onChange({ file: f.path }); setBrowsing(false) }}>🎬 {f.name}</button>
+            ))}
+            {!(bd.folders || []).length && !(bd.files || []).length && <span class="muted" style="padding:8px;font-size:12px">— keine Unterordner / Videos hier —</span>}
+          </div>
         </div>
       )}
       <div class="reward-row" style="align-items:center;gap:14px">
