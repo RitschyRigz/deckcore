@@ -100,6 +100,44 @@ def _alive(slot: str) -> bool:
     return p is not None and p.poll() is None
 
 
+_EQ_KEYS = ("brightness", "contrast", "gamma", "saturation")   # mpv-Video-Equalizer, je -100..100
+
+
+def _eq_value(v):
+    try:
+        return max(-100, min(100, int(float(v))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _eq_flags(eq) -> list:
+    """{brightness,contrast,gamma,saturation} → mpv-Startflags (nur != 0)."""
+    out: list = []
+    if isinstance(eq, dict):
+        for k in _EQ_KEYS:
+            iv = _eq_value(eq.get(k))
+            if iv:
+                out.append(f"--{k}={iv}")
+    return out
+
+
+def adjust(slot: str = "media", eq=None) -> dict:
+    """Bild-Equalizer (brightness/contrast/gamma/saturation, -100..100) LIVE am laufenden mpv
+    setzen (IPC, ohne Neustart) — fürs Echtzeit-Tunen der HDR-Capture-Helligkeit. False, wenn
+    für den Slot kein mpv läuft."""
+    cmds = []
+    if isinstance(eq, dict):
+        for k in _EQ_KEYS:
+            if k in eq:
+                iv = _eq_value(eq.get(k))
+                if iv is not None:
+                    cmds.append({"command": ["set_property", k, iv]})
+    if not cmds:
+        return {"ok": False, "message": "nichts zu setzen"}
+    ok = _ipc_send(_slug(slot), *cmds)
+    return {"ok": bool(ok), "message": "Bild angepasst" if ok else "Player läuft nicht für diesen Slot"}
+
+
 def _parse_extra_args(extra) -> list:
     """``extra_args`` (String ODER Liste) → Liste von mpv-Flags. Shlex-getrennt (Quotes ok)."""
     if not extra:
@@ -114,7 +152,7 @@ def _parse_extra_args(extra) -> list:
 
 
 def play(file: str, *, slot: str = "media", loop: bool = False,
-         fullscreen: bool = False, mpv_path: str | None = None, extra_args=None) -> dict:
+         fullscreen: bool = False, mpv_path: str | None = None, extra_args=None, eq=None) -> dict:
     """Datei von VORN abspielen. Laeuft das Slot-Fenster schon → in-place neu starten (IPC,
     kein Flackern); sonst mpv frisch starten. ``slot`` = Fenster-Identitaet (Titel
     ``RigzDeck Media: <slot>`` → in TTLS als Fensterquelle waehlbar)."""
@@ -153,8 +191,9 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
             "--loop-file=inf" if loop else "--loop-file=no",
             "--fullscreen=yes" if fullscreen else "--fullscreen=no",
         ]
-        # Zusätzliche mpv-Flags (z.B. HDR-Capture-Fix: --vo=gpu-next --target-colorspace-hint=yes).
-        # Werden NUR beim Frischstart angewandt — nach Änderung den Player einmal stoppen + neu starten.
+        # Bild-Equalizer (HDR-Capture-Helligkeit) + zusätzliche mpv-Flags. NUR beim Frischstart —
+        # zum Live-Tunen ohne Neustart dient adjust() (IPC set_property).
+        args += _eq_flags(eq)
         args += _parse_extra_args(extra_args)
         try:
             CREATE_NO_WINDOW = 0x08000000     # nur die Konsole unterdruecken — mpv hat sein eigenes GUI-Fenster

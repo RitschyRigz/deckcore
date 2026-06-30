@@ -195,6 +195,14 @@ def build_streamdeck_router(
         Ersatz fürs OS-Dialog. ``?dir=`` (leer = Home). {dir, parent, folders[], files[], drives[]}."""
         return JSONResponse(get_service(request).mediaplayer_browse(request.query_params.get("dir") or ""))
 
+    @r.post("/api/mediaplayer/adjust")
+    def mediaplayer_adjust(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Bild-Equalizer LIVE am laufenden mpv setzen (HDR-Capture tunen ohne Neustart).
+        {slot, brightness?, contrast?, gamma?, saturation?} je -100..100."""
+        b = body or {}
+        eq = {k: b[k] for k in ("brightness", "contrast", "gamma", "saturation") if k in b}
+        return JSONResponse(get_service(request).mediaplayer_adjust(b.get("slot") or "media", eq))
+
     @r.post("/api/streamdeck/pick_media")
     async def streamdeck_pick_media() -> JSONResponse:
         """Nativer Datei-Dialog (Windows) für eine Videodatei (play_media). {path, name} (cancelled=true)."""

@@ -4483,10 +4483,20 @@ class DeckCoreService:
             res = _mp.stop(slot=slot)
             return {"success": bool(res.get("ok")), "message": res.get("message", "")}
         mpv_path = (self._mediaplayer_cfg() or {}).get("mpv_path") or None
+        eq = {k: action.get(k) for k in ("brightness", "contrast", "gamma", "saturation")
+              if action.get(k) not in (None, "")}
         res = _mp.play(str(action.get("file") or ""), slot=slot,
                        loop=bool(action.get("loop")), fullscreen=bool(action.get("fullscreen")),
-                       mpv_path=mpv_path, extra_args=action.get("mpv_args"))
+                       mpv_path=mpv_path, extra_args=action.get("mpv_args"), eq=eq or None)
         return {"success": bool(res.get("ok")), "message": res.get("message", "")}
+
+    def mediaplayer_adjust(self, slot: str, eq: dict) -> dict:
+        """Bild-Equalizer LIVE am laufenden mpv-Slot setzen (IPC) — fürs Echtzeit-Tunen im Editor."""
+        try:
+            from . import mediaplayer as _mp
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "message": str(e)}
+        return _mp.adjust(slot or "media", eq or {})
 
     # ── Media-Player (mpv) Config (runtime/media_player.json) + Status ─────────────────────────
     def _mediaplayer_cfg(self) -> dict:

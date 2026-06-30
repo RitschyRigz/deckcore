@@ -2730,6 +2730,30 @@ function PlayMediaEditor({ action, onChange }) {
             <b> Frischstart</b>: nach Änderung den Player einmal mit Modus „⏹ Stoppen" beenden, dann neu abspielen.</p>
         </details>
       )}
+      {mode !== 'stop' && (
+        <div class="sd-eq">
+          <div class="sd-eq-h">🎚 Bild-Korrektur <span class="muted">— live; gegen überbelichtetes HDR-Capture: Helligkeit/Gamma runter (wirkt sofort, wenn das Fenster läuft)</span></div>
+          {[['brightness', 'Helligkeit'], ['gamma', 'Gamma'], ['contrast', 'Kontrast'], ['saturation', 'Sättigung']].map(([k, lbl]) => (
+            <label class="sd-eq-row" key={k}>
+              <span class="sd-eq-lbl">{lbl}</span>
+              <input type="range" min="-100" max="100" step="1" value={action[k] || 0}
+                     onInput={(e) => {
+                       const v = Math.max(-100, Math.min(100, parseInt(e.currentTarget.value, 10) || 0))
+                       onChange({ [k]: v || undefined })
+                       postJSON('/api/mediaplayer/adjust', { slot: action.slot || 'media', [k]: v }).catch(() => {})
+                     }} />
+              <span class="sd-eq-val">{action[k] || 0}</span>
+            </label>
+          ))}
+          <div class="reward-row" style="margin-top:2px">
+            <button type="button" class="btn ghost small" onClick={() => {
+              ['brightness', 'gamma', 'contrast', 'saturation'].forEach((k) => onChange({ [k]: undefined }))
+              postJSON('/api/mediaplayer/adjust', { slot: action.slot || 'media', brightness: 0, gamma: 0, contrast: 0, saturation: 0 }).catch(() => {})
+            }}>↺ zurücksetzen</button>
+            <span class="muted" style="font-size:12px">Werte werden gespeichert + beim Frischstart angewandt.</span>
+          </div>
+        </div>
+      )}
       <div class="sd-itc">
         <div class="sd-itc-row">
           <span class={'sd-itc-dot ' + (st && st.available ? 'ok' : 'bad')}></span>

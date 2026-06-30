@@ -855,3 +855,11 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-browse-item:hover { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, transparent); }
 .sd-browse-item.folder { color: var(--accent2); font-weight: 600; }
 .sd-browse-item.file.sel { border-color: var(--ok, #4ec07a); background: color-mix(in srgb, var(--ok, #4ec07a) 14%, transparent); }
+/* Live-Bild-Equalizer (play_media — HDR-Capture-Korrektur) */
+.sd-eq { margin: 4px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent2) 5%, var(--bg)); }
+.sd-eq-h { font-size: 12px; color: var(--fg); margin-bottom: 6px; }
+.sd-eq-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.sd-eq-lbl { flex: 0 0 78px; font-size: 12px; color: var(--muted); }
+.sd-eq-row input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent2); }
+.sd-eq-val { flex: 0 0 34px; text-align: right; font: 600 12px/1 ui-monospace, monospace; color: var(--fg); }
