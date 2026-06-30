@@ -4487,7 +4487,8 @@ class DeckCoreService:
               if action.get(k) not in (None, "")}
         res = _mp.play(str(action.get("file") or ""), slot=slot,
                        loop=bool(action.get("loop")), fullscreen=bool(action.get("fullscreen")),
-                       mpv_path=mpv_path, extra_args=action.get("mpv_args"), eq=eq or None)
+                       mpv_path=mpv_path, extra_args=action.get("mpv_args"), eq=eq or None,
+                       close_on_end=bool(action.get("close_on_end")))
         return {"success": bool(res.get("ok")), "message": res.get("message", "")}
 
     def mediaplayer_adjust(self, slot: str, eq: dict) -> dict:

@@ -152,7 +152,8 @@ def _parse_extra_args(extra) -> list:
 
 
 def play(file: str, *, slot: str = "media", loop: bool = False,
-         fullscreen: bool = False, mpv_path: str | None = None, extra_args=None, eq=None) -> dict:
+         fullscreen: bool = False, mpv_path: str | None = None, extra_args=None, eq=None,
+         close_on_end: bool = False) -> dict:
     """Datei von VORN abspielen. Laeuft das Slot-Fenster schon → in-place neu starten (IPC,
     kein Flackern); sonst mpv frisch starten. ``slot`` = Fenster-Identitaet (Titel
     ``RigzDeck Media: <slot>`` → in TTLS als Fensterquelle waehlbar)."""
@@ -182,9 +183,13 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
                 old.kill()
             except Exception:  # noqa: BLE001
                 pass
+        # close_on_end: mpv beendet sich (Fenster zu), wenn das Video durch ist (keep-open=no, idle=no).
+        # Sonst: haelt den letzten Frame + bleibt fuer den In-Place-Restart bestehen (Default).
         args = [
             mpv, f,
-            "--no-border", "--force-window=yes", "--keep-open=yes", "--idle=yes",
+            "--no-border", "--force-window=yes",
+            "--keep-open=no" if close_on_end else "--keep-open=yes",
+            "--idle=no" if close_on_end else "--idle=yes",
             "--no-osc", "--ontop=no", "--no-input-default-bindings",
             "--input-ipc-server=" + _pipe_name(slot),
             "--title=RigzDeck Media: " + slot,

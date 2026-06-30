@@ -2707,6 +2707,7 @@ function PlayMediaEditor({ action, onChange }) {
         </label>
         {mode !== 'stop' && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!action.loop} onChange={(e) => onChange({ loop: e.currentTarget.checked || undefined })} /> 🔁 Loop</label>}
         {mode !== 'stop' && <label class="sd-inline" style="gap:4px;font-size:12px"><input type="checkbox" checked={!!action.fullscreen} onChange={(e) => onChange({ fullscreen: e.currentTarget.checked || undefined })} /> ⛶ Vollbild</label>}
+        {mode !== 'stop' && !action.loop && <label class="sd-inline" style="gap:4px;font-size:12px" title="mpv beendet sich + Fenster schließt, sobald das Video durchgelaufen ist"><input type="checkbox" checked={!!action.close_on_end} onChange={(e) => onChange({ close_on_end: e.currentTarget.checked || undefined })} /> 🚪 Schließen am Ende</label>}
       </div>
       <div class="reward-row">
         <span class="muted conn-label">Fenster</span>
