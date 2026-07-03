@@ -67,14 +67,25 @@ def _pipe_name(slot: str) -> str:
 
 def _ipc_send(slot: str, *commands: dict) -> bool:
     """Ein ODER MEHRERE JSON-Kommandos an ein laufendes mpv (Named Pipe) schicken — alle in EINER
-    Verbindung (newline-getrennt), damit nicht mehrere schnelle Pipe-Öffnungen auf eine Busy-Pipe
-    treffen. False, wenn die Pipe nicht erreichbar ist (mpv laeuft (noch) nicht). Blockiert nie:
-    CreateFileW kehrt sofort zurück (kein WaitNamedPipe)."""
+    Verbindung (newline-getrennt). Liefert False, wenn die Pipe NICHT EXISTIERT (mpv läuft (noch)
+    nicht) → der Aufrufer startet dann sauber frisch.
+
+    ⚠ WICHTIG (Fix 2026-07-03): mpvs JSON-IPC-Server hat nur EINE Pipe-Instanz und braucht nach
+    jedem Client einen kurzen Moment, bis eine neue FREIE Instanz bereitsteht. Aufeinanderfolgende
+    Connects treffen deshalb regelmäßig **ERROR_PIPE_BUSY (231)** — obwohl das Fenster LEBT
+    (empirisch am laufenden mpv: 1× OK, dann 4× BUSY in Folge). Würde man BUSY wie „nicht erreichbar"
+    behandeln, hielte der Aufrufer ein lebendes Fenster fälschlich für tot, TÖTET es und öffnet ein
+    neues (NEUER HWND → eine Fensterquelle/Window-Capture wie TTLS/OBS bricht → das Video „spielt
+    nicht von vorne", sondern klebt am toten Fenster). Darum: bei BUSY kurz per WaitNamedPipe auf
+    eine freie Instanz warten und erneut verbinden (Fenster existiert → in-place wiederverwenden).
+    Nur bei „Pipe nicht vorhanden" (FILE_NOT_FOUND) sofort False — dann gibt es wirklich kein
+    Fenster und ein Frischstart ist korrekt (kein Warten, keine Startverzögerung)."""
     if not commands:
         return False
     name = _pipe_name(slot)
     GENERIC_RW = 0xC0000000
     OPEN_EXISTING = 3
+    ERROR_PIPE_BUSY = 231
     try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     except Exception:  # noqa: BLE001 — nicht Windows
@@ -82,17 +93,26 @@ def _ipc_send(slot: str, *commands: dict) -> bool:
     k32.CreateFileW.restype = wintypes.HANDLE
     k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
                                 wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    h = k32.CreateFileW(name, GENERIC_RW, 0, None, OPEN_EXISTING, 0, None)
+    k32.WaitNamedPipeW.restype = wintypes.BOOL
+    k32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
     invalid = ctypes.c_void_p(-1).value
-    if not h or h == invalid:
-        return False
-    try:
-        data = "".join(json.dumps(c) + "\n" for c in commands).encode("utf-8")
-        written = wintypes.DWORD(0)
-        ok = k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
-        return bool(ok)
-    finally:
-        k32.CloseHandle(h)
+    data = "".join(json.dumps(c) + "\n" for c in commands).encode("utf-8")
+    # Bis zu 8 Versuche, bei BUSY je bis 150 ms auf eine freie Pipe-Instanz warten (gesamt << 1.5 s,
+    # praktisch nach 1–2 Versuchen erfolgreich). Verhindert das destruktive Neu-Öffnen eines
+    # lebenden Fensters bei kurz besetzter IPC-Pipe.
+    for _ in range(8):
+        h = k32.CreateFileW(name, GENERIC_RW, 0, None, OPEN_EXISTING, 0, None)
+        if h and h != invalid:
+            try:
+                written = wintypes.DWORD(0)
+                ok = k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+                return bool(ok)
+            finally:
+                k32.CloseHandle(h)
+        if ctypes.get_last_error() != ERROR_PIPE_BUSY:
+            return False   # Pipe existiert nicht (kein Fenster) o.Ä. → sofort raus (sauberer Frischstart)
+        k32.WaitNamedPipeW(name, 150)   # auf freie Instanz warten (bis 150 ms), dann erneut versuchen
+    return False
 
 
 def _alive(slot: str) -> bool:
