@@ -90,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -1394,6 +1395,12 @@ class DeckCoreService:
         self._last_eval: dict[str, float] = {}    # button-id → monotonic der letzten Auswertung
         self._sse_cache: dict[str, Any] = {}      # topic → letztes Payload
         self._poll_cache: dict[str, Any] = {}     # button-id → (value, last_fetch_ts)
+        # Per-Thread-Flag „nur Cache, kein Live-IO": die FORCIERTE Recompute nach einem Press
+        # (_schedule_recompute, läuft SYNCHRON im Press-Thread) setzt ihn → blockierende Monitore
+        # (poll-Self-HTTP, obs-Scene-WS) liefern den letzten Cache-Wert statt zu fetchen, damit ein
+        # Tastendruck NIE auf IO wartet. Der async Eval-Loop läuft in EIGENEM Thread → Flag ungesetzt
+        # → dort weiterhin voll Live-IO (er ist der eigentliche Auffrischer). threadlocal = race-frei.
+        self._tls = threading.local()
         self._obs_scene_cache: tuple = (None, 0.0)  # (aktive Szene, ts) — von einer obs_scene-Hülle genutzt
         self._scene_flow: dict = {"map": {}, "return": []}  # „logischer" Szenen-Ablauf (von→nächste, Rücksprung-Szenen)
         self._scene_hist: list = []                 # zuletzt gesehene aktive Szenen (für scene_suggest „vorherige Szene")
@@ -5377,6 +5384,9 @@ class DeckCoreService:
         val, ts = self._obs_scene_cache
         if ts and (now - ts) < _OBS_SCENE_TTL:
             return val
+        # Cache-only (Press-Recompute): nicht synchron am OBS-Websocket hängen — Cache-Wert nehmen.
+        if getattr(self._tls, "cache_only", False):
+            return val
         val = self._obs.current_scene()
         self._obs_scene_cache = (val, now)
         return val
@@ -5564,6 +5574,10 @@ class DeckCoreService:
         now = time.monotonic()
         if cached is not None and (now - cached[1]) < interval:
             return cached[0]
+        # Cache-only-Modus (forcierte Recompute nach Press): NIE hier synchron self-HTTP fetchen —
+        # letzten Wert zurückgeben (oder None, falls noch kalt); der Eval-Loop holt frisch nach.
+        if getattr(self._tls, "cache_only", False):
+            return cached[0] if cached is not None else None
         value = None
         try:
             req = urllib.request.Request(mon["url"], method="GET")
@@ -5648,11 +5662,17 @@ class DeckCoreService:
     def _schedule_recompute(self) -> None:
         # Sofort ALLES neu auflösen + pushen (z.B. nach press/upsert), ohne auf den
         # Tick zu warten — force, damit auch Buttons mit langem Override gleich umspringen.
+        # cache_only: der In-Process-Wert der gedrückten Kachel (z.B. manual_count) frischt sofort
+        # auf, aber KEIN Monitor darf hier synchron blockierendes IO machen (self-HTTP/OBS-WS) →
+        # der Press-Thread wartet nie auf IO. Fällige Live-Werte holt der async Eval-Loop nach.
         try:
+            self._tls.cache_only = True
             self._resolved = self._recompute(force=True)
             self._publish()
         except Exception as e:  # noqa: BLE001
             log.debug("schedule_recompute Fehler: %s", e)
+        finally:
+            self._tls.cache_only = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────
     async def start(self) -> None:

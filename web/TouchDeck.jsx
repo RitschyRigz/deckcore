@@ -80,7 +80,10 @@ function _accumHist(hist, buttons) {
 // 'balanced'/'eco' zeichnen Verlaufs-Graph + Live-Werte seltener neu — optisch praktisch gleich (Status/
 // Trend), aber drastisch weniger Client-Last. Pro Gerät wie das Theme: der starke S11 bleibt 'full', der
 // schwache Lenovo wählt 'eco'. Wirkt auf FastGraph (fps/frametime-Poll) UND den buttons-Push (setVis).
-export const PERF_GAPS = { full: 0, balanced: 90, eco: 150 }   // ms Mindestabstand zwischen Live-Updates
+// 'ultra' = ÜBER 'full', opt-in für sehr starke Geräte (z.B. Legion-Tab): kein Throttle (wie full) +
+// schnellerer Frametime-Graph (Quelle = PresentMon 32-60 Hz, gibt echten Spielraum her). B-Option
+// (eco/balanced) bleibt unberührt → best of both worlds; Default 'full' = null Regression.
+export const PERF_GAPS = { ultra: 0, full: 0, balanced: 90, eco: 150 }   // ms Mindestabstand zwischen Live-Updates
 export function perfMode() {
   try { const m = localStorage.getItem('rd.perf'); return PERF_GAPS[m] != null ? m : 'full' } catch { return 'full' }
 }
@@ -741,7 +744,8 @@ export function TouchDeck() {
   const [perf, setPerf] = useState(() => perfMode())  // per-Gerät-Leistungsstufe (full/balanced/eco), localStorage
   const [scale, setScale] = useState(() => deckScale())  // per-Gerät-Deck-Größe (Faktor 0.5–2.5, localStorage 'rd.scale')
   const liveGap = PERF_GAPS[perf] || 0                 // ms Mindestabstand zwischen Live-Updates (0 = kein Throttle)
-  const fastMs = liveGap ? Math.max(55, liveGap) : 55  // FastGraph-Intervall: full→55, balanced→90, eco→150
+  // FastGraph-Intervall: ultra→33 (~30 Hz, PresentMon-Quelle gibt es her), full→55 (~18 Hz), balanced→90, eco→150.
+  const fastMs = perf === 'ultra' ? 33 : (liveGap ? Math.max(55, liveGap) : 55)
   const visThrottleRef = useRef({ last: 0, timer: null, pending: null })  // Trailing-Throttle für setVis
   const [globalLook, setGlobalLook] = useState({})    // globaler Deck-Look (registry.look) — per Deck überschreibbar
 
@@ -1144,12 +1148,12 @@ export function TouchDeck() {
           <div class="t-sysmenu-perf">
             <span class="t-sysmenu-perflbl">⚡ Update-Rate</span>
             <div class="t-sysmenu-perfrow">
-              {[['full', 'Voll'], ['balanced', 'Mittel'], ['eco', 'Sparsam']].map(([k, lbl]) => (
+              {[['ultra', 'Ultra'], ['full', 'Voll'], ['balanced', 'Mittel'], ['eco', 'Sparsam']].map(([k, lbl]) => (
                 <button key={k} class={'t-sysmenu-perfbtn' + (perf === k ? ' on' : '')}
                         onClick={() => { try { localStorage.setItem('rd.perf', k) } catch (_) {} setPerf(k) }}>{lbl}</button>
               ))}
             </div>
-            <span class="t-sysmenu-perfhint">Sparsam = flüssiger auf schwachen Tablets</span>
+            <span class="t-sysmenu-perfhint">Sparsam = flüssiger auf schwachen Tablets · Ultra = nur starke Geräte</span>
           </div>
           {/* Per-Gerät-Deck-Größe — skaliert NUR die Anzeige dieses Geräts (Kachel/Schrift/Abstand), nicht das
               geteilte Layout. Menü bleibt offen → sofortiges A/B (8-Zoll-Deck am 11-Zoll-Tablet größer ziehen). */}
