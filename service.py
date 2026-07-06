@@ -413,6 +413,40 @@ def _obs_scene_def(bid: str, name: str, active_color: str = "ok", idle_color: st
             "default": {"icon": "🎬", "title": name, "color": idle_color}}
 
 
+_NUMPAD_SKIN = {"skin": "plate"}   # „Tasten-Platte"-Look (Keycap) für alle Ziffernblock-Kacheln
+
+
+def _numpad_dual_def(bid: str, token: str, digit: str, nav_icon: str, nav_color: str = "accent2") -> dict:
+    """Dual-Funktions-Ziffernblock-Kachel (0-9 + Dezimal): sendet immer die echte Keypad-Usage (Windows
+    macht je nach NumLock Zahl ODER Navigation). Die ANZEIGE folgt dem ``lock_state``-Monitor: NumLock an
+    → Ziffer; NumLock aus → Navigations-Glyph (theme-farbig). Genau wie ein echter Ziffernblock."""
+    return {"id": bid, "label": digit, "opts": dict(_NUMPAD_SKIN),
+            "action": {"type": "hotkey", "keys": token, "send_via": "arduino"},
+            "monitor": {"type": "lock_state", "key": "numlock"}, "render": "value",
+            "states": [{"when": {"op": "eq", "value": "off"}, "icon": nav_icon, "title": "", "color": nav_color}],
+            "default": {"title": digit, "icon": "", "color": ""}}
+
+
+def _numpad_ctrl_def(bid: str, token: str, glyph: str) -> dict:
+    """Steuer-/Rechen-Taste (÷ × − + ⏎) — Funktion IMMER gleich, unabhängig von NumLock. Glyph statt Text.
+    Monitor ``arduino_status`` → Kachel wird rot, wenn das HID-Board nicht erreichbar ist."""
+    return {"id": bid, "label": "", "opts": dict(_NUMPAD_SKIN),
+            "action": {"type": "hotkey", "keys": token, "send_via": "arduino"},
+            "monitor": {"type": "arduino_status"}, "render": "value",
+            "states": [{"when": {"op": "eq", "value": "unavailable"}, "icon": glyph, "title": "", "color": "err"}],
+            "default": {"icon": glyph, "title": "", "color": "accent"}}
+
+
+def _numpad_numlock_def(bid: str) -> dict:
+    """NumLock-Umschalter mit LED-Anzeige: grünes Schloss (zu) wenn an (Zahlenmodus), gedämpftes offenes
+    Schloss wenn aus (Navigationsmodus). Toggelt den echten Windows-NumLock → alle Dual-Kacheln flippen mit."""
+    return {"id": bid, "label": "NumLock", "opts": dict(_NUMPAD_SKIN),
+            "action": {"type": "hotkey", "keys": "numlock", "send_via": "arduino"},
+            "monitor": {"type": "lock_state", "key": "numlock"}, "render": "value",
+            "states": [{"when": {"op": "eq", "value": "on"}, "icon": "g:lock", "title": "", "color": "ok"}],
+            "default": {"icon": "g:unlock", "title": "", "color": "off"}}
+
+
 _SCENE_SUGGEST_BLUE = "#4ea1ff"   # festes Blau für „wahrscheinlich nächste" (Ampel-Logik, theme-unabhängig)
 
 
@@ -1144,6 +1178,7 @@ _VK_SPECIAL = {
     "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "insert": 0x2D, "ins": 0x2D,
     "printscreen": 0x2C, "capslock": 0x14, "apps": 0x5D, "contextmenu": 0x5D,
+    "numlock": 0x90, "scrolllock": 0x91,
     # Satzzeichen (OEM-VKs, US-Layout)
     "plus": 0xBB, "minus": 0xBD, "comma": 0xBC, "period": 0xBE, "slash": 0xBF,
     "backslash": 0xDC, "semicolon": 0xBA, "quote": 0xDE, "bracketleft": 0xDB,
@@ -1296,6 +1331,34 @@ def _vks_to_scans(vks: list):
         return None
 
 
+# VK-Code → kanonisches Firmware-Token (für den Arduino-HID-Weg). Die Bridge-Firmware kennt genau
+# dieselben Token wie _parse_hotkey (num1, numadd, up, f5, a, ctrl …) → Tastendrücke laufen über die
+# Position, layout-treu für Ziffernblock/Hotkeys/F-Tasten. Mehrfach belegte VKs: ERSTES Token gewinnt.
+_VK_TO_TOKEN: dict = {}
+for _tok, _vk in {**_VK_MODS, **_VK_SPECIAL}.items():
+    _VK_TO_TOKEN.setdefault(_vk, _tok)
+for _c in range(ord("a"), ord("z") + 1):             # a..z  (VK = Großbuchstabe)
+    _VK_TO_TOKEN.setdefault(_c - 32, chr(_c))
+for _d in range(10):                                  # 0..9
+    _VK_TO_TOKEN.setdefault(0x30 + _d, str(_d))
+for _n in range(1, 25):                               # F1..F24
+    _VK_TO_TOKEN.setdefault(0x6F + _n, f"f{_n}")
+
+
+def _vks_to_tokens(vks: list):
+    """VK-Codes → Firmware-Token-Liste (für den Arduino-Weg). None, wenn eine Taste kein Token hat
+    (z.B. reine Media-VKs, die die Bridge-Firmware nicht kennt) → Weg nicht möglich."""
+    if not vks:
+        return None
+    out = []
+    for vk in vks:
+        tok = _VK_TO_TOKEN.get(vk)
+        if not tok:
+            return None
+        out.append(tok)
+    return out
+
+
 class DeckCoreService:
     """Generischer Stream-Deck-Kern: Registry + Monitor-Evaluation + Aktions-Ausführung.
     Eine Hülle (z.B. die RigzDeck-App) erbt davon und registriert über
@@ -1349,6 +1412,9 @@ class DeckCoreService:
         self._interception = None   # Interception-Treiber (lazy) — Hardware-Tasten für Apps, die SendInput verwerfen (TTLS)
         self._itc_cfg: Optional[dict] = None   # runtime/interception.json (dll_path + keyboard_hwid), lazy geladen
         self._itc_state_cache: tuple = (None, 0.0)   # (button-state, monotonic) — Treiber-Status-Monitor gecacht (~5s)
+        self._arduino = None        # Arduino-HID-Bridge (lazy) — echter USB-HID-Chip, noch „echter" als der Treiber
+        self._akb_cfg: Optional[dict] = None   # runtime/arduino.json (port), lazy geladen
+        self._akb_state_cache: tuple = (None, 0.0)   # (button-state, monotonic) — Bridge-Status-Monitor gecacht (~5s)
         self._mp_cfg: Optional[dict] = None   # runtime/media_player.json (mpv_path), lazy geladen
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
@@ -1438,6 +1504,8 @@ class DeckCoreService:
         M("obsbot_cam", self._mon_obsbot_cam)
         M("obsbot_track", self._mon_obsbot_track)
         M("interception_status", self._mon_interception_status)   # Hardware-Treiber-Status für Makro-Buttons
+        M("arduino_status", self._mon_arduino_status)   # Arduino-HID-Bridge-Status für Makro-Buttons
+        M("lock_state", self._mon_lock_state)   # NumLock/CapsLock/ScrollLock-Umschaltstatus (animierter Ziffernblock)
 
     def _register_extra_handlers(self) -> None:
         """Hook für Hüllen: zusätzliche (hüllen-spezifische) Capabilities registrieren.
@@ -3393,6 +3461,70 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "deck": deck_id or None, "created": 1, "button": bid}
 
+    def populate_numpad(self) -> dict:
+        """Baut ein komplettes **Ziffernblock-Deck** im ECHTEN 17-Tasten-Layout (festes Deck ``numpad``):
+        NumLock · / · * · − oben, +/Enter hochkant, 0 breit. Jede Taste = ``hotkey`` mit
+        ``send_via='arduino'`` (echte USB-HID-Keypad-Usage → Windows macht je nach NumLock Zahl ODER
+        Navigation). Die ANZEIGE der Dual-Tasten (0-9, .) folgt live dem NumLock (``lock_state``): an =
+        Ziffern, aus = Navigations-Symbole. Idempotent (User-Kosmetik bleibt via _regen_preserve)."""
+        # Steuer-/Rechentasten (Funktion konstant): (id, token, Glyph, x, y, w, h)
+        CTRL = [
+            ("np_div", "num/", "g:divide", 1, 0, 1, 1), ("np_mul", "num*", "g:x", 2, 0, 1, 1),
+            ("np_sub", "num-", "g:minus", 3, 0, 1, 1), ("np_add", "numadd", "g:plus", 3, 1, 1, 2),
+            ("np_enter", "numenter", "g:enter", 3, 3, 1, 2),
+        ]
+        # Dual-Funktionstasten: (id, token, Ziffer, Navigations-Glyph, x, y, w, h)
+        DUAL = [
+            ("np_7", "num7", "7", "g:line-start", 0, 1, 1, 1), ("np_8", "num8", "8", "g:arrow-up", 1, 1, 1, 1), ("np_9", "num9", "9", "g:chevrons-up", 2, 1, 1, 1),
+            ("np_4", "num4", "4", "g:arrow-left", 0, 2, 1, 1), ("np_5", "num5", "5", "g:circle", 1, 2, 1, 1), ("np_6", "num6", "6", "g:arrow-right", 2, 2, 1, 1),
+            ("np_1", "num1", "1", "g:line-end", 0, 3, 1, 1), ("np_2", "num2", "2", "g:arrow-down", 1, 3, 1, 1), ("np_3", "num3", "3", "g:chevrons-down", 2, 3, 1, 1),
+            ("np_0", "num0", "0", "g:insert", 0, 4, 2, 1), ("np_dot", "num.", ".", "g:delete", 2, 4, 1, 1),
+        ]
+        CAT = "Ziffernblock"
+        did = "numpad"
+        deck = self._deck(did)
+        if deck is None:
+            deck = self._fresh_deck(did, "🔢 Ziffernblock", "🔢", False)
+            self._decks.append(deck)
+        # kanonisches Template: Layout immer setzen (freie x/y-Platzierung, keine Labels = cleaner Keycap)
+        deck["layout"] = {**dict(_LAYOUT_DEFAULT), "free": True, "show_label": False}
+        if CAT not in deck["categories"]:
+            deck["categories"].append(CAT)
+        if CAT not in self._pool_categories:
+            self._pool_categories.append(CAT)
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        deck["items"] = []            # kanonisches Template → Layout/Funktion bei jedem Bau frisch
+        created = updated = 0
+
+        def _add(fn: dict, x: int, y: int, w: int, h: int) -> None:
+            # KEIN _regen_preserve: beim Ziffernblock IST die Anzeige (monitor/states/default) die
+            # Kern-Funktion (Dual-Modus) → immer frisch, nur ein evtl. selbst gesetztes Symbol behalten.
+            nonlocal created, updated
+            bid = fn["id"]; fn["pool_cat"] = CAT
+            ex = pool_by_id.get(bid)
+            if ex is not None:
+                self._buttons[self._buttons.index(ex)] = fn; updated += 1
+            else:
+                self._buttons.append(fn); created += 1
+            pool_by_id[bid] = fn; self._removed.discard(bid)
+            it = {"button": bid, "category": CAT, "style": {}, "hidden": False, "x": x, "y": y}
+            if w > 1:
+                it["w"] = w
+            if h > 1:
+                it["h"] = h
+            deck["items"].append(it)
+
+        _add(_numpad_numlock_def("np_numlock"), 0, 0, 1, 1)
+        for bid, token, glyph, x, y, w, h in CTRL:
+            _add(_numpad_ctrl_def(bid, token, glyph), x, y, w, h)
+        for bid, token, digit, nav_icon, x, y, w, h in DUAL:
+            nav_color = "off" if bid == "np_5" else "accent2"   # 5 hat im Nav-Modus keine Funktion → gedämpft
+            _add(_numpad_dual_def(bid, token, digit, nav_icon, nav_color), x, y, w, h)
+
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        total = 1 + len(CTRL) + len(DUAL)
+        return {"ok": True, "deck": did, "created": created, "updated": updated, "buttons": total}
+
     # ── Presets NUR in den Pool generieren (keine Deck-Platzierung) — für die Pool-Ansicht ──
     def generate_obs_scene_buttons(self, scenes: list) -> dict:
         """Pro OBS-Szene einen Szenen-Wechsel-Button NUR im Pool anlegen/auffrischen (KEINE
@@ -4625,13 +4757,23 @@ class DeckCoreService:
             return {"success": False, "message": "Hardware-Treiber nicht bereit (Interception?) — im Makro-Editor prüfen/kalibrieren"}
         return {"success": False, "message": "Hotkey nur unter Windows"}
 
-    # ── Sende-Weg-Dispatch (Standard SendInput vs. Interception-Hardware-Treiber) ──────────────
+    # ── Sende-Weg-Dispatch (SendInput · Interception-Treiber · Arduino-HID-Chip) ──────────────
     def _send_combo(self, vks: list, *, send_via: str = "", hold_ms: int = 18) -> bool:
-        """Eine VK-Kombo senden. ``send_via=="driver"`` → Interception (echte Hardware-Scancodes,
-        für Apps die OS-Injektion verwerfen); sonst der Standard-Weg ``_send_vk_combo`` (SendInput).
-        Bei gewünschtem Treiber-Weg KEIN stiller SendInput-Fallback (sonst „Erfolg" gemeldet, obwohl
-        die Ziel-App nichts bekommt) → False, wenn der Treiber nicht bereit ist."""
-        if str(send_via).strip().lower() == "driver":
+        """Eine VK-Kombo senden. Drei gleichwertige Wege über ``send_via``: ``"driver"`` → Interception
+        (echte Hardware-Scancodes im Kernel); ``"arduino"`` → externer USB-HID-Chip (echtes Keyboard-
+        Gerät, layout-treu via Token); sonst Standard ``_send_vk_combo`` (SendInput). Bei explizit
+        gewähltem Hardware-Weg KEIN stiller SendInput-Fallback (sonst „Erfolg" gemeldet, obwohl die
+        Ziel-App nichts bekommt) → False, wenn der Weg nicht bereit ist."""
+        via = str(send_via).strip().lower()
+        if via == "arduino":
+            toks = _vks_to_tokens(vks)
+            if toks is None:
+                return False
+            akb = self._get_arduino()
+            if akb is None:
+                return False
+            return bool(akb.send_chord(toks))
+        if via == "driver":
             scans = _vks_to_scans(vks)
             if scans is None:
                 return False
@@ -4807,6 +4949,103 @@ class DeckCoreService:
         self._itc_state_cache = (state, now)
         return state
 
+    # ── Arduino-HID-Bridge: Config (runtime/arduino.json) + Status/Kalibrierung ─────────────────
+    def _arduino_cfg(self) -> dict:
+        if self._akb_cfg is None:
+            f = self._runtime / "arduino.json"
+            try:
+                self._akb_cfg = json.loads(f.read_text("utf-8")) if f.exists() else {}
+            except Exception:  # noqa: BLE001
+                self._akb_cfg = {}
+        return self._akb_cfg
+
+    def _save_arduino_cfg(self) -> None:
+        f = self._runtime / "arduino.json"
+        try:
+            f.write_text(json.dumps(self._akb_cfg or {}, indent=2, ensure_ascii=False), "utf-8")
+        except Exception as e:  # noqa: BLE001
+            log.warning("arduino.json nicht speicherbar: %s", e)
+
+    def _get_arduino(self):
+        """Lazy-Singleton der Arduino-HID-Bridge (Modul ist optional; pyserial lazy)."""
+        try:
+            from . import arduino_kb as _akb_mod  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return None
+        port = (self._arduino_cfg() or {}).get("port") or None
+        if self._arduino is None:
+            self._arduino = _akb_mod.ArduinoKeyboard(port=port)
+        else:
+            self._arduino.configure(port)
+        return self._arduino
+
+    def arduino_set_config(self, *, port: Optional[str] = None) -> dict:
+        """Bevorzugten seriellen Port setzen (leer = wieder Auto-Discovery über die ID-Signatur)."""
+        cfg = self._arduino_cfg()
+        if port is not None:
+            cfg["port"] = str(port).strip()
+        self._akb_cfg = cfg
+        self._save_arduino_cfg()
+        if self._arduino is not None:
+            self._arduino.configure(cfg.get("port") or None)
+        self._akb_state_cache = (None, 0.0)
+        return dict(cfg)
+
+    def arduino_calibrate(self) -> dict:
+        """Board neu suchen (Port kann gewechselt haben) und den gefundenen Port zurückgeben."""
+        akb = self._get_arduino()
+        if akb is None:
+            return {"ok": False, "error": "Arduino-Modul/pyserial nicht ladbar"}
+        port = akb.rescan()
+        self._akb_state_cache = (None, 0.0)
+        if not port:
+            return {"ok": False, "error": akb.last_error or "kein Board gefunden"}
+        return {"ok": True, "port": port}
+
+    def arduino_status(self) -> dict:
+        """Bridge-Status für den Makro-Editor (verfügbar? welcher Port? alle seriellen Ports)."""
+        cfg = self._arduino_cfg() or {}
+        akb = self._get_arduino()
+        if akb is None:
+            return {"available": False, "error": "Modul/pyserial nicht ladbar",
+                    "port": cfg.get("port") or "", "resolved_port": "", "ports": []}
+        avail = akb.available()
+        return {
+            "available": bool(avail),
+            "port": cfg.get("port") or "",
+            "resolved_port": akb.resolved_port,
+            "ports": akb.list_serial_ports(),
+            "error": "" if avail else (akb.last_error or ""),
+        }
+
+    def _mon_arduino_status(self, mon: dict, btn: dict):
+        """Bridge-Status für die Button-Anzeige: 'ready' (Board erreichbar) · 'unavailable'."""
+        return self.arduino_button_state()
+
+    def arduino_button_state(self) -> str:
+        """Gecachte (~5s) Ampel für den Bridge-Status-Monitor — teilt EINE Board-Probe über alle
+        Buttons/Ticks (sonst pro Tick je Button ein Port-Auf-/Abbau)."""
+        now = time.monotonic()
+        state, ts = self._akb_state_cache
+        if state is not None and now - ts < 5.0:
+            return state
+        akb = self._get_arduino()
+        state = "ready" if (akb is not None and akb.available()) else "unavailable"
+        self._akb_state_cache = (state, now)
+        return state
+
+    def _mon_lock_state(self, mon: dict, btn: dict):
+        """Umschalt-Status einer Lock-Taste (``key`` ∈ numlock/capslock/scrolllock, Default numlock) via
+        Windows ``GetKeyState`` → 'on' | 'off'. Treibt den animierten Ziffernblock (NumLock an = Zahlen,
+        aus = Navigation). Nicht-Windows → 'off'."""
+        vks = {"numlock": 0x90, "capslock": 0x14, "scrolllock": 0x91}
+        vk = vks.get(str(mon.get("key") or "numlock").strip().lower(), 0x90)
+        try:
+            import ctypes
+            return "on" if (ctypes.windll.user32.GetKeyState(vk) & 1) else "off"
+        except Exception:  # noqa: BLE001
+            return "off"
+
     def _act_open_deck(self, action: dict, btn: dict) -> dict:
         # „Ordner": öffnet beim Tippen ein anderes Deck als Unterseite/Radial-Menü. Die NAVIGATION
         # passiert im Touch-Panel (es liest action.deck/mode direkt aus der Registry) — serverseitig
@@ -4915,7 +5154,7 @@ class DeckCoreService:
                           "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
-                          "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "displayfusion_profile", "none"]
+                          "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "arduino_status", "lock_state", "displayfusion_profile", "none"]
         def _ordered(reg, order):
             return [t for t in order if t in reg] + [t for t in reg if t not in order]
         # Integrations-Gating (P2): ein Cap-Typ erscheint im Editor nur, wenn er KEINER Integration

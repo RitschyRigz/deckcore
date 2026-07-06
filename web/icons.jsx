@@ -173,6 +173,16 @@ export const GLYPHS = {
   menu: '<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  'chevrons-up': '<path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/>',
+  'chevrons-down': '<path d="m7 6 5 5 5-5"/><path d="m7 13 5 5 5-5"/>',
+  'line-start': '<line x1="6" x2="6" y1="5" y2="19"/><line x1="10" x2="20" y1="12" y2="12"/><polyline points="14 8 10 12 14 16"/>',
+  'line-end': '<line x1="18" x2="18" y1="5" y2="19"/><line x1="4" x2="14" y1="12" y2="12"/><polyline points="10 8 14 12 10 16"/>',
+
+  // ── 🔢 Ziffernblock / Tasten ────────────────────────────────────────────
+  divide: '<circle cx="12" cy="6" r="1"/><line x1="5" x2="19" y1="12" y2="12"/><circle cx="12" cy="18" r="1"/>',
+  enter: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
+  insert: '<path d="M12 4v9"/><polyline points="8 9 12 13 16 9"/><line x1="5" x2="19" y1="19" y2="19"/>',
+  delete: '<path d="M20 5H9l-7 7 7 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z"/><line x1="18" x2="12" y1="9" y2="15"/><line x1="12" x2="18" y1="9" y2="15"/>',
 }
 
 // Such-Stichworte (deutsch + englisch) je Glyph — der Name selbst ist immer mit-durchsucht.
@@ -233,8 +243,12 @@ export const GLYPH_KW = {
   'arrow-left': 'pfeil links', 'arrow-right': 'pfeil rechts',
   'chevron-up': 'pfeil hoch', 'chevron-down': 'pfeil runter aufklappen',
   'chevron-left': 'pfeil links', 'chevron-right': 'pfeil rechts weiter',
-  back: 'zurueck zurueckpfeil', home: 'startseite haus zuhause', menu: 'menue hamburger liste',
+  back: 'zurueck zurueckpfeil', home: 'startseite haus zuhause pos1', menu: 'menue hamburger liste',
   more: 'mehr optionen punkte', maximize: 'vollbild vergroessern',
+  'chevrons-up': 'bild hoch seite hoch page up doppelpfeil', 'chevrons-down': 'bild runter seite runter page down doppelpfeil',
+  'line-start': 'pos1 zeilenanfang home anfang', 'line-end': 'ende zeilenende end',
+  divide: 'geteilt division ziffernblock numpad', enter: 'eingabe enter return zeilenumbruch',
+  insert: 'einfuegen einfg insert', delete: 'entfernen entf loeschen delete',
 }
 
 // Picker-Kategorien (Reihenfolge = Anzeige). Jeder Glyph genau einmal in einer Sparte.
@@ -247,7 +261,8 @@ export const GLYPH_CATS = [
   { label: '⚙️ System / Apps', names: ['power', 'refresh', 'settings', 'terminal', 'folder', 'folder-open', 'file', 'window', 'cpu', 'hard-drive', 'download', 'upload', 'trash', 'lock', 'unlock', 'wifi', 'bluetooth', 'save', 'copy', 'clipboard', 'search', 'keyboard', 'globe', 'link', 'external-link', 'command'] },
   { label: '🏠 Smart Home / Wetter', names: ['lightbulb', 'plug', 'thermometer', 'fan', 'sun', 'moon', 'cloud', 'droplet', 'flame', 'snowflake', 'wind', 'toggle', 'zap'] },
   { label: '✨ Symbole / Status', names: ['sparkles', 'crown', 'bookmark', 'tag', 'pin', 'clock', 'calendar', 'timer', 'alert', 'info', 'help', 'check', 'check-circle', 'x', 'plus', 'minus', 'circle', 'square', 'triangle', 'hexagon'] },
-  { label: '➡️ Navigation', names: ['arrow-up', 'arrow-down', 'arrow-left', 'arrow-right', 'chevron-up', 'chevron-down', 'chevron-left', 'chevron-right', 'back', 'home', 'menu', 'more', 'maximize'] },
+  { label: '➡️ Navigation', names: ['arrow-up', 'arrow-down', 'arrow-left', 'arrow-right', 'chevron-up', 'chevron-down', 'chevron-left', 'chevron-right', 'chevrons-up', 'chevrons-down', 'line-start', 'line-end', 'back', 'home', 'menu', 'more', 'maximize'] },
+  { label: '🔢 Ziffernblock', names: ['divide', 'enter', 'insert', 'delete'] },
 ]
 
 export const GLYPH_PREFIX = 'g:'

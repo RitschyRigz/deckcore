@@ -79,6 +79,8 @@ const MONITOR_LABELS = {
   obsbot_track: 'OBSBOT-Tracking (an / aus / schläft) — Kamera wählbar',
   weather: 'Wetter am Standort (Open-Meteo) — als „🪪 Status-Karte"',
   interception_status: '🛡 Hardware-Treiber-Status (bereit / Fallback / aus) — für Treiber-Makros',
+  arduino_status: '🎮 Arduino-HID-Board-Status (bereit / aus) — für Arduino-Makros',
+  lock_state: '🔢 NumLock/CapsLock/ScrollLock-Status (an / aus) — für animierte Ziffernblock-Kacheln',
 }
 const MONITOR_INFO = {
   aggregate: { text: 'Kombiniert mehrere Überwachungen zu EINEM Status. „Bedingung je Monitor" (z. B. „= trackon") wird auf JEDEN Sub-Monitor angewandt; „Verknüpfung" reduziert: ALLE (UND) → an/aus (truthy/falsy) · EINE (ODER) → an/aus · Anzahl → Zahl (gt/lt/eq) · Stufen → all/some/none (eq). Beispiel: „nur wenn BEIDE Kameras tracken" = ALLE + Bedingung „= trackon".', values: null, bool: true },
@@ -109,6 +111,8 @@ const MONITOR_INFO = {
   manual_count: { text: 'Zählt, wie oft das Manual-Event ausgelöst wurde. Setze {value} in den Titel (z. B. „Tode: {value}").', values: null, bool: false },
   weather: { text: 'Aktuelles Wetter „⛅ 18° Zürich" (Open-Meteo, gratis/ohne Key). Standort automatisch per IP oder manuell in der „🌤 Wetter"-Kategorie. Am schönsten als „Darstellung → 🪪 Status-Karte"; {value} = der Wetter-Text.', values: null, bool: false },
   interception_status: { text: 'Status des Interception-Hardware-Treibers (für Treiber-Makros): ready (Treiber da + kalibrierte Tastatur erkannt) · fallback (Treiber da, aber kalibrierte Tastatur fehlt → erstes Gerät) · unavailable (Treiber nicht bereit). Nutze „= gleich" + Wert für die Farbe. Kalibrieren in der Kategorie „⌨ Makro / Hotkey".', values: ['ready', 'fallback', 'unavailable'], bool: false },
+  arduino_status: { text: 'Status der Arduino-HID-Bridge (für Arduino-Makros): ready (Board erreichbar) · unavailable (kein Board / pyserial fehlt). Nutze „= gleich" + Wert für die Farbe. Board suchen/wählen in der Kategorie „⌨ Makro / Hotkey".', values: ['ready', 'unavailable'], bool: false },
+  lock_state: { text: 'Umschalt-Status einer Lock-Taste (Feld „key": numlock/capslock/scrolllock, Default numlock): on (an) · off (aus). Treibt den animierten Ziffernblock — z.B. Kachel „= gleich off" zeigt das Navigations-Symbol, sonst die Ziffer.', values: ['on', 'off'], bool: false, param: 'key' },
 }
 const OP_LABELS = {
   any: 'immer (egal welcher Wert)', truthy: 'ist wahr/an', falsy: 'ist falsch/aus',
@@ -2240,7 +2244,10 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, ownedTypes, bu
       {!it.enabled && it.id !== 'hotkey' && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — aktiviere sie (Knopf oben rechts), um Buttons zu generieren.</p>}
       {it.id === 'audio' && <AudioMixerControl onReload={onReload} />}
       {it.id === 'weather' && <WeatherControl onReload={onReload} />}
+      {it.id === 'hotkey' && <div class="sd-int-grp-h" style="margin-top:10px">🛡 Interception-Treiber</div>}
       {it.id === 'hotkey' && <InterceptionPanel />}
+      {it.id === 'hotkey' && <div class="sd-int-grp-h" style="margin-top:12px">🎮 Arduino-HID-Chip</div>}
+      {it.id === 'hotkey' && <ArduinoPanel onBuilt={onReload} />}
       {it.id === 'hotkey' && !it.enabled && <p class="hint" style="margin:10px 0 0">Kategorie ist aus — bestehende Makro-Buttons laufen weiter; zum Anlegen/Bearbeiten oben aktivieren.</p>}
       {it.enabled && ownsButtons && (ownButtons.length > 0 || it.id === 'hotkey') && (
         <div style="margin-top:14px">
@@ -2584,6 +2591,68 @@ function InterceptionPanel() {
   )
 }
 
+// Arduino-HID-Panel: Board-Status + Port + „neu suchen" + 1-Klick-Ziffernblock-Deck. Der externe
+// 32U4-Chip (Firmware RIGZDECK-KB) meldet sich als ECHTES USB-Keyboard — noch „echter" als der
+// Interception-Treiber, ohne Treiber/Reboot; auch für einen echten Ziffernblock.
+function ArduinoPanel({ onBuilt }) {
+  const [st, setSt] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const load = () => getJSON('/api/arduino/status')
+    .then((d) => setSt(d))
+    .catch(() => setSt({ available: false, error: 'Status nicht abrufbar', ports: [] }))
+  useEffect(() => { load() }, [])
+  const rescan = () => {
+    setBusy(true); setMsg('● Suche Board…')
+    postJSON('/api/arduino/calibrate', {})
+      .then((d) => { setMsg(d.ok ? '✅ Board gefunden: ' + d.port : '⚠ ' + (d.error || 'kein Board')); return load() })
+      .catch((e) => setMsg('⚠ ' + e.message))
+      .finally(() => setBusy(false))
+  }
+  const setPort = (port) => {
+    setBusy(true)
+    postJSON('/api/arduino/config', { port }).then(() => load()).finally(() => setBusy(false))
+  }
+  const buildNumpad = () => {
+    setBusy(true); setMsg('● Baue Ziffernblock-Deck…')
+    postJSON('/api/streamdeck/numpad/build', {})
+      .then((d) => { setMsg(d.ok ? '✅ Ziffernblock-Deck „🔢" gebaut (' + d.buttons + ' Tasten)' : '⚠ fehlgeschlagen'); onBuilt && onBuilt() })
+      .catch((e) => setMsg('⚠ ' + e.message))
+      .finally(() => setBusy(false))
+  }
+  const avail = !!(st && st.available)
+  const ports = (st && st.ports) || []
+  return (
+    <div class="sd-itc">
+      <div class="sd-itc-row">
+        <span class={'sd-itc-dot ' + (avail ? 'ok' : 'bad')}></span>
+        <b>{avail ? 'Board bereit' : 'Kein Board'}</b>
+        {avail && st.resolved_port && <kbd class="sd-kbd">{st.resolved_port}</kbd>}
+        {st && !avail && st.error && <span class="muted">— {st.error}</span>}
+        <button type="button" class="btn ghost small" disabled={busy} onClick={rescan}>🔎 Neu suchen</button>
+      </div>
+      <details class="sd-itc-adv">
+        <summary class="muted">Port manuell wählen (nur falls Auto-Suche das Board nicht findet)</summary>
+        <div class="sd-itc-row" style="margin-top:4px">
+          <select class="so-delay" value={(st && st.port) || ''} onChange={(e) => setPort(e.currentTarget.value)}>
+            <option value="">Automatisch (per ID-Signatur)</option>
+            {ports.map((p) => <option value={p.port}>{p.port}{p.arduino ? ' ★' : ''} — {p.desc || p.hwid}</option>)}
+          </select>
+        </div>
+      </details>
+      {msg && <p class="muted" style="margin:2px 0">{msg}</p>}
+      <div class="sd-itc-row" style="margin-top:6px">
+        <button type="button" class="btn small" disabled={busy || !avail} onClick={buildNumpad}>🔢 Ziffernblock-Deck bauen</button>
+        <span class="muted" style="font-size:12px">Legt ein komplettes Numpad-Deck an — jede Taste läuft über diesen Chip.</span>
+      </div>
+      <p class="muted sd-help">Ein <b>ATmega32U4-Chip</b> (Arduino Micro/Leonardo, Pro Micro) mit der Firmware
+        <b> RIGZDECK-KB</b> meldet sich als <b>echtes USB-Keyboard</b> — noch „echter" als der Treiber, ohne Treiber/
+        Reboot. Ideal für einen <b>echten Ziffernblock</b> und für Apps, die OS-simulierte Tasten verwerfen. Firmware:
+        <code> deckcore/firmware/rigzdeck_kb/</code>. Ein klassischer <b>Nano/Uno</b> (FTDI/CH340) kann KEIN HID.</p>
+    </div>
+  )
+}
+
 function HotkeyEditor({ action, onChange }) {
   // Lokale Zeilen-Liste (erlaubt leere Schritte beim Bauen); persistiert kompakt nach action:
   // 1 Kombo → {keys}; mehrere → {steps:[{keys,delay}]}.
@@ -2631,18 +2700,21 @@ function HotkeyEditor({ action, onChange }) {
       </div>
       <div class="reward-row" style="margin:8px 0 2px;align-items:center">
         <span class="muted" style="font-size:12px">Senden über:</span>
-        <select class="so-delay" value={action.send_via === 'driver' ? 'driver' : 'standard'}
-                onChange={(e) => onChange({ send_via: e.currentTarget.value === 'driver' ? 'driver' : undefined })}>
+        <select class="so-delay"
+                value={action.send_via === 'driver' ? 'driver' : action.send_via === 'arduino' ? 'arduino' : 'standard'}
+                onChange={(e) => { const v = e.currentTarget.value; onChange({ send_via: (v === 'driver' || v === 'arduino') ? v : undefined }) }}>
           <option value="standard">Standard (SendInput)</option>
           <option value="driver">🛡 Hardware-Treiber (Interception)</option>
+          <option value="arduino">🎮 Arduino-HID (externer Chip)</option>
         </select>
       </div>
       {action.send_via === 'driver' && <InterceptionPanel />}
+      {action.send_via === 'arduino' && <ArduinoPanel />}
       <p class="muted sd-help">Feld anklicken und die <b>echte Tastenkombination drücken</b> — RigzDeck tippt sie
         beim Druck selbst, <b>system-weit</b> (das Fenster muss nicht im Vordergrund sein). Für <b>OBS</b> und die
         meisten Programme reicht <b>Standard</b>. <b>TikTok&nbsp;Live&nbsp;Studio</b> verwirft OS-simulierte Tasten —
-        dafür <b>„Senden über → 🛡 Hardware-Treiber"</b> wählen (Interception, einmalig kalibrieren). Setup: in der
-        Ziel-App unter Hotkeys eine Kombo vergeben und hier <b>dieselbe</b> aufnehmen.</p>
+        dafür <b>🛡 Hardware-Treiber</b> (Interception) oder <b>🎮 Arduino-HID</b> (externer USB-Chip = echtes
+        Keyboard, auch für einen echten Ziffernblock) wählen.</p>
     </>
   )
 }

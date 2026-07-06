@@ -178,6 +178,24 @@ def build_streamdeck_router(
         res = await asyncio.to_thread(svc.interception_calibrate, ms)
         return JSONResponse(res)
 
+    # ── Arduino-HID-Bridge (Makro-Editor „Senden über → 🎮 Arduino-HID") ──────────────────────
+    @r.get("/api/arduino/status")
+    def arduino_status(request: Request) -> JSONResponse:
+        """Bridge-Status: {available, port, resolved_port, ports:[{port,desc,hwid,arduino}], error}."""
+        return JSONResponse(get_service(request).arduino_status())
+
+    @r.post("/api/arduino/config")
+    def arduino_config(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Bevorzugten seriellen Port setzen (leer = Auto-Discovery über die ID-Signatur). {port?}"""
+        return JSONResponse(get_service(request).arduino_set_config(port=(body or {}).get("port")))
+
+    @r.post("/api/arduino/calibrate")
+    async def arduino_calibrate(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Board neu suchen (Port kann gewechselt haben) → {ok, port?, error?}. In Thread ausgelagert."""
+        svc = get_service(request)
+        res = await asyncio.to_thread(svc.arduino_calibrate)
+        return JSONResponse(res)
+
     # ── Media-Player (mpv) — play_media-Aktion „Video im Fenster (Fensterquelle)" ──────────────
     @r.get("/api/mediaplayer/status")
     def mediaplayer_status(request: Request) -> JSONResponse:
@@ -461,6 +479,14 @@ if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
         """Legt einen „Windows-Lautstärke-Regler" (Master-Fader + VU) IM POOL an (Pool-Kategorie
         „Audio") — KEINE Deck-Anlage. Platzierung per Drag&Drop im Decks-Tab."""
         res = get_service(request).populate_winaudio_volume()
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
+        return JSONResponse(res)
+
+    @r.post("/api/streamdeck/numpad/build")
+    def streamdeck_numpad_build(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Baut ein komplettes Ziffernblock-Deck (jede Taste = hotkey über den Arduino-HID-Chip)."""
+        res = get_service(request).populate_numpad()
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("reason", "fehlgeschlagen"))
         return JSONResponse(res)

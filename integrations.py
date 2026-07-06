@@ -34,18 +34,19 @@ BASE = {
 }
 
 # ── Makro / Hotkey — eigene, abschaltbare Kategorie (vorher in der Basis) ───────────────────────
-# Bündelt den ``hotkey``-Aktionstyp (Tastenkürzel/Makros system-weit) + den Treiber-Status-Monitor
-# ``interception_status`` (Button-Anzeige bereit/Fallback/aus). Abschalten = reines Editor-Gating
-# (Typ aus den Auswahllisten); bestehende Makro-Buttons laufen weiter. Die Interception-Treiber-
-# Einstellungen (DLL-Pfad + Tastatur-Kalibrierung) leben im Panel DIESER Kategorie (integration-scoped).
+# Bündelt den ``hotkey``-Aktionstyp (Tastenkürzel/Makros system-weit) + die Hardware-Status-Monitore
+# ``interception_status`` / ``arduino_status`` (Button-Anzeige bereit/aus). Abschalten = reines Editor-
+# Gating (Typ aus den Auswahllisten); bestehende Makro-Buttons laufen weiter. Die Hardware-Sende-Wege
+# (Interception-Treiber-DLL/Kalibrierung, Arduino-HID-Port) leben im Panel DIESER Kategorie (scoped).
 HOTKEY = {
     "id": "hotkey", "emoji": "⌨", "label": "Makro / Hotkey",
     "description": "Tastenkürzel & Makros system-weit senden — löst globale Hotkeys auch im "
-                   "Hintergrund aus (OBS, Spiele …). Optional über den Interception-Hardware-Treiber, "
-                   "damit auch Apps reagieren, die OS-simulierte Tasten verwerfen (z.B. TikTok Live "
-                   "Studio). Treiber-Einstellungen + Tastatur-Kalibrierung findest du unten.",
+                   "Hintergrund aus (OBS, Spiele …). Optional über echte Hardware, damit auch Apps "
+                   "reagieren, die OS-simulierte Tasten verwerfen (z.B. TikTok Live Studio): den "
+                   "Interception-Kernel-Treiber ODER einen externen Arduino-HID-Chip (echtes USB-"
+                   "Keyboard, z.B. für einen echten Ziffernblock). Einstellungen findest du unten.",
     "actions": ["hotkey"],
-    "monitors": ["interception_status"],
+    "monitors": ["interception_status", "arduino_status"],
 }
 
 # ── Windows-Audio — eigene Kategorie (base=True → immer da, kein externes Programm nötig). ──────
