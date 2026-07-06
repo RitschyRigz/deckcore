@@ -419,12 +419,13 @@ _NUMPAD_SKIN = {"skin": "plate"}   # „Tasten-Platte"-Look (Keycap) für alle Z
 def _numpad_dual_def(bid: str, token: str, digit: str, nav_icon: str, nav_color: str = "accent2") -> dict:
     """Dual-Funktions-Ziffernblock-Kachel (0-9 + Dezimal): sendet immer die echte Keypad-Usage (Windows
     macht je nach NumLock Zahl ODER Navigation). Die ANZEIGE folgt dem ``lock_state``-Monitor: NumLock an
-    → Ziffer; NumLock aus → Navigations-Glyph (theme-farbig). Genau wie ein echter Ziffernblock."""
+    → Ziffer-Glyph (gross/zentriert wie die Steuertasten); NumLock aus → Navigations-Glyph (theme-farbig)."""
+    digit_icon = "g:num-dot" if digit == "." else "g:num-" + digit
     return {"id": bid, "label": digit, "opts": dict(_NUMPAD_SKIN),
             "action": {"type": "hotkey", "keys": token, "send_via": "arduino"},
             "monitor": {"type": "lock_state", "key": "numlock"}, "render": "value",
             "states": [{"when": {"op": "eq", "value": "off"}, "icon": nav_icon, "title": "", "color": nav_color}],
-            "default": {"title": digit, "icon": "", "color": ""}}
+            "default": {"icon": digit_icon, "title": "", "color": "accent"}}
 
 
 def _numpad_ctrl_def(bid: str, token: str, glyph: str) -> dict:

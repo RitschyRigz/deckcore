@@ -183,6 +183,19 @@ export const GLYPHS = {
   enter: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
   insert: '<path d="M12 4v9"/><polyline points="8 9 12 13 16 9"/><line x1="5" x2="19" y1="19" y2="19"/>',
   delete: '<path d="M20 5H9l-7 7 7 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Z"/><line x1="18" x2="12" y1="9" y2="15"/><line x1="12" x2="18" y1="9" y2="15"/>',
+  // Ziffern als Text-Glyph (gefüllt statt gestrichelt) → gross/zentriert wie die anderen Glyphs,
+  // folgen currentColor (Theme). Vom Ziffernblock-Generator genutzt (g:num-7 …), nicht im Picker.
+  'num-0': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">0</text>',
+  'num-1': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">1</text>',
+  'num-2': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">2</text>',
+  'num-3': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">3</text>',
+  'num-4': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">4</text>',
+  'num-5': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">5</text>',
+  'num-6': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">6</text>',
+  'num-7': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">7</text>',
+  'num-8': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">8</text>',
+  'num-9': '<text x="12" y="12" text-anchor="middle" dominant-baseline="central" font-size="20" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">9</text>',
+  'num-dot': '<circle cx="12" cy="16" r="1.8" fill="currentColor" stroke="none"/>',
 }
 
 // Such-Stichworte (deutsch + englisch) je Glyph — der Name selbst ist immer mit-durchsucht.
