@@ -67,6 +67,34 @@ _DENY = ("chrome", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "ie
          "rigzdeck", "python", "code.exe", "discord", "obs", "ritschymirror", "electron", "dwm.exe",
          "textinputhost", "searchhost", "applicationframehost", "shellexperiencehost", "widgets", "nvidia")
 
+# ── Deny-Liste laufzeit-/config-erweiterbar (§0 — KEIN fest verdrahteter Tool-Name) ───────────────
+# Der Basis-_DENY bleibt fest; ZUSAETZLICHE Namen (z. B. ein umbenanntes Capture-/Spiegel-Tool nach
+# einem Update, das den Spiel-Scan sonst kapert) kommen ueber ENV FRAMETIME_DENY_EXTRA (Komma-getrennt)
+# ODER zur Laufzeit via set_deny_extra() (vom Host persistiert + per API /api/frametime/config setzbar,
+# auch remote). So bricht ein Mirror-Rename den Scan NIE wieder ohne Neubau. Substring-Match, lowercase.
+def _split_names(raw) -> tuple:
+    if not raw:
+        return ()
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return tuple(str(x).strip().lower() for x in raw if str(x).strip())
+
+_deny_extra: tuple = _split_names(os.environ.get("FRAMETIME_DENY_EXTRA"))
+
+def set_deny_extra(names) -> tuple:
+    """Zusaetzliche Deny-Substrings setzen (ersetzt die bisherige Extra-Liste). Gibt die neue Liste zurueck."""
+    global _deny_extra
+    _deny_extra = _split_names(names)
+    return _deny_extra
+
+def deny_extra() -> tuple:
+    return _deny_extra
+
+def _is_denied(name: str) -> bool:
+    if not name:
+        return False
+    return any(d in name for d in _DENY) or any(d in name for d in _deny_extra)
+
 
 class PM_QUERY_ELEMENT(ctypes.Structure):
     _fields_ = [("metric", ctypes.c_uint32), ("stat", ctypes.c_uint32),
@@ -179,8 +207,9 @@ class FrametimeSource:
         self._ensure()
         return {"available": self._available, "source": "presentmon",
                 "presenting": self._presenting, "tracked_pid": self._tracked_pid,
+                "tracked_name": _proc_name(self._tracked_pid) if self._tracked_pid else "",
                 "fps": self._fps_last, "frametime": self._ft_last, "reason": self._reason,
-                "per_frame": bool(self._fquery),
+                "per_frame": bool(self._fquery), "deny_extra": list(_deny_extra),
                 "percentiles": dict(self._pct) if self._pct else None}
 
     def series(self, kind: str) -> dict:
@@ -376,7 +405,7 @@ class FrametimeSource:
         best = (0, None, None)
         candidates = set()
         for pid in _visible_window_pids():
-            if any(d in _proc_name(pid) for d in _DENY):
+            if _is_denied(_proc_name(pid)):
                 continue
             candidates.add(pid)
             f, t = self._poll(pid)           # trackt beim ersten Mal und BLEIBT getrackt (Fenster füllt sich)

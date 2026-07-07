@@ -458,6 +458,16 @@ if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
         kind = "frametime" if request.query_params.get("kind") == "frametime" else "fps"
         return JSONResponse(get_service(request).frametime_series(kind))
 
+    @r.get("/api/frametime/config")
+    def frametime_config(request: Request) -> JSONResponse:
+        """Aktuelle Extra-Deny-Liste des Spiel-Scans (config-erweiterbar statt hartcodiert)."""
+        return JSONResponse(get_service(request).frametime_config())
+
+    @r.post("/api/frametime/config")
+    def frametime_set_config(request: Request, body: dict = Body(...)) -> JSONResponse:
+        """Extra-Deny-Substrings setzen + persistieren. body = {deny:[…]} — auch remote (Mirror-Rename fixen)."""
+        return JSONResponse(get_service(request).frametime_set_deny(body.get("deny") or []))
+
     @r.post("/api/streamdeck/deck/{deck_id}/populate_displayfusion")
     def streamdeck_deck_populate_df(deck_id: str, request: Request) -> JSONResponse:
         res = get_service(request).populate_displayfusion_profiles(deck_id)

@@ -98,7 +98,7 @@ from typing import Any, Optional
 
 from .obs import ObsDirect   # direkter obs-websocket-Client (lazy obsws — Import bleibt schlank)
 from .hwinfo import HwinfoReader   # HWiNFO-Sensoren (Shared Memory / Registry, lazy + graceful)
-from .frametime import FrametimeSource   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt)
+from .frametime import FrametimeSource, set_deny_extra as _ft_set_deny, deny_extra as _ft_deny_extra   # PresentMon-FPS/Frametime (lazy-Sampler, graceful, erkannt) + config-erweiterbare Deny-Liste (§0)
 from .wavelink import WaveLinkDirect   # Wave-Link-Audio-JSON-RPC (Mixes/Channels/Meter/Main; lazy)
 from .obsbot_uvc import ObsBotUVC   # OBSBOT-Kamerasteuerung CENTER-FREI via rohes UVC (rein Python, echtes Readback)
 from .weather import WeatherSource   # Wetter (Open-Meteo + IP-Auto-Standort, gratis/key-frei, gecacht, opt-in)
@@ -1413,6 +1413,7 @@ class DeckCoreService:
         self._obs = ObsDirect(obs_host, obs_port, obs_password)
         self._hwinfo = HwinfoReader()   # HWiNFO-Sensoren (generische Kern-Quelle; liest erst bei Bedarf)
         self._frametime = FrametimeSource()   # PresentMon-FPS/Frametime (Sampler startet LAZY, nur wenn genutzt)
+        self._load_frametime_cfg()            # runtime/frametime.json {deny:[…]} → Extra-Deny (config statt hartcodiert)
         self._weather = WeatherSource(config_path=str(self._runtime / "weather.json"))   # Wetter (lazy, gecacht, opt-in)
         self._wl = WaveLinkDirect()   # Wave-Link-Audio: Mixes/Channels/Meter/Main-Output (lazy, Idle-Stop)
         self._obsbot = ObsBotUVC()   # OBSBOT-Kamerasteuerung CENTER-FREI (rohes UVC, eigener COM-Worker, echtes byte24-Readback)
@@ -4094,6 +4095,32 @@ class DeckCoreService:
     def frametime_series(self, kind: str) -> dict:
         """High-Rate-Verlauf {data:[…]} für ``fps``|``frametime`` (Graph-Kachel pollt das schnell)."""
         return self._frametime.series(kind)
+
+    def _load_frametime_cfg(self) -> None:
+        """runtime/frametime.json {deny:[…]} → zusätzliche Deny-Substrings für den Spiel-Scan (§0)."""
+        try:
+            f = self._runtime / "frametime.json"
+            if f.exists():
+                cfg = json.loads(f.read_text(encoding="utf-8"))
+                _ft_set_deny(cfg.get("deny") or [])
+        except Exception:  # noqa: BLE001
+            pass
+
+    def frametime_config(self) -> dict:
+        """Aktuelle Extra-Deny-Liste (config-erweiterbar, ohne Neubau/remote setzbar)."""
+        return {"deny": list(_ft_deny_extra())}
+
+    def frametime_set_deny(self, names) -> dict:
+        """Extra-Deny-Substrings für den Spiel-Scan setzen + persistieren (runtime/frametime.json).
+        So schließt man ein umbenanntes Capture-/Spiegel-Tool ohne Neubau aus (auch remote per API)."""
+        cur = _ft_set_deny(names)
+        try:
+            self._runtime.mkdir(parents=True, exist_ok=True)
+            (self._runtime / "frametime.json").write_text(
+                json.dumps({"deny": list(cur)}, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"deny": list(cur)}
 
     # ── Wave Link (direkter JSON-RPC-Client) — Host-Endpoints + Editor-Listen + Fader ──
     def wavelink_status(self, probe: bool = False) -> dict:
