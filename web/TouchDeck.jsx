@@ -64,8 +64,6 @@ function pickInitialDeck(deckList, def) {
 // grob anzeigen: hier sammelt das Frontend, was der Eval-Loop pusht — eine spätere High-Rate-Quelle
 // (z.B. PresentMon-Frametimes) füllt denselben Puffer feiner.
 const _HIST_MAX = 90
-// px-Toleranz für einen Kachel-Tap: bleibt der Finger darunter = Press feuern, darüber = Scroll/Drag (kein Press).
-const TAP_MOVE = 12
 function _accumHist(hist, buttons) {
   for (const id in buttons) {
     const v = Number(buttons[id] && buttons[id].value)
@@ -98,32 +96,6 @@ export function perfMode() {
 export const SCALE_STEPS = [['0.85', 'S'], ['1', 'M'], ['1.25', 'L'], ['1.5', 'XL'], ['1.85', 'XXL']]
 export function deckScale() {
   try { const v = parseFloat(localStorage.getItem('rd.scale')); return (v >= 0.5 && v <= 2.5) ? v : 1 } catch { return 1 }
-}
-
-// ── Per-Gerät-Haptik (localStorage 'rd.haptic') ──────────────────────────────────────────────────
-// Kurzer Vibrations-Tick beim BESTÄTIGTEN Tastendruck (Web-Vibration-API) — das haptische Gegenstück
-// zum blauen Druck-Rahmen: fühlbare Bestätigung „Press ist durch", ohne auf die Kachel zu schauen
-// (genau das Signal, das bei verschluckten Marker-Taps fehlte). Pro Gerät wie Theme/Perf/Scale.
-// Default 'aus' = opt-in: nur Geräte MIT Motor + auf Wunsch (Desktop/iOS haben keinen → stiller No-op).
-// navigator.vibrate wirkt nur nach einer Nutzer-Geste (ein Tap IST eine) + in Android-Chromium/WebView
-// (die APK-Hülle braucht dafür die VIBRATE-Permission; im Tablet-Browser sofort da). Feuert bewusst NUR
-// beim akzeptierten Tap (in onTap, nach dem Wisch-Guard) → ein Scroll vibriert NICHT.
-export const HAPTIC_STEPS = [['0', 'Aus'], ['15', 'Leicht'], ['30', 'Stark']]   // ms Vibrationsdauer
-export function hapticMs() {
-  try { const v = parseInt(localStorage.getItem('rd.haptic'), 10); return (v >= 0 && v <= 100) ? v : 0 } catch { return 0 }
-}
-export function buzz() {
-  try {
-    const ms = hapticMs(); if (ms <= 0) return
-    // Android-WebView-Hüllen (z.B. RigzDeck-APK) leiten die Web-Vibration-API NICHT an den Motor weiter
-    // (auch mit VIBRATE-Permission tot) → bevorzugt die native Host-Bridge DeckHostNative.vibrate(ms), die
-    // den echten Android-Vibrator anspricht. Im Tablet-Browser existiert die Bridge nicht → Fallback auf
-    // navigator.vibrate (dort funktioniert es). Beides generisch, host-agnostisch.
-    if (typeof window !== 'undefined' && window.DeckHostNative && typeof window.DeckHostNative.vibrate === 'function') {
-      window.DeckHostNative.vibrate(ms); return
-    }
-    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(ms)
-  } catch (_) {}
 }
 
 // High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
@@ -771,7 +743,6 @@ export function TouchDeck() {
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
   const [perf, setPerf] = useState(() => perfMode())  // per-Gerät-Leistungsstufe (full/balanced/eco), localStorage
   const [scale, setScale] = useState(() => deckScale())  // per-Gerät-Deck-Größe (Faktor 0.5–2.5, localStorage 'rd.scale')
-  const [haptic, setHaptic] = useState(() => hapticMs())  // per-Gerät-Haptik (ms Vibration beim Press, localStorage 'rd.haptic')
   const liveGap = PERF_GAPS[perf] || 0                 // ms Mindestabstand zwischen Live-Updates (0 = kein Throttle)
   // FastGraph-Intervall: ultra→33 (~30 Hz, PresentMon-Quelle gibt es her), full→55 (~18 Hz), balanced→90, eco→150.
   const fastMs = perf === 'ultra' ? 33 : (liveGap ? Math.max(55, liveGap) : 55)
@@ -962,7 +933,6 @@ export function TouchDeck() {
   const onTap = useCallback(async (id, evt) => {
     const { actionById, overlay, navStack } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
-    buzz()                                              // haptische Press-Bestätigung (No-op ohne Motor/Setting)
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
       if ((a.mode || 'replace') === 'radial') {
@@ -989,31 +959,6 @@ export function TouchDeck() {
       setOverlay(null)
     }
   }, [])
-
-  // ── Touch-robuster Kachel-Tap (NICHT auf den vom Browser synthetisierten ``click`` verlassen) ──
-  // Auf Tablets unterdrückt der Browser den click, sobald er den Touch als Scroll/Drag deutet — schon bei
-  // minimaler Fingerbewegung auf einem scrollbaren Deck. Folge: der Press wurde NIE gesendet, obwohl die
-  // Kachel kurz aufleuchtete (nativer :active-Highlight) → Marker „nicht erkannt" (Legion-Tablet 07-06).
-  // Fix: eigene Tap-Erkennung über Pointer-Events wie beim Fader. pointerdown merkt Position + zeigt sofort
-  // den Druck; pointerup feuert den Press NUR, wenn der Finger < TAP_MOVE px gewandert ist (echter Tipp).
-  // Ein Scroll (mehr Bewegung) bzw. pointercancel (Browser übernimmt fürs Scrollen) feuert nichts → ein
-  // Marker-Tipp geht IMMER durch, Scrollen bleibt möglich.
-  const tapRef = useRef(null)   // { id, x, y, moved } des aktiven Pointer-Taps
-  const onTileDown = useCallback((id, e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return       // nur linke Maustaste
-    tapRef.current = { id, x: e.clientX, y: e.clientY, moved: false }
-    setPressed(id)                                                // sofortiges Feedback, unabhängig vom Backend
-  }, [])
-  const onTileMove = useCallback((e) => {
-    const d = tapRef.current; if (!d) return
-    if (Math.abs(e.clientX - d.x) > TAP_MOVE || Math.abs(e.clientY - d.y) > TAP_MOVE) d.moved = true
-  }, [])
-  const onTileUp = useCallback((id, e) => {
-    const d = tapRef.current; tapRef.current = null
-    if (!d || d.id !== id || d.moved) { setPressed(''); return }  // Scroll/Drag/fremde Kachel → kein Press
-    onTap(id, e)                                                   // echter Tipp → Press feuern
-  }, [])
-  const onTileCancel = useCallback(() => { tapRef.current = null; setPressed('') }, [])
 
   if (!decks.length) return <div class="t-empty" style="margin:30px auto">Keine Decks in der Registry.</div>
 
@@ -1095,8 +1040,7 @@ export function TouchDeck() {
       <button key={id}
               class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '')}
               style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
-              onPointerDown={(e) => onTileDown(id, e)} onPointerMove={onTileMove}
-              onPointerUp={(e) => onTileUp(id, e)} onPointerCancel={onTileCancel}>
+              onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} skin={skin} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
           : isReadout ? <Readout v={v} opts={o} skin={skin} />
@@ -1222,19 +1166,6 @@ export function TouchDeck() {
               ))}
             </div>
             <span class="t-sysmenu-perfhint">Nur dieses Gerät · M = Standard</span>
-          </div>
-          {/* Per-Gerät-Haptik — kurzer Vibrations-Tick beim bestätigten Press (nur Geräte mit Motor, z.B.
-              Legion-Tab). Fühlbare Bestätigung „Marker ist durch", ohne auf die Kachel zu schauen. Der Klick
-              vibriert direkt mit der gewählten Stärke → sofortiges A/B-Gefühl. */}
-          <div class="t-sysmenu-perf">
-            <span class="t-sysmenu-perflbl">📳 Vibration</span>
-            <div class="t-sysmenu-perfrow">
-              {HAPTIC_STEPS.map(([k, lbl]) => (
-                <button key={k} class={'t-sysmenu-perfbtn' + (haptic === parseInt(k, 10) ? ' on' : '')}
-                        onClick={() => { try { localStorage.setItem('rd.haptic', k) } catch (_) {} setHaptic(parseInt(k, 10)); buzz() }}>{lbl}</button>
-              ))}
-            </div>
-            <span class="t-sysmenu-perfhint">Nur dieses Gerät · fühlbarer Tick beim Tastendruck</span>
           </div>
         </div>
       )}
