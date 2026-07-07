@@ -98,6 +98,28 @@ export function deckScale() {
   try { const v = parseFloat(localStorage.getItem('rd.scale')); return (v >= 0.5 && v <= 2.5) ? v : 1 } catch { return 1 }
 }
 
+// Haptik: kurzer Vibrationspuls bei bestätigtem Tap. Android-WebView leitet navigator.vibrate NICHT an den
+// Motor durch → native APK-Bridge DeckHostNative.vibrate(ms) (v0.17.0, echter System-Vibrator + VIBRATE-Perm)
+// bevorzugt, sonst Browser-navigator.vibrate. Per-Gerät abschaltbar (localStorage 'rd.haptic', Default an).
+export function hapticOn() {
+  try { return localStorage.getItem('rd.haptic') !== 'off' } catch { return true }
+}
+// Stärke = Pulslänge in ms (Amplitude ist auf den meisten Geräten eh schon ~max/DEFAULT_AMPLITUDE bzw. gar
+// nicht steuerbar → Dauer ist der zuverlässige, geräteübergreifende Hebel). Default = Mittel (20 ms).
+export const HAPTIC_STEPS = [['12', 'Sanft'], ['20', 'Mittel'], ['35', 'Stark']]
+export function hapticMs() {
+  try { const v = parseInt(localStorage.getItem('rd.hapticms'), 10); return (v >= 5 && v <= 80) ? v : 20 } catch { return 20 }
+}
+export function buzz(ms) {
+  if (!hapticOn()) return
+  const dur = ms || hapticMs()
+  try {
+    const n = typeof window !== 'undefined' && window.DeckHostNative
+    if (n && typeof n.vibrate === 'function') { n.vibrate(dur); return }
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(dur)
+  } catch (_) {}
+}
+
 // High-Rate-Graph für fps/frametime: pollt /api/frametime/series schnell (die Quelle = PresentMon
 // sampelt im ms-Bereich; die Anzeige liest gröber). Zeigt einen klaren Hinweis, wenn keine Daten
 // (kein Spiel / PresentMon fehlt) — nie stumm leer. ``ms`` = Poll-/Render-Intervall (per-Gerät gedrosselt).
@@ -743,6 +765,8 @@ export function TouchDeck() {
   const pageVisible = usePageVisible()                // Tab/Display aus → die schweren Live-Polls pausieren (Phase 3)
   const [perf, setPerf] = useState(() => perfMode())  // per-Gerät-Leistungsstufe (full/balanced/eco), localStorage
   const [scale, setScale] = useState(() => deckScale())  // per-Gerät-Deck-Größe (Faktor 0.5–2.5, localStorage 'rd.scale')
+  const [haptic, setHaptic] = useState(() => hapticOn())  // per-Gerät-Haptik (Vibrieren beim Tap), localStorage 'rd.haptic'
+  const [hapMs, setHapMs] = useState(() => hapticMs())    // per-Gerät-Haptik-Stärke (Pulslänge ms), localStorage 'rd.hapticms'
   const liveGap = PERF_GAPS[perf] || 0                 // ms Mindestabstand zwischen Live-Updates (0 = kein Throttle)
   // FastGraph-Intervall: ultra→33 (~30 Hz, PresentMon-Quelle gibt es her), full→55 (~18 Hz), balanced→90, eco→150.
   const fastMs = perf === 'ultra' ? 33 : (liveGap ? Math.max(55, liveGap) : 55)
@@ -905,8 +929,10 @@ export function TouchDeck() {
     const t = e.touches && e.touches[0]; if (!t) return
     const dy = t.clientY - s.y, dx = t.clientX - s.x
     // Klar horizontale Geste → als Wisch markieren: ein Button-Tap, der gleich danach feuert, wird verworfen
-    // (die Fader regeln das selbst über ihren Richtungs-Lock). Schon ab 24 px, damit der Schutz früh greift.
-    if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 1.2) swipeAtRef.current = Date.now()
+    // (die Fader regeln das selbst über ihren Richtungs-Lock). Schwelle bei 64 px = klar UNTER dem 80-px-
+    // Deck-Wechsel (Guard armt rechtzeitig), aber weit ÜBER Tap-Jitter — sonst tötet ein hyper-sensibler
+    // Digitizer (165-Hz-Legion) normale Marker-Taps client-seitig (blauer Rahmen blitzt, kein /press).
+    if (Math.abs(dx) > 64 && Math.abs(dx) > Math.abs(dy) * 1.2) swipeAtRef.current = Date.now()
     // Horizontaler Wisch (klar seitlich) im Vollbild auf Top-Level → Deck wechseln (eine Geste = ein Wechsel).
     if (fullscreen && !navStack.length && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       cycleDeck(dx < 0 ? 1 : -1); swipeRef.current = null
@@ -933,6 +959,7 @@ export function TouchDeck() {
   const onTap = useCallback(async (id, evt) => {
     const { actionById, overlay, navStack } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
+    buzz()                                               // bestätigter Tap → kurzer Haptik-Puls (falls aktiviert)
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
       if ((a.mode || 'replace') === 'radial') {
@@ -1166,6 +1193,20 @@ export function TouchDeck() {
               ))}
             </div>
             <span class="t-sysmenu-perfhint">Nur dieses Gerät · M = Standard</span>
+          </div>
+          {/* Per-Gerät-Haptik — Vibrieren beim Tap. Auf Android braucht es die native APK-Bridge (v0.17.0);
+              im normalen Browser wirkt nur navigator.vibrate (viele Desktops ignorieren es). */}
+          <div class="t-sysmenu-perf">
+            <span class="t-sysmenu-perflbl">📳 Haptik</span>
+            <div class="t-sysmenu-perfrow">
+              <button class={'t-sysmenu-perfbtn' + (!haptic ? ' on' : '')}
+                      onClick={() => { try { localStorage.setItem('rd.haptic', 'off') } catch (_) {} setHaptic(false) }}>Aus</button>
+              {HAPTIC_STEPS.map(([k, lbl]) => (
+                <button key={k} class={'t-sysmenu-perfbtn' + (haptic && Math.abs(hapMs - parseInt(k, 10)) < 1 ? ' on' : '')}
+                        onClick={() => { const ms = parseInt(k, 10); try { localStorage.setItem('rd.haptic', 'on'); localStorage.setItem('rd.hapticms', k) } catch (_) {} setHaptic(true); setHapMs(ms); buzz(ms) }}>{lbl}</button>
+              ))}
+            </div>
+            <span class="t-sysmenu-perfhint">Vibrieren beim Tippen · Stärke = Pulslänge · nur dieses Gerät</span>
           </div>
         </div>
       )}
