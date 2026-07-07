@@ -908,8 +908,8 @@ export function TouchDeck() {
     clearTimeout(flashT.current)
     flashT.current = setTimeout(() => setDeckFlash(''), 1100)
   }
-  const goBack = () => { setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
-  const closeOverlay = () => setOverlay(null)
+  const goBack = () => { buzz(); setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
+  const closeOverlay = () => { buzz(); setOverlay(null) }
 
   // Cache-umgehender Hard-Reload (frische index.html → frisches Bundle; Tablet muss die App nicht mehr
   // schließen/öffnen). Cache-Bust per Query-Param + replace (keine History-Einträge).
