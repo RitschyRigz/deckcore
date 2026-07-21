@@ -63,16 +63,28 @@ function pickInitialDeck(deckList, def) {
 // (gedeckelt). Wird für ALLE numerischen Werte gesammelt; nur Graph-Kacheln lesen ihn. Schnell sampeln /
 // grob anzeigen: hier sammelt das Frontend, was der Eval-Loop pusht — eine spätere High-Rate-Quelle
 // (z.B. PresentMon-Frametimes) füllt denselben Puffer feiner.
-const _HIST_MAX = 90
-function _accumHist(hist, buttons) {
+const _HIST_CAP = 1300   // Backstop-Deckel je Kachel (deckt ein 1800-s-Fenster @ ~1,5-s-Push ab) — das Anzeige-Fenster ist zeitbasiert
+function _accumHist(hist, tsHist, buttons, now) {
   for (const id in buttons) {
     const v = Number(buttons[id] && buttons[id].value)
     if (Number.isFinite(v)) {
       const arr = hist[id] || (hist[id] = [])
-      arr.push(v)
-      if (arr.length > _HIST_MAX) arr.shift()
+      const ts = tsHist[id] || (tsHist[id] = [])
+      arr.push(v); ts.push(now)
+      if (arr.length > _HIST_CAP) { arr.shift(); ts.shift() }
     }
   }
+}
+// Zeit-Fenster einer Graph-Kachel: aus dem gedeckelten Verlauf nur die Werte der letzten `winSec` Sekunden.
+// Das Fenster ist ZEITbasiert (nicht Punkte-fix) → global + pro Kachel einstellbar; ohne winSec = voller Puffer.
+function histWindow(vals, tss, winSec, now) {
+  if (!vals || vals.length < 2) return vals || []
+  if (!tss || tss.length !== vals.length || !(winSec > 0)) return vals
+  const cutoff = now - winSec * 1000
+  let start = 0
+  while (start < tss.length && tss[start] < cutoff) start++
+  if (start > vals.length - 2) start = Math.max(0, vals.length - 2)   // alles älter als das Fenster → letzte 2 behalten (Linie nie leer)
+  return start === 0 ? vals : vals.slice(start)
 }
 
 // ── Per-Gerät-Leistungsstufe (localStorage 'rd.perf') ────────────────────────────────────────────
@@ -741,6 +753,7 @@ export function TouchDeck() {
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
   const [optsById, setOptsById] = useState({})       // button-id → opts (Schrift/Farbe/Uhr-Modus für Text/Uhr-Buttons)
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
+  const tsRef = useRef({})                            // button-id → Zeitstempel je Verlaufswert (für das zeitbasierte Graph-Fenster)
   const [wlMeters, setWlMeters] = useState({})       // Wave-Link VU-Pegel {id:0..1} (geteilter schneller Poll)
   const [wlState, setWlState] = useState({})         // Wave-Link {id:{level,muted}} (geteilter langsamer Poll)
   const [waSnap, setWaSnap] = useState({})           // Windows-Master {available,level,muted,peak} (geteilter Poll)
@@ -789,14 +802,14 @@ export function TouchDeck() {
 
   useEffect(() => {
     loadReg()
-    getJSON('/api/streamdeck/resolved').then((d) => { _accumHist(histRef.current, d.buttons || {}); setVis(d.buttons || {}) }).catch(() => {})
+    getJSON('/api/streamdeck/resolved').then((d) => { _accumHist(histRef.current, tsRef.current, d.buttons || {}, Date.now()); setVis(d.buttons || {}) }).catch(() => {})
   }, [])
   useEffect(() => () => { const t = visThrottleRef.current; if (t.timer) { clearTimeout(t.timer); t.timer = null } }, [])
   // Live-Werte gedrosselt anwenden (per-Gerät): Verlauf IMMER akkumulieren (billig, kein Render), aber setVis
   // höchstens alle ``liveGap`` ms (full=0 → sofort). Trailing-Edge → der letzte Stand landet garantiert. Presses
   // bleiben sofort (lokaler ``pressed``-State, läuft NICHT über vis) → die Drossel kostet keine Tap-Reaktion.
   const pushVis = (buttons) => {
-    _accumHist(histRef.current, buttons)
+    _accumHist(histRef.current, tsRef.current, buttons, Date.now())
     if (!liveGap) { setVis(buttons); return }
     const t = visThrottleRef.current
     t.pending = buttons
@@ -1051,6 +1064,8 @@ export function TouchDeck() {
     const o = optsById[id] || {}
     const skin = o.skin || defSkin   // Kachel-Stil: Tasten-Override (opts.skin) vor globalem Default
     const statSty = isStat ? statStyle(v, o) : ''
+    // Graph-Verlaufsfenster in Sekunden: pro Kachel (opts.window) vor globalem Look-Default (_effLook.graphWindow).
+    const gWin = isGraph ? (o.window > 0 ? o.window : (_effLook.graphWindow || 135)) : 0
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
       return (
@@ -1076,7 +1091,7 @@ export function TouchDeck() {
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
               {['fps', 'frametime'].includes((monById[id] || {}).type)
                 ? <FastGraph kind={(monById[id] || {}).type} color={v.color} opts={o} ms={fastMs} />
-                : <Sparkline data={histRef.current[id]} color={v.color} opts={o} uid={id} />}
+                : <Sparkline data={histWindow(histRef.current[id], tsRef.current[id], gWin, Date.now())} color={v.color} opts={o} uid={id} />}
             </>
           ) : isGauge ? (
             <Gauge value={v.value} opts={o} />

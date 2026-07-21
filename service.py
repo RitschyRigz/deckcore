@@ -198,7 +198,8 @@ _THEME_VAR_KEYS = ("--bg", "--bg2", "--bg3", "--line", "--fg", "--muted",
 _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
 _LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live", "off")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
-                 "folder": True, "folderColor": "#c8a44e", "frame": True, "colorMode": "source"}
+                 "folder": True, "folderColor": "#c8a44e", "frame": True, "colorMode": "source",
+                 "graphWindow": 135}
 
 
 def _look_overrides(o) -> dict:
@@ -227,6 +228,13 @@ def _look_overrides(o) -> dict:
         clean = {k: v for k, v in pal.items() if k in _SMART and _is_hex_color(v)}
         if clean:
             out["palette"] = clean
+    try:                                              # Graph-Verlaufsfenster in Sekunden (globaler Default + pro Deck)
+        gw = o.get("graphWindow")
+        if gw not in (None, ""):
+            gw = float(gw)
+            out["graphWindow"] = 5.0 if gw < 5 else (1800.0 if gw > 1800 else round(gw, 1))
+    except (TypeError, ValueError):
+        pass
     return out
 
 
@@ -320,6 +328,13 @@ def _sanitize_opts(o) -> dict:
         if o.get("lineWidth") not in (None, ""):
             lw = float(o["lineWidth"])
             out["lineWidth"] = 0.5 if lw < 0.5 else (6.0 if lw > 6 else lw)
+    except (TypeError, ValueError):
+        pass
+    try:                                               # Graph-Verlaufsfenster in Sekunden pro Kachel; leer = folgt global
+        w = o.get("window")
+        if w not in (None, ""):
+            w = float(w)
+            out["window"] = 5.0 if w < 5 else (1800.0 if w > 1800 else round(w, 1))
     except (TypeError, ValueError):
         pass
     # 🎨 Design-Variante (rein kosmetisch, generisch je Viz-Typ). EIN Feld pro Button (ein Button hat genau

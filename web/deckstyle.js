@@ -107,7 +107,7 @@ export const VU_VARIANTS = [
 // Globaler Deck-„Look" (Kachel-Stil-Default / Druck-Bestätigung / Ordner-Rahmen). GENERISCH: von TouchDeck
 // (Panel) UND StreamDeck (Editor-Vorschau) aus der Registry (`look`) angewandt → Cockpit + RigzDeck identisch,
 // ohne Hüllen-Theme-System. Kachel-Stil/Druck-Modus als body-data (deck.css liest sie), Farben/Breite als Vars.
-export const LOOK_DEFAULT = { tile: 'brackets', press: 'ring', pressColor: 'accent2', folder: true, folderColor: '#c8a44e', frame: true }
+export const LOOK_DEFAULT = { tile: 'brackets', press: 'ring', pressColor: 'accent2', folder: true, folderColor: '#c8a44e', frame: true, graphWindow: 135 }
 export function applyDeckLook(look) {
   const lk = { ...LOOK_DEFAULT, ...(look || {}) }
   try {

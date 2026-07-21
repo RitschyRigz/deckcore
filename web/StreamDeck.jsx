@@ -664,6 +664,15 @@ function GlobalLookEditor({ look, onReload }) {
             <input type="checkbox" checked={lk.frame !== false} onChange={(e) => save({ frame: e.currentTarget.checked })} /> an
           </label>
         </div>
+        <label style={fld}>Graph-Zeitfenster
+          <span style="display:flex;gap:5px;align-items:center;color:var(--fg);font-weight:500">
+            <input class="so-delay" style="width:74px" type="number" min="5" max="1800" step="5"
+                   title="Wie viele Sekunden Verlauf die Sensor-Graphen zeigen (Standard für alle Decks). Einzelne Graph-Kacheln können im Button-Editor ihr eigenes Fenster tragen."
+                   value={lk.graphWindow ?? 135}
+                   onChange={(e) => save({ graphWindow: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted" style="font-weight:400">Sek.</span>
+          </span>
+        </label>
       </div>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
         können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
@@ -3792,6 +3801,11 @@ function StatesEditor({ states, def, options, monitor, action, label, render, op
             <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:6px" title="Oberste 20 % der Skala werden rot (nur bei festem Bereich). Aus z. B. bei Lüfter/Pumpe, wo hoch = gut.">
               <input type="checkbox" checked={(opts || {}).crit !== false}
                      onChange={(e) => onOpts({ ...(opts || {}), crit: e.currentTarget.checked ? undefined : false })} /> Kritisch-Zone</label>
+            <span class="muted conn-label" style="margin-left:8px" title="Wie viele Sekunden Verlauf diese Kurve zeigt. Leer = globaler Standard. Gilt für Sensor-Graphen; FPS/Frametime laufen bewusst fest RTSS-schnell.">Fenster</span>
+            <input class="so-delay" style="width:64px" type="number" min="5" max="1800" step="5" placeholder="global"
+                   value={(opts || {}).window ?? ''}
+                   onInput={(e) => onOpts({ ...(opts || {}), window: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted" style="font-size:11px">s</span>
           </div>
           <div class="reward-row sd-state" style="flex-wrap:wrap">
             <label class="muted" style="display:flex;align-items:center;gap:4px"><input type="checkbox" checked={(opts || {}).line !== false}
