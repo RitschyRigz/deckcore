@@ -19,9 +19,13 @@ sodass die Host-App / der Service nichts merkt außer „es funktioniert zuverl�
     COM-Objekte (Filter/IKsControl/IAMCameraControl, pro Cam gecacht). Jede öffentliche
     Methode reicht eine Aufgabe an den Worker und blockt kurz aufs Ergebnis — so gibt es
     nie Cross-Thread-COM-Marshaling (derselbe Stolperstein wie WASAPI im Sub-Thread).
-  • **Echtes Status-Readback** (kein „Stats lügen" mehr): der Worker pollt zyklisch
-    ``byte24`` je Cam und füllt einen Cache; ``status``/``cam_status``/``tracking_state``
-    lesen nur den Cache (nicht-blockierend). Idle-Stop ohne Status-Leser.
+  • **Echtes Status-Readback** (kein „Stats lügen" mehr): jeder Schaltvorgang liest ``byte24``
+    zurück und füllt einen Cache; ``status``/``cam_status``/``tracking_state`` lesen NUR den
+    Cache (nicht-blockierend, kein Kamera-Zugriff — siehe ``_BACKGROUND_POLL``).
+  • **Single-Flight + Blockiert-Erkennung**: maximal ein Kamera-Job gleichzeitig, weitere
+    Drücke werden sofort abgewiesen statt eingereiht; ein festgefahrener COM-Call wird als
+    ``state=wedged`` gemeldet und per ``reconnect()`` abgemeldet. Ausführlich im
+    Sicherheits-Block bei ``_BACKGROUND_POLL``/``_WEDGE_AFTER``.
   • **Graceful + lazy**: fehlen ``comtypes``/``pygrabber`` (Nicht-Windows / Minimal-Build),
     bleibt das Modul importierbar und meldet sauber „nicht verfügbar".
   • **Geräte-Adressierung**: ``device`` (0 = Cam 1, 1 = Cam 2 …) = Index in die gefilterte
@@ -83,7 +87,11 @@ _POLL_IDLE = 12.0        # s — kein Leser mehr ⇒ Poller hört auf zu pollen 
 _REACHABLE_TTL = 4.0     # s — länger kein erfolgreicher Readback ⇒ „nicht erreichbar"
 _ENUM_TTL = 5.0          # s — Geräteliste so oft neu enumerieren
 _IDLE_TICK = 0.3         # s — Leerlauf-Takt des Workers (wacht für Jobs sofort auf)
-_JOB_TIMEOUT = 4.0       # s — max. Wartezeit einer öffentlichen Methode auf den Worker
+_JOB_TIMEOUT = 2.5       # s — max. Wartezeit einer öffentlichen Methode auf den Worker. Ein GESUNDER
+                         #     Schaltvorgang braucht ~0,2–0,4 s (erster Zugriff mit Enumerieren/Binden
+                         #     bis ~2 s). Danach gibt der Aufrufer den Thread frei und meldet „läuft
+                         #     noch" — das Ergebnis kommt über den Status-Cache.
+_WEDGE_AFTER = 10.0      # s — steckt EIN Job länger als das im COM-Call, gilt das Backend als BLOCKIERT
 
 # ⛔ SICHERHEIT: Wenn MEHRERE Consumer GLEICHZEITIG auf eine UVC-Kamera zugreifen (Hintergrund-Poll
 # + ein startender Video-Konsument wie OBS o.ä.), kann der Windows Camera Frame Server / USB-Stack
@@ -92,6 +100,19 @@ _JOB_TIMEOUT = 4.0       # s — max. Wartezeit einer öffentlichen Methode auf 
 # der Kameras. Status/Readback NUR aus dem Cache (gefüllt durch explizite Steuer-Aktionen = diskrete,
 # seltene Tastendrücke). Ein OBS-bewusster sanfter Live-Poll wäre ein bewusster, getesteter Opt-in.
 _BACKGROUND_POLL = False
+
+# ⛔⛔ 2026-08-01, LIVE BEWIESEN: „kein Hintergrund-Poll" reicht als Schutz NICHT. Auch der einzelne
+# TASTENDRUCK kann sich verkeilen, solange OBS die Kamera hält — und ein verkeilter COM-Call kommt
+# NIE zurück (mit geschlossenem OBS 4,7 h später immer noch fest). Ein Thread, der in COM steckt, ist
+# aus Python nicht abbrechbar. Ohne Gegenmaßnahme reihte sich danach JEDER weitere Druck dahinter ein
+# und blockierte je einen Threadpool-Thread des Hosts → das ganze Deck starb mit.
+# Die drei Gegenmaßnahmen (alle unten implementiert):
+#   1. SINGLE-FLIGHT — maximal EIN Kamera-Job gleichzeitig. Weitere Drücke werden SOFORT abgewiesen
+#      (nicht eingereiht), damit ungeduldiges Klicken den Host nicht mehr aushungern kann.
+#   2. BLOCKIERT-ERKENNUNG — hängt ein Job länger als ``_WEDGE_AFTER``, meldet das Backend ehrlich
+#      ``state=wedged`` und nimmt nichts mehr an. Bewusst KEINE Selbstheilung: erst ``reconnect()``
+#      (ein sichtbarer Knopf) meldet den hängenden Worker ab und startet einen frischen.
+#   3. KURZE WARTEZEIT — der Aufrufer blockiert nur ``_JOB_TIMEOUT`` und meldet sonst „läuft noch".
 
 # ── Sleep-Detection (KALIBRIERT per Wach-vs-Schlaf-Selektor-Diff, 2026-06-29) ──────────
 # Selektor-6-GET **Byte 2** = 0 (wach) → 1 (schläft). An BEIDEN Tiny 3 konsistent gemessen
@@ -178,6 +199,10 @@ class ObsBotUVC:
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._wlock = threading.Lock()
+        self._gen = 0                   # Worker-Generation — ``reconnect()`` meldet die alte ab
+        # Single-Flight-Tor: maximal EIN Kamera-Job unterwegs (siehe Sicherheits-Block oben)
+        self._gate = threading.Lock()
+        self._inflight: Optional[tuple] = None   # (label, start_ts, token) | None
         # Status-Cache (vom Worker gefüllt, von Readern gelesen)
         self._clock = threading.Lock()
         self._dev: dict = {}            # idx -> {connected,name,awake,tracking,byte24}
@@ -185,10 +210,9 @@ class ObsBotUVC:
         self._want_ts: float = -1e9     # letzter Status-Leser (Idle-Stop)
         self._last_poll: float = -1e9
         self._last_send: float = 0.0
-        # Worker-lokal (nur im Worker-Thread berührt)
-        self._handles: dict = {}        # idx -> _Cam
-        self._dis: list = []            # gefilterte DShow-Indizes der OBSBOT-Cams
-        self._dis_ts: float = -1e9
+        # Worker-lokaler Zustand, PRO THREAD (thread-ident -> {handles, dis, dis_ts}). COM-Objekte
+        # gehören ihrem Apartment: ein frischer Worker darf die Handles des abgemeldeten NIE erben.
+        self._wstate: dict = {}
 
     # ── Geräte-Index-Mapping ─────────────────────────────────────────────
     @staticmethod
@@ -198,6 +222,17 @@ class ObsBotUVC:
         except (TypeError, ValueError):
             return 0
 
+    # ── Worker-lokaler Zustand (pro Thread — COM-Apartment-sicher) ───────
+    def _ws(self) -> dict:
+        """Zustand DIESES Worker-Threads (Handles + Geräteliste).
+
+        Bewusst pro ``thread_ident``: Nach ``reconnect()`` läuft evtl. noch der alte, verkeilte
+        Worker. Käme er zurück und schriebe in einen geteilten Handle-Cache, benutzte der neue
+        Worker COM-Objekte aus einem fremden Apartment — genau der Cross-Thread-Marshaling-Fehler,
+        den die Worker-Architektur verhindern soll."""
+        return self._wstate.setdefault(threading.get_ident(),
+                                       {"handles": {}, "dis": [], "dis_ts": -1e9})
+
     # ── Worker-Thread (COM-Besitzer) ─────────────────────────────────────
     def _ensure_worker(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -206,20 +241,28 @@ class ObsBotUVC:
             if self._worker is not None and self._worker.is_alive():
                 return
             self._stop.clear()
-            t = threading.Thread(target=self._run, name="obsbot-uvc", daemon=True)
+            gen, q = self._gen, self._q
+            t = threading.Thread(target=self._run, args=(gen, q),
+                                 name=f"obsbot-uvc-{gen}", daemon=True)
             self._worker = t
             t.start()
 
-    def _run(self) -> None:
-        """Einziger COM-Thread: Jobs ausführen + zyklisches Readback (wenn ein Leser Interesse hat)."""
+    def _run(self, gen: int = 0, q: "Optional[queue.Queue]" = None) -> None:
+        """Einziger COM-Thread: Jobs ausführen + zyklisches Readback (wenn ein Leser Interesse hat).
+
+        ``gen``/``q`` binden den Thread an SEINE Generation und SEINE Warteschlange. Nach einem
+        ``reconnect()`` läuft ein abgemeldeter Worker (sobald sein COM-Call endlich zurückkommt)
+        aus der Schleife und räumt seinen eigenen Zustand ab — er kann dem neuen Worker weder
+        Jobs wegschnappen noch dessen Handles anfassen."""
+        q = self._q if q is None else q
         try:
             comtypes.CoInitialize()
         except Exception:  # noqa: BLE001
             pass
         try:
-            while not self._stop.is_set():
+            while not self._stop.is_set() and gen == self._gen:
                 try:
-                    job = self._q.get(timeout=_IDLE_TICK)
+                    job = q.get(timeout=_IDLE_TICK)
                 except queue.Empty:
                     job = None
                 if job is not None:
@@ -241,7 +284,7 @@ class ObsBotUVC:
                 pass
 
     def _exec(self, job) -> None:
-        fn, box, ev = job
+        fn, box, ev, token = job
         try:
             box["result"] = fn()
         except COMError as e:
@@ -249,22 +292,92 @@ class ObsBotUVC:
         except Exception as e:  # noqa: BLE001
             box["result"] = {"success": False, "message": f"UVC-Fehler: {e}"}
         finally:
+            # Tor NUR freigeben, wenn wir noch der aktuelle Job sind. Ein spät zurückkommender
+            # Job einer abgemeldeten Generation darf den frischen Worker nicht freischalten.
+            with self._gate:
+                if self._inflight is not None and self._inflight[2] is token:
+                    self._inflight = None
             ev.set()
 
-    def _submit(self, fn, timeout: float = _JOB_TIMEOUT) -> dict:
-        """Eine COM-Aufgabe an den Worker geben und (kurz) aufs Ergebnis warten."""
+    def _wedge_age(self) -> float:
+        """Sekunden, die der laufende Job die ``_WEDGE_AFTER``-Frist reißt (0.0 = alles gesund)."""
+        with self._gate:
+            cur = self._inflight
+        if cur is None:
+            return 0.0
+        age = time.monotonic() - cur[1]
+        return age if age >= _WEDGE_AFTER else 0.0
+
+    def _submit(self, fn, timeout: float = _JOB_TIMEOUT, label: str = "Befehl") -> dict:
+        """Eine COM-Aufgabe an den Worker geben und (kurz) aufs Ergebnis warten.
+
+        SINGLE-FLIGHT: Läuft schon ein Kamera-Job, wird der neue SOFORT abgewiesen — er landet
+        NICHT in der Warteschlange und blockiert keinen Thread des Hosts. Damit kann ungeduldiges
+        Mehrfach-Drücken das Deck nicht mehr aushungern. Steckt der laufende Job dauerhaft fest,
+        meldet das Backend ehrlich ``wedged`` statt weiter Timeouts zu produzieren; zurück in den
+        Betrieb kommt es nur über ``reconnect()``."""
         if not _UVC_OK:
             return {"success": False, "message": f"OBSBOT-UVC nicht verfügbar: {_UVC_IMPORT_ERR}"}
+        token = object()
+        with self._gate:
+            cur = self._inflight
+            if cur is not None:
+                age = time.monotonic() - cur[1]
+                if age >= _WEDGE_AFTER:
+                    return {"success": False, "wedged": True,
+                            "message": (f"OBSBOT blockiert — Kamera-Zugriff »{cur[0]}« hängt seit "
+                                        f"{int(age)} s fest. Erst »Neu verbinden« hilft.")}
+                return {"success": False, "busy": True,
+                        "message": f"OBSBOT beschäftigt (»{cur[0]}« läuft) — {label} verworfen"}
+            self._inflight = (label, time.monotonic(), token)
         self._ensure_worker()
         ev = threading.Event()
         box: dict = {}
-        self._q.put((fn, box, ev))
+        self._q.put((fn, box, ev, token))
         if not ev.wait(timeout):
-            return {"success": False, "message": "OBSBOT-UVC: Zeitüberschreitung"}
+            # Kein Fehler, nur noch kein Ergebnis: Thread freigeben, Tor bleibt zu bis der Job
+            # zurückkommt (oder als blockiert erkannt wird). Der Ausgang landet im Status-Cache.
+            return {"success": False, "pending": True,
+                    "message": f"OBSBOT: {label} läuft noch — Ergebnis folgt im Status"}
         return box.get("result", {"success": False, "message": "kein Ergebnis"})
 
+    def reconnect(self) -> dict:
+        """Hängenden Kamera-Zugriff abmelden und einen frischen COM-Worker starten.
+
+        Python kann einen Thread, der in einem COM-Call feststeckt, NICHT abbrechen. Deshalb wird
+        der alte Worker nur ABGEMELDET (neue Generation + neue Warteschlange): Kommt sein Call
+        irgendwann zurück, fällt er aus der Schleife und räumt seinen eigenen Zustand ab. Der neue
+        Worker startet mit eigenem Apartment und frischen Handles. Bewusst manuell — Selbstheilung
+        würde nur einen zweiten Thread auf dieselbe klemmende Kamera schicken."""
+        if not _UVC_OK:
+            return {"success": False, "message": f"OBSBOT-UVC nicht verfügbar: {_UVC_IMPORT_ERR}"}
+        with self._wlock:
+            self._gen += 1
+            old, old_q = self._worker, self._q
+            self._q = queue.Queue()      # der alte Thread behält seine Queue → klaut keine Jobs
+            self._worker = None
+        dropped = 0
+        while True:                      # wartende Aufrufer der alten Queue nicht hängen lassen
+            try:
+                _fn, _box, ev, _tok = old_q.get_nowait()
+            except queue.Empty:
+                break
+            dropped += 1
+            ev.set()
+        with self._gate:
+            stuck = self._inflight is not None
+            self._inflight = None
+        self._ensure_worker()
+        note = "OBSBOT neu verbunden"
+        if stuck:
+            note += " (hängender Zugriff abgemeldet)"
+        if dropped:
+            note += f", {dropped} wartende Befehle verworfen"
+        return {"success": True, "message": note, "was_stuck": stuck, "dropped": dropped,
+                "old_worker_alive": bool(old is not None and old.is_alive())}
+
     def _teardown(self) -> None:
-        self._handles.clear()
+        self._wstate.pop(threading.get_ident(), None)
 
     # ── COM-Primitive (NUR im Worker-Thread aufrufen) ────────────────────
     def _ks(self, kc, node, guid, selector, flags, payload=None, length=60) -> bytes:
@@ -282,9 +395,10 @@ class ObsBotUVC:
 
     def _list_dis(self) -> list:
         """Gefilterte DShow-Indizes der OBSBOT-Cams (virtuelle Cam ausgeschlossen). Gecacht."""
+        ws = self._ws()
         now = time.monotonic()
-        if self._dis and (now - self._dis_ts) < _ENUM_TTL:
-            return self._dis
+        if ws["dis"] and (now - ws["dis_ts"]) < _ENUM_TTL:
+            return ws["dis"]
         dis = []
         try:
             sde = SystemDeviceEnum()
@@ -294,15 +408,16 @@ class ObsBotUVC:
         except Exception as e:  # noqa: BLE001
             log.debug("obsbot-uvc: Geräte-Enumeration fehlgeschlagen: %s", e)
             dis = []
-        if dis != self._dis:                 # Liste änderte sich → Handles neu bauen
-            self._handles.clear()
-        self._dis = dis
-        self._dis_ts = now
+        if dis != ws["dis"]:                 # Liste änderte sich → Handles neu bauen
+            ws["handles"].clear()
+        ws["dis"] = dis
+        ws["dis_ts"] = now
         return dis
 
     def _handle(self, idx: int) -> Optional[_Cam]:
         """COM-Handle der Cam ``idx`` (gefilterte Liste) holen/bauen. None = nicht vorhanden."""
-        h = self._handles.get(idx)
+        hs = self._ws()["handles"]
+        h = hs.get(idx)
         if h is not None:
             return h
         dis = self._list_dis()
@@ -322,11 +437,11 @@ class ObsBotUVC:
             except COMError:
                 cc = None
             h = _Cam(di, name, kc, node, cc)
-            self._handles[idx] = h
+            hs[idx] = h
             return h
         except COMError as e:
             log.debug("obsbot-uvc: Handle %s bauen fehlgeschlagen: %s", idx, e)
-            self._handles.pop(idx, None)
+            hs.pop(idx, None)
             return None
 
     @staticmethod
@@ -338,7 +453,7 @@ class ObsBotUVC:
         return None
 
     def _invalidate(self, idx: int) -> None:
-        self._handles.pop(idx, None)
+        self._ws()["handles"].pop(idx, None)
 
     # ── Sleep-Detection (kalibriert per Diff) ────────────────────────────
     @staticmethod
@@ -412,7 +527,8 @@ class ObsBotUVC:
     # Tracking / AI -------------------------------------------------------
     def tracking(self, on: Any, device: Any = None, mode: Any = 0) -> dict:
         """Auto-Follow AN/AUS über XU-Selektor 6 (``16 02 <modus>``), mit echtem byte24-Readback."""
-        return self._submit(lambda: self._do_tracking(bool(on), device, mode))
+        return self._submit(lambda: self._do_tracking(bool(on), device, mode),
+                            label=f"Tracking {'an' if on else 'aus'} (Cam {self._idx(device) + 1})")
 
     def _do_tracking(self, on: bool, device: Any, mode: Any) -> dict:
         h = self._handle(self._idx(device))
@@ -437,7 +553,8 @@ class ObsBotUVC:
 
     def tracking_toggle(self, device: Any = None, mode: Any = 0) -> dict:
         """Umschalten anhand des ECHTEN Zustands (byte24), nicht optimistisch."""
-        return self._submit(lambda: self._do_toggle(device, mode))
+        return self._submit(lambda: self._do_toggle(device, mode),
+                            label=f"Tracking umschalten (Cam {self._idx(device) + 1})")
 
     def _do_toggle(self, device: Any, mode: Any) -> dict:
         h = self._handle(self._idx(device))
@@ -467,7 +584,8 @@ class ObsBotUVC:
     # PTZ / Gimbal / Zoom (IAMCameraControl) ------------------------------
     def recenter(self, device: Any = None) -> dict:
         """Gimbal auf die UVC-Default-Position (Pan/Tilt) zurückfahren = „Zentrieren"."""
-        return self._submit(lambda: self._do_recenter(device))
+        return self._submit(lambda: self._do_recenter(device),
+                            label=f"Zentrieren (Cam {self._idx(device) + 1})")
 
     def _do_recenter(self, device: Any) -> dict:
         h = self._handle(self._idx(device))
@@ -501,11 +619,13 @@ class ObsBotUVC:
 
     def gimbal_move(self, pan: Any, pitch: Any, speed: Any = 1, device: Any = None) -> dict:
         """Gimbal absolut: Pan/Tilt auf Geräte-Range geklemmt setzen (UVC-Einheiten)."""
-        return self._submit(lambda: self._do_set_props(device, {"Pan": pan, "Tilt": pitch}))
+        return self._submit(lambda: self._do_set_props(device, {"Pan": pan, "Tilt": pitch}),
+                            label=f"Schwenken (Cam {self._idx(device) + 1})")
 
     def gimbal_dir(self, direction: str, speed: Any = 50, device: Any = None) -> dict:
         """Gimbal relativ anstupsen (Lesen → +/- Delta → Setzen). speed skaliert das Delta."""
-        return self._submit(lambda: self._do_nudge(device, direction, speed))
+        return self._submit(lambda: self._do_nudge(device, direction, speed),
+                            label=f"Schwenken {direction} (Cam {self._idx(device) + 1})")
 
     def _do_nudge(self, device: Any, direction: str, speed: Any) -> dict:
         h = self._handle(self._idx(device))
@@ -545,7 +665,8 @@ class ObsBotUVC:
 
     def set_zoom(self, percent: Any, device: Any = None) -> dict:
         """Zoom 0–100 % → auf die Geräte-Zoom-Range abgebildet."""
-        return self._submit(lambda: self._do_zoom(device, percent))
+        return self._submit(lambda: self._do_zoom(device, percent),
+                            label=f"Zoom (Cam {self._idx(device) + 1})")
 
     def _do_zoom(self, device: Any, percent: Any) -> dict:
         h = self._handle(self._idx(device))
@@ -598,8 +719,10 @@ class ObsBotUVC:
         return (time.monotonic() - self._reachable_ts) < _REACHABLE_TTL
 
     def cam_status(self, device: Any = None) -> str:
-        """„off" (nicht erreichbar / Cam weg) · „sleep" (Linse geparkt) · „on" (bereit)."""
+        """„off" (nicht erreichbar / Cam weg / blockiert) · „sleep" (Linse geparkt) · „on" (bereit)."""
         self._mark_interest()
+        if self._wedge_age():           # blockiert ⇒ nichts vortäuschen, was wir nicht wissen
+            return "off"
         now = time.monotonic()
         with self._clock:
             if (now - self._reachable_ts) >= _REACHABLE_TTL:
@@ -615,20 +738,31 @@ class ObsBotUVC:
         """Status für die UI. ``state``:
           • ``ready``        — UVC aktiv + mind. 1 OBSBOT-Cam lesbar (Steuerung + echtes Readback gehen).
           • ``no_cam``       — UVC verfügbar, aber keine OBSBOT-Kamera gefunden (USB? in OBS wach?).
+          • ``wedged``       — ein Kamera-Zugriff steckt fest; es geht NICHTS mehr, bis ``reconnect()``.
           • ``unavailable``  — comtypes/pygrabber fehlen (Nicht-Windows / Minimal-Build).
-        ``reachable`` = kürzlich erfolgreich gelesen; ``devices`` = pro Cam verbunden/wach/tracking."""
+        ``reachable`` = kürzlich erfolgreich gelesen; ``devices`` = pro Cam verbunden/wach/tracking;
+        ``busy`` = gerade läuft ein Befehl; ``wedged_for`` = Sekunden im festgefahrenen Zugriff."""
         if not _UVC_OK:
             return {"transport": "uvc", "reachable": False, "state": "unavailable",
                     "app_running": False, "devices": {}, "error": _UVC_IMPORT_ERR,
-                    "last_send_age": None}
+                    "last_send_age": None, "busy": False, "wedged_for": 0.0, "job": None}
         self._mark_interest()
         now = time.monotonic()
+        with self._gate:
+            cur = self._inflight
+        wedged_for = self._wedge_age()
         with self._clock:
             reachable = (now - self._reachable_ts) < _REACHABLE_TTL
             devices = {d: dict(info) for d, info in self._dev.items()}
         connected_any = any(i.get("connected") for i in devices.values())
-        state = "ready" if (reachable and connected_any) else "no_cam"
+        if wedged_for:
+            state = "wedged"
+        else:
+            state = "ready" if (reachable and connected_any) else "no_cam"
         return {"transport": "uvc", "reachable": reachable, "state": state,
                 "app_running": connected_any,    # „App" gibt es im UVC-Modus nicht; = Cam(s) da
                 "devices": devices,
+                "busy": cur is not None,
+                "job": (cur[0] if cur is not None else None),
+                "wedged_for": round(wedged_for, 1),
                 "last_send_age": (round(now - self._last_send, 1) if self._last_send else None)}

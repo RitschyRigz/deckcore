@@ -4935,6 +4935,7 @@ class DeckCoreService:
             return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "on", "true", "an", "ja", "yes")
         ob = self._obsbot
         if sub == "recenter":     return ob.recenter(dev)
+        if sub == "reconnect":    return ob.reconnect()   # hängenden Kamera-Zugriff abmelden (gerätelos)
         if sub == "wake":         return ob.wake(dev)
         if sub == "sleep":        return ob.sleep(dev)
         if sub == "zoom":         return ob.set_zoom(action.get("value", action.get("zoom", 0)), dev)
@@ -4956,6 +4957,14 @@ class DeckCoreService:
     def obsbot_status(self, probe: bool = False) -> dict:
         """Best-effort-Status der OBSBOT-UVC-Anbindung (für die UI: ist eine Cam lesbar? letzter Send?)."""
         return self._obsbot.status()
+
+    def obsbot_reconnect(self) -> dict:
+        """Festgefahrenen OBSBOT-Kamera-Zugriff abmelden und einen frischen COM-Worker starten.
+
+        Gegenstück zu ``state=wedged``: Ein in COM verkeilter Thread ist aus Python nicht
+        abbrechbar, deshalb heilt das Backend NICHT von selbst — der Nutzer löst es bewusst aus
+        (Editor-Knopf oder Deck-Button ``obsbot_action=reconnect``)."""
+        return self._obsbot.reconnect()
 
     def set_obsbot_config(self, host: str | None = None, port: int | None = None) -> dict:
         """OSC-Ziel umstellen (z.B. Host = IP des Kamera-PCs, wenn die Hülle woanders läuft)."""

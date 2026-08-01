@@ -21,6 +21,33 @@ Video-Extension-Unit für Tracking). Implementierung: [`obsbot_uvc.py`](obsbot_u
    (`_BACKGROUND_POLL = False`); Status/Readback kommen aus dem Cache, gefüllt durch die diskreten
    Tastendrücke. Steuerung wirkt **on-demand** und sofort.
 
+## ⛔ Wenn ein Kamera-Zugriff sich verkeilt (Single-Flight & `wedged`)
+
+**Punkt 4 allein reicht als Schutz nicht.** Live bewiesen (2026-08-01): Auch ein *einzelner*
+Tastendruck kann sich im COM-Call verkeilen, solange ein Video-Konsument die Kamera hält — und
+ein verkeilter Call kommt **nie** zurück (mit geschlossenem OBS 4,7 h später immer noch fest).
+Ein Thread, der in COM steckt, ist aus Python nicht abbrechbar.
+
+Ohne Gegenmaßnahme reihte sich danach jeder weitere Druck dahinter ein und blockierte je einen
+Threadpool-Thread der Host-App — bis das ganze Deck stand und die Deck-Verbindung abriss. Der
+Schaden war also nicht die eine tote Kamera, sondern die **Kaskade in die Host-App**.
+
+Deshalb gilt jetzt:
+
+- **Single-Flight** — maximal *ein* Kamera-Job gleichzeitig. Weitere Drücke werden **sofort**
+  abgewiesen (`busy`), nicht eingereiht. Ungeduldiges Klicken kostet keinen Thread mehr.
+- **Blockiert-Erkennung** — hängt ein Job länger als `_WEDGE_AFTER` (10 s), meldet `status()`
+  ehrlich `state="wedged"` samt `wedged_for`/`job` und nimmt nichts mehr an.
+- **Bewusst keine Selbstheilung** — automatisches Neustarten schickte nur einen zweiten Thread
+  auf dieselbe klemmende Kamera. Der Nutzer löst es aus: `reconnect()` (Deck-Aktion
+  `obsbot_action: "reconnect"`, Editor-Eintrag „🔄 Neu verbinden", `POST /api/obsbot/reconnect`).
+  Der alte Worker wird nur **abgemeldet** (neue Generation + eigene Queue) und räumt sich selbst
+  ab, falls sein Call je zurückkommt; der neue startet mit frischem COM-Apartment.
+- **Kurze Wartezeit** — Aufrufer blockieren nur `_JOB_TIMEOUT` (2,5 s) und melden sonst
+  „läuft noch"; das Ergebnis kommt über den Status-Cache.
+
+Abgesichert in `tests/test_obsbot_singleflight.py` (Hauptrepo, call-frei — kein COM, keine Kamera).
+
 ## Was funktioniert (über rohes UVC)
 
 | Funktion | Status |

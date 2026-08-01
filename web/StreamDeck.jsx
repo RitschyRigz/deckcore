@@ -3252,6 +3252,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
               <option value="record">⏺ Aufnahme an/aus</option>
               <option value="snapshot">📸 Foto</option>
               <option value="select">🎚 Aktive Kamera wählen</option>
+              <option value="reconnect">🔄 Neu verbinden (bei „blockiert")</option>
             </select>
           </div>
           {action.obsbot_action === 'zoom' && (

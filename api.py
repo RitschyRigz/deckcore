@@ -152,6 +152,11 @@ def build_streamdeck_router(
     def obsbot_status(request: Request) -> JSONResponse:
         return JSONResponse(get_service(request).obsbot_status())
 
+    # Festgefahrenen Kamera-Zugriff abmelden + frischen COM-Worker starten (Gegenstück zu state=wedged).
+    @r.post("/api/obsbot/reconnect")
+    def obsbot_reconnect(request: Request) -> JSONResponse:
+        return JSONResponse(get_service(request).obsbot_reconnect())
+
     # ── Interception-Hardware-Treiber (Makro-Editor „Senden über → 🛡 Hardware-Treiber") ──────
     @r.get("/api/interception/status")
     def interception_status(request: Request) -> JSONResponse:
