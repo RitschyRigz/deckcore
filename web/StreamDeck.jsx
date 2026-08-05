@@ -2748,7 +2748,7 @@ function PlayMediaEditor({ action, onChange }) {
     loadDir(cur); setBrowsing(true)
   }
   const saveMpv = () => { setBusy(true); postJSON('/api/mediaplayer/config', { mpv_path: mpvPath }).then(() => load()).finally(() => setBusy(false)) }
-  const mode = action.mode === 'stop' ? 'stop' : 'play'
+  const mode = action.mode === 'stop' ? 'stop' : (action.mode === 'toggle' ? 'toggle' : 'play')
   return (
     <>
       {mode !== 'stop' && (
@@ -2781,8 +2781,9 @@ function PlayMediaEditor({ action, onChange }) {
       <div class="reward-row" style="align-items:center;gap:14px">
         <label class="muted" style="font-size:12px">Modus
           <select class="so-delay" style="margin-left:6px" value={mode}
-                  onChange={(e) => onChange({ mode: e.currentTarget.value === 'stop' ? 'stop' : undefined })}>
+                  onChange={(e) => onChange({ mode: e.currentTarget.value === 'play' ? undefined : e.currentTarget.value })}>
             <option value="play">▶ Abspielen (von vorn)</option>
+            <option value="toggle">⏯ Start / Stop umschalten</option>
             <option value="stop">⏹ Stoppen / Fenster schließen</option>
           </select>
         </label>

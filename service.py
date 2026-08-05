@@ -105,6 +105,7 @@ from .weather import WeatherSource   # Wetter (Open-Meteo + IP-Auto-Standort, gr
 from .winaudio import WinAudio   # Windows-Standard-Ausgabegerät lesen/setzen (Core Audio/IPolicyConfig, lazy)
 from .presets import button_preset as _button_preset   # Editor-/Generator-Vorlagen (Symbol + Logik je Typ)
 from . import integrations as _integrations   # deklarative Integrations-Registry (Basis + Fremd-App; host-erweiterbar)
+from .scene_media import resolve_media_file
 
 log = logging.getLogger("deckcore")
 
@@ -4655,19 +4656,24 @@ class DeckCoreService:
         # Videodatei in einem randlosen, DAUERHAFTEN mpv-Fenster abspielen — gedacht als Fensterquelle
         # (z.B. TikTok Live Studio), das eingebettete Videos beim Szenenwechsel NICHT zurücksetzt.
         # mpv spielt auf Druck IN-PLACE von vorn (IPC) statt das Fenster neu zu öffnen → kein Flackern.
-        # config: file (Pfad) · slot (Fenster-Identität, Default „media") · loop · fullscreen · mode play|stop.
+        # config: file (Fallback-Pfad) · optional file_by_scene {OBS-Szene: Pfad} ·
+        # slot (Fenster-Identität, Default „media") · loop · fullscreen · mode play|stop|toggle.
         try:
             from . import mediaplayer as _mp
         except Exception as e:  # noqa: BLE001
             return {"success": False, "message": f"Media-Player nicht ladbar: {e}"}
         slot = str(action.get("slot") or "media").strip() or "media"
-        if str(action.get("mode") or "play").strip().lower() == "stop":
+        mode = str(action.get("mode") or "play").strip().lower()
+        if mode == "stop" or (mode == "toggle" and _mp.active(slot)):
             res = _mp.stop(slot=slot)
             return {"success": bool(res.get("ok")), "message": res.get("message", "")}
         mpv_path = (self._mediaplayer_cfg() or {}).get("mpv_path") or None
         eq = {k: action.get(k) for k in ("brightness", "contrast", "gamma", "saturation")
               if action.get(k) not in (None, "")}
-        res = _mp.play(str(action.get("file") or ""), slot=slot,
+        current_scene = (self._mon_obs_scene({}, btn)
+                         if isinstance(action.get("file_by_scene"), dict) else None)
+        media_file = resolve_media_file(action, current_scene)
+        res = _mp.play(media_file, slot=slot,
                        loop=bool(action.get("loop")), fullscreen=bool(action.get("fullscreen")),
                        mpv_path=mpv_path, extra_args=action.get("mpv_args"), eq=eq or None,
                        close_on_end=bool(action.get("close_on_end")))

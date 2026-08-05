@@ -258,3 +258,8 @@ def status(configured: str | None = None) -> dict:
         "mpv_path": mpv,
         "active_slots": [s for s in list(_PROCS.keys()) if _alive(s)],
     }
+
+
+def active(slot: str = "media") -> bool:
+    """Whether the persistent player window for this slot is currently reachable."""
+    return _alive(_slug(slot))
