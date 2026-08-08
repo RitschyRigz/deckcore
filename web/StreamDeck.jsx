@@ -2979,13 +2979,56 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
       {t === 'events_action' && (
         <>
           <div class="reward-row">
-            <span class="muted conn-label">Action</span>
-            <select class="reward-input" value={action.action_id || ''} onChange={(e) => onChange({ action_id: e.currentTarget.value })}>
-              <option value="">— wählen —</option>
-              {eaActions.map((a) => <option value={a.id}>{(a.label || a.id) + (a.enabled ? '' : ' (aus)')}</option>)}
+            <span class="muted conn-label">Modus</span>
+            <select class="reward-input" value={action.mode || 'single'}
+                    onChange={(e) => onChange({ mode: e.currentTarget.value === 'single' ? undefined : e.currentTarget.value })}>
+              <option value="single">Eine Action</option>
+              <option value="state_toggle">Statusabhängig EIN / AUS</option>
             </select>
           </div>
-          <p class="muted sd-help">Löst beim Druck genau diese Action aus dem <b>Events &amp; Actions</b>-Tab aus.</p>
+          {action.mode !== 'state_toggle' ? (
+            <>
+              <div class="reward-row">
+                <span class="muted conn-label">Action</span>
+                <select class="reward-input" value={action.action_id || ''} onChange={(e) => onChange({ action_id: e.currentTarget.value })}>
+                  <option value="">— wählen —</option>
+                  {eaActions.map((a) => <option value={a.id}>{(a.label || a.id) + (a.enabled ? '' : ' (aus)')}</option>)}
+                </select>
+              </div>
+              <p class="muted sd-help">Löst beim Druck genau diese Action aus dem <b>Events &amp; Actions</b>-Tab aus.</p>
+            </>
+          ) : (
+            <>
+              <div class="reward-row">
+                <span class="muted conn-label">Wenn AUS →</span>
+                <select class="reward-input" value={action.on_action_id || ''} onChange={(e) => onChange({ on_action_id: e.currentTarget.value })}>
+                  <option value="">— EIN-Action wählen —</option>
+                  {eaActions.map((a) => <option value={a.id}>{(a.label || a.id) + (a.enabled ? '' : ' (aus)')}</option>)}
+                </select>
+              </div>
+              <div class="reward-row">
+                <span class="muted conn-label">Wenn AN →</span>
+                <select class="reward-input" value={action.off_action_id || ''} onChange={(e) => onChange({ off_action_id: e.currentTarget.value })}>
+                  <option value="">— AUS-Action wählen —</option>
+                  {eaActions.map((a) => <option value={a.id}>{(a.label || a.id) + (a.enabled ? '' : ' (aus)')}</option>)}
+                </select>
+              </div>
+              <div class="reward-row">
+                <span class="muted conn-label">Status ist AN</span>
+                <select class="so-delay" value={(action.active_when || {}).op || 'truthy'}
+                        onChange={(e) => onChange({ active_when: { ...(action.active_when || {}), op: e.currentTarget.value } })}>
+                  {(options.match_ops || ['any', 'truthy', 'falsy', 'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'contains']).map((o) =>
+                    <option value={o}>{OP_LABELS[o] || o}</option>)}
+                </select>
+                {!['any', 'truthy', 'falsy'].includes((action.active_when || {}).op || 'truthy') &&
+                  <input class="reward-input" value={(action.active_when || {}).value ?? ''} placeholder="Vergleichswert"
+                         onInput={(e) => onChange({ active_when: { ...(action.active_when || {}), value: e.currentTarget.value } })} />}
+              </div>
+              <p class="muted sd-help">Liest beim Druck den unten konfigurierten <b>Status-Monitor</b> frisch aus:
+                Status AN löst die AUS-Action aus, sonst die EIN-Action. So folgt die Taste auch Änderungen,
+                die von Rewards oder anderen Auslösern kommen.</p>
+            </>
+          )}
         </>
       )}
       {t === 'open_deck' && (
