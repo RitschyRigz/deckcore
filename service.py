@@ -4948,6 +4948,7 @@ class DeckCoreService:
         if sub == "view":         return ob.set_view(action.get("value", action.get("mode", 0)), dev)
         if sub == "mirror":       return ob.set_mirror(_on(), dev)
         if sub == "gimbal":       return ob.gimbal_move(action.get("pan", 0), action.get("pitch", 0), action.get("speed", 1), dev)
+        if sub == "gimbal_get":   return ob.gimbal_get(dev)   # Position LESEN (fuer "Position merken")
         if sub == "gimbal_dir":   return ob.gimbal_dir(action.get("direction", "up"), action.get("speed", 50), dev)
         if sub in ("tracking", "ai_lock"):  return ob.tracking_toggle(dev) if str(action.get("mode", "")).lower() == "toggle" else ob.tracking(_on(), dev)
         if sub == "ai_mode":      return ob.ai_mode(action.get("value", action.get("mode", 0)), dev)

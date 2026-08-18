@@ -622,6 +622,36 @@ class ObsBotUVC:
         return self._submit(lambda: self._do_set_props(device, {"Pan": pan, "Tilt": pitch}),
                             label=f"Schwenken (Cam {self._idx(device) + 1})")
 
+    def gimbal_get(self, device: Any = None) -> dict:
+        """Aktuelle Pan/Tilt-Werte + Geraete-Range LESEN — Gegenstueck zu ``gimbal_move``.
+
+        Zweck: eine Kameraposition einmal von Hand anfahren und die Zahlen merken, statt sie
+        zu raten ("Position speichern"). Das Leseidiom ist dasselbe, das ``_do_nudge`` schon
+        benutzt (``GetRange`` + ``Get``) — hier nur ohne anschliessendes ``Set``.
+        Reines Lesen: veraendert die Kamera NICHT.
+        """
+        return self._submit(lambda: self._do_get_props(device),
+                            label=f"Position lesen (Cam {self._idx(device) + 1})")
+
+    def _do_get_props(self, device: Any) -> dict:
+        h = self._handle(self._idx(device))
+        if h is None or h.cc is None:
+            return {"success": False, "message": "PTZ nicht verfuegbar"}
+        out = {}
+        for prop in ("Pan", "Tilt"):
+            try:
+                mn, mx, st, df, _caps = h.cc.GetRange(_CC[prop])
+                val, _fl = h.cc.Get(_CC[prop])
+                out[prop] = {"value": int(val), "min": int(mn), "max": int(mx),
+                             "step": int(st), "default": int(df)}
+            except COMError as e:
+                return {"success": False,
+                        "message": f"{prop} nicht lesbar (PTZ-Fehler {hex(e.hresult & 0xffffffff)})"}
+        return {"success": True, "data": out,
+                "message": (f"Pan={out['Pan']['value']} Tilt={out['Tilt']['value']}  "
+                            f"(Bereich Pan {out['Pan']['min']}..{out['Pan']['max']}, "
+                            f"Tilt {out['Tilt']['min']}..{out['Tilt']['max']})")}
+
     def gimbal_dir(self, direction: str, speed: Any = 50, device: Any = None) -> dict:
         """Gimbal relativ anstupsen (Lesen → +/- Delta → Setzen). speed skaliert das Delta."""
         return self._submit(lambda: self._do_nudge(device, direction, speed),
