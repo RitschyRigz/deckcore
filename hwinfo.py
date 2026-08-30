@@ -146,8 +146,12 @@ def _read_registry():
     except Exception:  # noqa: BLE001  (VSB nicht aktiviert)
         return {}, [], None
     data, order = {}, []
-    n = 0
-    while f"Label{n}" in vals:
+    # Die Label<N>-Indizes sind NICHT zwingend lückenlos: ein markierter Sensor ohne aktuellen
+    # Messwert lässt ein Loch, und nach dem Abwählen von Sensoren behalten die übrigen ihre alten
+    # (hohen) Indizes. Darum ALLE vorhandenen Indizes sortiert durchgehen — ein Abbruch bei der
+    # ersten fehlenden Nummer würde alles dahinter verschlucken.
+    idxs = sorted(int(m.group(1)) for k in vals if (m := re.fullmatch(r"Label(\d+)", k)))
+    for n in idxs:
         label = str(vals.get(f"Label{n}", "")).strip()
         # HWiNFO-VSB schreibt KEINE separate Unit-Spalte → die Einheit steckt im formatierten
         # Value<N> (z.B. „43 °C", „16,538 MB"). Darum aus Value ziehen (Unit<N> nur als Fallback,
@@ -157,7 +161,6 @@ def _read_registry():
         if val is None:   # Fallback: aus „55.0 °C" die führende Zahl ziehen
             val = _to_float(_lead_num(vals.get(f"Value{n}")))
         sensor = str(vals.get(f"Sensor{n}", "")).strip()
-        n += 1
         if not label or val is None:
             continue
         key = _uniq(label, data)
