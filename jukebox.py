@@ -292,6 +292,28 @@ class Jukebox:
             })
         return out
 
+    def library_signature(self) -> str:
+        """Fingerabdruck der Bibliothek (Dateien + Groesse + mtime, library.json, styles.json):
+        aendert er sich, hat sich der Ordner geaendert -> Tasten neu ableiten."""
+        cfg = self.config()
+        root = Path(str(cfg.get("library_dir") or ""))
+        parts: list[str] = []
+        if root.is_dir():
+            for p in sorted(root.rglob("*")):
+                if p.is_file() and p.suffix.lower() in AUDIO_EXTS:
+                    try:
+                        st = p.stat()
+                        parts.append(f"{p.relative_to(root)}|{st.st_size}|{int(st.st_mtime)}")
+                    except OSError:
+                        continue
+        for name in ("library.json", "styles.json"):
+            f = self._dir / name
+            try:
+                parts.append(f"{name}|{int(f.stat().st_mtime)}" if f.exists() else f"{name}|-")
+            except OSError:
+                parts.append(f"{name}|?")
+        return "\n".join(parts)
+
     def track(self, track_id: str) -> Optional[dict]:
         for t in self.library():
             if t["id"] == track_id:
