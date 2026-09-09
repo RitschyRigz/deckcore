@@ -202,6 +202,55 @@ def build_streamdeck_router(
         return JSONResponse(res)
 
     # ── Media-Player (mpv) — play_media-Aktion „Video im Fenster (Fensterquelle)" ──────────────
+    # ── Jukebox (Soundbibliothek + Audio-Player) ───────────────────────────────────────────
+    @r.get("/api/jukebox/status")
+    def jukebox_status(request: Request) -> JSONResponse:
+        """Wahrheitszustand vom Player: {state, request_id, track, title, style, position, duration, reason}."""
+        return JSONResponse(get_service(request).jukebox().status())
+
+    @r.get("/api/jukebox/library")
+    def jukebox_library(request: Request) -> JSONResponse:
+        """Bibliothek (Ordner-Scan + library.json) und Stile (styles.json) + Config."""
+        jb = get_service(request).jukebox()
+        return JSONResponse({"tracks": jb.library(), "styles": jb.styles(), "config": jb.config()})
+
+    @r.post("/api/jukebox/play")
+    def jukebox_play(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """{track, style?, request_id?} → Song starten (laufender Auftrag wird sauber ersetzt)."""
+        b = body or {}
+        return JSONResponse(get_service(request).jukebox().play(
+            str(b.get("track") or ""), style_override=str(b.get("style") or ""),
+            request_id=str(b.get("request_id") or "")))
+
+    @r.post("/api/jukebox/stop")
+    def jukebox_stop(request: Request) -> JSONResponse:
+        return JSONResponse(get_service(request).jukebox().stop())
+
+    @r.post("/api/jukebox/random")
+    def jukebox_random(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        return JSONResponse(get_service(request).jukebox().play_random(str((body or {}).get("style") or "")))
+
+    @r.post("/api/jukebox/config")
+    def jukebox_config(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """{library_dir?, audio_device?, mpv_path?, volume?}"""
+        b = body or {}
+        return JSONResponse(get_service(request).jukebox().set_config(
+            library_dir=b.get("library_dir"), audio_device=b.get("audio_device"),
+            mpv_path=b.get("mpv_path"), volume=b.get("volume")))
+
+    @r.post("/api/jukebox/track_style")
+    def jukebox_track_style(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """{track, style, title?, max_seconds?} → library.json"""
+        b = body or {}
+        return JSONResponse(get_service(request).jukebox().set_track_style(
+            str(b.get("track") or ""), str(b.get("style") or ""), title=b.get("title"),
+            max_seconds=b.get("max_seconds")))
+
+    @r.post("/api/jukebox/populate")
+    def jukebox_populate(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Pool-Buttons (je Track Toggle, je Stil Zufall, Stop) anlegen/auffrischen; {deck_id?}"""
+        return JSONResponse(get_service(request).populate_jukebox(str((body or {}).get("deck_id") or "")))
+
     @r.get("/api/mediaplayer/status")
     def mediaplayer_status(request: Request) -> JSONResponse:
         """{available, mpv_path, active_slots, configured_path} — mpv gefunden? welche Fenster laufen?"""

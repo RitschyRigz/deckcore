@@ -1441,6 +1441,7 @@ class DeckCoreService:
         self._akb_cfg: Optional[dict] = None   # runtime/arduino.json (port), lazy geladen
         self._akb_state_cache: tuple = (None, 0.0)   # (button-state, monotonic) — Bridge-Status-Monitor gecacht (~5s)
         self._mp_cfg: Optional[dict] = None   # runtime/media_player.json (mpv_path), lazy geladen
+        self._jukebox = None   # deckcore.jukebox.Jukebox, lazy (runtime/jukebox/*.json)
         self._winaudio_cache: tuple = (None, 0.0)   # (Standard-Render-id, ts) — geteilt für alle winaudio_default-Buttons
         self._winaudio_devs_cache: tuple = (None, 0.0)   # (aktive Render-Geräteliste, ts) — für Namens-Auflösung
         self._app_exe_cache: dict = {}   # proc(lower) -> exe-Pfad (für App-Icon-Extraktion, gecacht)
@@ -1494,6 +1495,7 @@ class DeckCoreService:
         A("displayfusion", self._act_displayfusion)
         A("media", self._act_media)
         A("play_media", self._act_play_media)   # Videodatei in randlosem mpv-Fenster (Fensterquelle), In-Place-Restart
+        A("jukebox", self._act_jukebox)         # Soundbibliothek: Track spielen/stoppen/toggeln, Zufall je Stil (deckcore.jukebox)
         A("hotkey", self._act_hotkey)
         A("flag_toggle", self._act_flag_toggle)
         A("flag_set", self._act_flag_set)
@@ -1506,6 +1508,7 @@ class DeckCoreService:
         A("obsbot", self._act_obsbot)
         A("multi", self._act_multi)                  # mehrere Aktionen auf EINEM Button (generisch, jede Art)
         M("none", self._mon_none)
+        M("jukebox_state", self._mon_jukebox_state)   # <state>:<track|style> der Jukebox (idle wenn nichts laeuft)
         M("aggregate", self._mon_aggregate)          # mehrere Monitore kombinieren (alle/eine/Anzahl)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -4679,6 +4682,123 @@ class DeckCoreService:
                        close_on_end=bool(action.get("close_on_end")))
         return {"success": bool(res.get("ok")), "message": res.get("message", "")}
 
+    # ── Jukebox (Soundbibliothek + Audio-Player, deckcore.jukebox) ─────────────────────────────
+    def jukebox(self):
+        """Lazy: Bibliothek + Player. Stil-Actions laufen ueber den normalen Aktions-Dispatcher
+        (jede Aktionsart, z.B. ``http``) — Deckcore kennt keine Buehne, kein Ziel, keinen Host."""
+        if self._jukebox is None:
+            from . import jukebox as _jb
+            from . import mediaplayer as _mp
+
+            def _resolve(p):
+                return _mp.resolve_mpv(p or (self._mediaplayer_cfg() or {}).get("mpv_path") or None)
+
+            self._jukebox = _jb.Jukebox(self._runtime, mpv_resolver=_resolve,
+                                        run_actions=self._jukebox_run_actions,
+                                        publish=self.bus.publish)
+        return self._jukebox
+
+    def _jukebox_run_actions(self, actions: list, ctx: dict) -> dict:
+        """Stil-Actions als Multi-Aktion ausfuehren; ``{jukebox.request_id}`` u.ae. in Strings ersetzen."""
+        flat = {f"jukebox.{k}": ("" if v is None else str(v)) for k, v in (ctx.get("jukebox") or {}).items()}
+
+        def render(v):
+            if isinstance(v, str):
+                for k, val in flat.items():
+                    v = v.replace("{" + k + "}", val)
+                return v
+            if isinstance(v, dict):
+                return {k: render(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [render(x) for x in v]
+            return v
+
+        steps = [render(a) for a in actions if isinstance(a, dict)]
+        return self._act_multi({"type": "multi", "steps": steps}, {"id": "jukebox"})
+
+    def _act_jukebox(self, action: dict, btn: dict) -> dict:
+        jb = self.jukebox()
+        mode = str(action.get("mode") or "toggle").strip().lower()
+        track = str(action.get("track") or "").strip()
+        style = str(action.get("style") or "").strip()
+        if mode == "stop":
+            res = jb.stop()
+        elif mode == "random":
+            res = jb.play_random(style)
+        elif mode == "play":
+            res = jb.play(track, style_override=style)
+        else:
+            res = jb.toggle(track, style_override=style)
+        ok = bool(res.get("ok"))
+        msg = res.get("reason") or res.get("message") or (f"Spielt: {res.get('title')}" if ok and res.get("title") else "ok")
+        return {"success": ok, "message": str(msg)}
+
+    def _mon_jukebox_state(self, mon: dict, btn: dict) -> Any:
+        return self.jukebox().deck_state(str(mon.get("track") or ""), str(mon.get("style") or ""))
+
+    def populate_jukebox(self, deck_id: str = "", *, group: str = "Jukebox") -> dict:
+        """Pool-Buttons aus der Bibliothek: je Track ``jb_<id>`` (Toggle), je Stil ``jb_random_<stil>``,
+        plus ``jb_stop``. Idempotent (``_regen_preserve``); optional zusaetzlich aufs Deck legen."""
+        jb = self.jukebox()
+        tracks = jb.library()
+        if not tracks:
+            return {"ok": False, "reason": "library_empty_or_missing (runtime/jukebox/config.json library_dir)"}
+        styles = jb.styles()
+        deck = self._deck(deck_id) if deck_id else None
+        pool_by_id = {b.get("id"): b for b in self._buttons}
+        item_by_id = {it["button"]: it for it in deck["items"]} if deck else {}
+        if deck and group and group not in deck["categories"]:
+            deck["categories"].append(group)
+
+        def upsert(fn: dict) -> None:
+            existing = pool_by_id.get(fn["id"])
+            if existing is not None:
+                fn = _regen_preserve(existing, fn)
+                self._buttons[self._buttons.index(existing)] = fn
+            else:
+                self._buttons.append(fn)
+            pool_by_id[fn["id"]] = fn
+            self._removed.discard(fn["id"])
+            if deck and fn["id"] not in item_by_id:
+                deck["items"].append({"button": fn["id"], "category": group or "", "style": {}, "hidden": False})
+                item_by_id[fn["id"]] = deck["items"][-1]
+
+        def states(key: str, title: str, icon: str) -> list:
+            return [
+                {"when": {"op": "eq", "value": f"starting:{key}"}, "icon": icon, "title": f"{title}\nstartet", "color": "warn", "blink": True},
+                {"when": {"op": "eq", "value": f"playing:{key}"}, "icon": icon, "title": f"{title}\nläuft (Stop)", "color": "ok", "blink": True},
+                {"when": {"op": "eq", "value": f"paused:{key}"}, "icon": icon, "title": f"{title}\nPause", "color": "warn", "blink": False},
+                {"when": {"op": "eq", "value": f"error:{key}"}, "icon": icon, "title": f"{title}\nFehler", "color": "err", "blink": True},
+                {"when": {"op": "any"}, "icon": icon, "title": title, "color": "off"},
+            ]
+
+        n = 0
+        for t in tracks:
+            title = t["title"][:28]
+            style_label = str((styles.get(t["style"]) or {}).get("label") or t["style"] or "")
+            upsert({"id": "jb_" + t["id"], "label": t["title"], "pool_cat": group, "_jukebox_track": t["id"],
+                    "action": {"type": "jukebox", "mode": "toggle", "track": t["id"]},
+                    "monitor": {"type": "jukebox_state", "track": t["id"]},
+                    "states": states(t["id"], title, "🎵"),
+                    "default": {"icon": "🎵", "title": (title + ("\n" + style_label if style_label else "")), "color": "off"}})
+            n += 1
+        for sid, spec in styles.items():
+            label = str((spec or {}).get("label") or sid)
+            upsert({"id": "jb_random_" + _slug(sid), "label": f"Zufall: {label}", "pool_cat": group, "_jukebox_style": sid,
+                    "action": {"type": "jukebox", "mode": "random", "style": sid},
+                    "monitor": {"type": "jukebox_state", "style": sid},
+                    "states": states(sid, f"Zufall\n{label}", "🎲"),
+                    "default": {"icon": "🎲", "title": f"Zufall\n{label}", "color": "off"}})
+            n += 1
+        upsert({"id": "jb_stop", "label": "Jukebox Stop", "pool_cat": group,
+                "action": {"type": "jukebox", "mode": "stop"},
+                "monitor": {"type": "jukebox_state"},
+                "states": [{"when": {"op": "eq", "value": "idle"}, "icon": "⏹", "title": "Jukebox\nstill", "color": "off"},
+                           {"when": {"op": "any"}, "icon": "⏹", "title": "Jukebox\nSTOP", "color": "accent", "blink": False}],
+                "default": {"icon": "⏹", "title": "Jukebox\nStop", "color": "off"}})
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "buttons": n + 1, "deck": deck_id or None}
+
     def mediaplayer_adjust(self, slot: str, eq: dict) -> dict:
         """Bild-Equalizer LIVE am laufenden mpv-Slot setzen (IPC) — fürs Echtzeit-Tunen im Editor."""
         try:
@@ -5214,10 +5334,10 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         _ACTION_ORDER = ["multi", "process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
-                         "play_media", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
+                         "play_media", "jukebox", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "hwinfo", "fps", "frametime", "weather",
+                          "file_field", "sse_field", "poll", "jukebox_state", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "arduino_status", "lock_state", "displayfusion_profile", "none"]
