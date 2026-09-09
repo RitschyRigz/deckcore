@@ -208,6 +208,90 @@ def resolve_audio_device(mpv_path: str, wanted: str) -> str:
 
 # ───────────────────────────── Bibliothek + Zustandsautomat ─────────────────────────────
 
+_SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
+_LYRIC_MIN_SECONDS = 0.8   # Suno-SRTs haben teils Cues mit ~20 ms Dauer -> bis zum naechsten Cue strecken
+
+
+def parse_srt(text: str, *, offset: float = 0.0) -> list[dict]:
+    """SRT -> [{index, start, end, text}] (Sekunden). Robust gegen BOM/CRLF/fehlende Nummern,
+    HTML-Tags werden entfernt. Entartete Cues (Dauer < 0.8 s) laufen bis zum Start des naechsten
+    Cues (mindestens 0.8 s); Cues mit gleichem Start werden zu EINER Zeile zusammengefasst."""
+    def _sec(m) -> float:
+        h, mi, s, ms = m.groups()
+        return int(h) * 3600 + int(mi) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000.0
+
+    raw: list[dict] = []
+    for block in re.split(r"\r?\n\s*\r?\n", text.replace("\ufeff", "").strip()):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        ti = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
+        if ti is None:
+            continue
+        times = _SRT_TIME.findall(lines[ti])
+        if len(times) < 2:
+            continue
+        start = _sec(_SRT_TIME.search(lines[ti]))
+        end = _sec(list(_SRT_TIME.finditer(lines[ti]))[1])
+        body = " ".join(re.sub(r"<[^>]+>", "", ln) for ln in lines[ti + 1:]).strip()
+        if not body:
+            continue
+        raw.append({"start": start + offset, "end": end + offset, "text": body})
+    raw.sort(key=lambda c: c["start"])
+    # Suno-Downloader: ganze Bloecke mit IDENTISCHEM Zeitstempel (Timing unbekannt). Solche
+    # Gruppen werden gleichmaessig bis zum naechsten echten Cue-Start verteilt statt gestapelt.
+    merged: list[dict] = []
+    i = 0
+    while i < len(raw):
+        group = [raw[i]]
+        while i + len(group) < len(raw) and abs(raw[i + len(group)]["start"] - raw[i]["start"]) < 0.05:
+            group.append(raw[i + len(group)])
+        nxt_i = i + len(group)
+        span_end = raw[nxt_i]["start"] if nxt_i < len(raw) else raw[i]["start"] + 3.0 * len(group)
+        if len(group) == 1:
+            merged.append(dict(group[0]))
+        else:
+            step = max(_LYRIC_MIN_SECONDS, (span_end - raw[i]["start"]) / len(group))
+            for k, c in enumerate(group):
+                s = raw[i]["start"] + k * step
+                merged.append({"start": s, "end": s + step, "text": c["text"]})
+        i = nxt_i
+    out: list[dict] = []
+    for i, c in enumerate(merged):
+        nxt = merged[i + 1]["start"] if i + 1 < len(merged) else None
+        end = c["end"]
+        if end - c["start"] < _LYRIC_MIN_SECONDS:
+            end = nxt if nxt is not None else c["start"] + 3.0
+        if nxt is not None:
+            end = min(end, nxt)
+        end = max(end, c["start"] + min(_LYRIC_MIN_SECONDS, (nxt - c["start"]) if nxt is not None else _LYRIC_MIN_SECONDS))
+        out.append({"index": i, "start": round(max(0.0, c["start"]), 3), "end": round(end, 3), "text": c["text"]})
+    return out
+
+
+def lyric_at(cues: list[dict], position: float) -> dict:
+    """Aktuelle Zeile zur Position: {index, text, start, end, next, count, progress}. Zwischen zwei
+    Cues (Pause) ist ``text`` leer und ``next`` die kommende Zeile; ohne Cues: {}."""
+    if not cues:
+        return {}
+    cur = None
+    nxt = None
+    for c in cues:
+        if c["start"] <= position < c["end"]:
+            cur = c
+        elif c["start"] > position:
+            nxt = c
+            break
+    if cur is None:
+        return {"index": -1, "text": "", "start": None, "end": None,
+                "next": nxt["text"] if nxt else "", "next_in": round(nxt["start"] - position, 1) if nxt else None,
+                "count": len(cues), "progress": 0.0}
+    span = max(0.001, cur["end"] - cur["start"])
+    return {"index": cur["index"], "text": cur["text"], "start": cur["start"], "end": cur["end"],
+            "next": nxt["text"] if nxt else "", "next_in": None,
+            "count": len(cues), "progress": round(min(1.0, (position - cur["start"]) / span), 3)}
+
+
 class Jukebox:
     def __init__(self, runtime_dir: Path, *, mpv_resolver: Callable[[Optional[str]], str],
                  run_actions: Callable[[list, dict], dict],
@@ -226,8 +310,10 @@ class Jukebox:
         self.cancel_deferred: Optional[Callable[[str], dict]] = None
         # In-Prozess-Zuhoerer fuer Zustandswechsel (Hosts), zusaetzlich zum Bus-``publish``.
         self.listeners: list[Callable[[dict], None]] = []
+        self._lyrics_cache: dict[str, tuple] = {}
         self._state: dict = {"state": "idle", "request_id": None, "track": None, "style": None,
-                             "position": 0.0, "duration": 0.0, "reason": None, "updated_at": time.time()}
+                             "position": 0.0, "duration": 0.0, "reason": None, "lyric": {},
+                             "updated_at": time.time()}
         self._last_progress_publish = 0.0
         self._write_state()
 
@@ -291,6 +377,37 @@ class Jukebox:
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
             })
         return out
+
+    def lyrics(self, track_id: str) -> list[dict]:
+        """Mitsing-Text eines Tracks: ``<audio-stem>.srt`` neben der Datei (oder ``lyrics`` in
+        library.json, relativ zur Bibliothek). ``lyrics_offset`` (Sekunden, +/-) verschiebt alle
+        Cues. Ohne Datei: leere Liste. Gecacht nach Pfad+mtime."""
+        tr = self.track(track_id)
+        if not tr:
+            return []
+        cfg = self.config()
+        root = Path(str(cfg.get("library_dir") or ""))
+        meta = (self._json("library.json").get("tracks") or {}).get(track_id) or {}
+        meta = meta if isinstance(meta, dict) else {}
+        srt = Path(tr["file"]).with_suffix(".srt")
+        if meta.get("lyrics"):
+            srt = root / str(meta["lyrics"])
+        if not srt.is_file():
+            return []
+        try:
+            key = (str(srt), int(srt.stat().st_mtime), float(meta.get("lyrics_offset") or 0))
+        except OSError:
+            return []
+        cached = self._lyrics_cache.get(track_id)
+        if cached and cached[0] == key:
+            return cached[1]
+        try:
+            cues = parse_srt(srt.read_text(encoding="utf-8-sig"), offset=key[2])
+        except Exception as e:  # noqa: BLE001
+            log.warning("SRT %s unlesbar: %s", srt, e)
+            cues = []
+        self._lyrics_cache[track_id] = (key, cues)
+        return cues
 
     def library_signature(self) -> str:
         """Fingerabdruck der Bibliothek (Dateien + Groesse + mtime, library.json, styles.json):
@@ -477,10 +594,14 @@ class Jukebox:
             if snap.get("state") in ("starting", "playing", "paused"):
                 now = time.monotonic()
                 heavy = now - self._last_progress_publish >= 1.0
+                position = float(ev.get("position") or 0)
+                lyric = lyric_at(self.lyrics(str(snap.get("track") or "")), position)
+                if lyric.get("index") != (snap.get("lyric") or {}).get("index"):
+                    heavy = True   # Zeilenwechsel sofort raus (Overlay, Listener)
                 if heavy:
                     self._last_progress_publish = now
-                self._set(publish=heavy, position=round(float(ev.get("position") or 0), 1),
-                          duration=round(float(ev.get("duration") or 0), 1),
+                self._set(publish=heavy, position=round(position, 1),
+                          duration=round(float(ev.get("duration") or 0), 1), lyric=lyric,
                           **({"state": "playing"} if snap.get("state") == "starting" else {}))
         elif kind == "paused":
             if snap.get("state") in ("playing", "paused"):
