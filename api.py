@@ -226,6 +226,16 @@ def build_streamdeck_router(
     def jukebox_stop(request: Request) -> JSONResponse:
         return JSONResponse(get_service(request).jukebox().stop())
 
+    @r.post("/api/jukebox/duck")
+    def jukebox_duck(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """{level: 0..1 | null} -> laufende Musik absenken/hochholen; {toggle: true} -> umschalten."""
+        b = body or {}
+        jb = get_service(request).jukebox()
+        if b.get("toggle"):
+            return JSONResponse(jb.duck_toggle(float(b.get("level") if b.get("level") is not None else 0.25)))
+        level = b.get("level")
+        return JSONResponse(jb.duck(None if level is None else float(level)))
+
     @r.post("/api/jukebox/random")
     def jukebox_random(request: Request, body: dict = Body(default={})) -> JSONResponse:
         b = body or {}

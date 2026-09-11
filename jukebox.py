@@ -30,6 +30,11 @@ Stil-Felder ueber Start/Ende/Stop hinaus (alle optional, alle Daten):
   gespielten Tracks) oder ``pick="newest"`` = juengste veroeffentlichte Datei (mtime,
   Gleichstand nach Pfad) — ausdruecklich „neueste Datei", kein Streambezug.
 
+Ducking (``duck(level)``): die laufende Wiedergabe wird weich auf ``level`` (0..1) der
+konfigurierten Lautstaerke abgesenkt und mit ``duck(None)`` wieder hochgeholt — fuer Brunos
+Antworten ueber der Musik und Richards „Push to Duck" auf dem Deck. Ein neuer Song startet
+immer ungeduckt. Zustand: ``status().ducked`` / ``duck_level``.
+
 Veroeffentlicht ist eine Audiodatei, wenn sie unter ihrem endgueltigen Namen liegt und der
 Name NICHT mit ``_`` beginnt: Kopieren als ``_name.mp3`` und danach umbenennen; Browser-
 Downloads (``.crdownload``/``.part`` -> Zielname) tun das von selbst. Unveroeffentlichte
@@ -56,6 +61,9 @@ STATES = ("idle", "queued", "preparing", "starting", "playing", "paused", "ended
 _ACTIVE = {"preparing", "starting", "playing", "paused"}
 PICKS = ("random", "newest")
 PREPARE_TIMEOUT_S = 8.0     # Frist fuer on_prepare, ueberschreibbar je Stil (prepare_timeout_s)
+DUCK_LEVEL_DEFAULT = 0.25   # Anteil der konfigurierten Lautstaerke waehrend des Duckens
+DUCK_FADE_MS = 250          # weiche Rampe (linear, in Schritten ueber mpv-IPC)
+DUCK_FADE_STEPS = 6
 _UNPUBLISHED_PREFIX = "_"
 
 
@@ -110,6 +118,9 @@ class _MpvAudio:
 
     def pause(self, flag: bool) -> bool:
         return self._send({"command": ["set_property", "pause", bool(flag)]})
+
+    def set_volume(self, volume: float) -> bool:
+        return self._send({"command": ["set_property", "volume", max(0.0, min(130.0, float(volume)))]})
 
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -343,7 +354,8 @@ class Jukebox:
         self._lyrics_cache: dict[str, tuple] = {}
         self._state: dict = {"state": "idle", "request_id": None, "track": None, "style": None,
                              "position": 0.0, "duration": 0.0, "reason": None, "lyric": {},
-                             "updated_at": time.time()}
+                             "ducked": False, "duck_level": None, "updated_at": time.time()}
+        self._duck_generation = 0      # laufende Rampe erkennt eine neuere Anweisung
         self._last_progress_publish = 0.0
         # Laufnummer je Zustandsaenderung (unter _lock vergeben). Veroeffentlicht wird in
         # dieser Reihenfolge: ein aelterer Schnappschuss, dessen Thread erst nach einem
@@ -570,7 +582,8 @@ class Jukebox:
                         "title": t["title"], "reason": gate.get("reason")}
         device = resolve_audio_device(mpv, str(self.config().get("audio_device") or ""))
         common = dict(request_id=rid, track=t["id"], title=t["title"], style=style,
-                      position=0.0, duration=0.0, reason=None, detail=None, file=t["file"])
+                      position=0.0, duration=0.0, reason=None, detail=None, file=t["file"],
+                      ducked=False, duck_level=None)
         prepared = self._has_hook(style, "on_prepare")
         with self._start_lock:
             with self._lock:
@@ -680,6 +693,42 @@ class Jukebox:
         if player is None:
             return {"ok": False, "reason": "kein Player"}
         return {"ok": player.pause(flag)}
+
+    def duck(self, level: Optional[float] = DUCK_LEVEL_DEFAULT, *, fade_ms: int = DUCK_FADE_MS) -> dict:
+        """Laufende Wiedergabe weich absenken (``level`` 0..1 der konfigurierten Lautstaerke)
+        oder mit ``None``/``1.0`` wieder hochholen. Ohne laufenden Player: ok:false."""
+        with self._lock:
+            player, snap = self._player, dict(self._state)
+        if player is None or snap.get("state") not in _ACTIVE:
+            return {"ok": False, "reason": "kein laufender Player", "state": snap.get("state")}
+        try:
+            base = float(self.config().get("volume") if self.config().get("volume") is not None else 100.0)
+        except (TypeError, ValueError):
+            base = 100.0
+        ducked = level is not None and float(level) < 1.0
+        target_level = max(0.0, min(1.0, float(level))) if ducked else 1.0
+        start_level = float(snap.get("duck_level") or 1.0) if snap.get("ducked") else 1.0
+        with self._lock:
+            self._duck_generation += 1
+            generation = self._duck_generation
+        self._set(ducked=ducked, duck_level=target_level if ducked else None)
+
+        def _ramp() -> None:
+            steps = max(1, int(DUCK_FADE_STEPS))
+            for i in range(1, steps + 1):
+                if self._duck_generation != generation or not player.alive():
+                    return                          # neuere Anweisung oder Player weg
+                lvl = start_level + (target_level - start_level) * (i / steps)
+                player.set_volume(base * lvl)
+                if i < steps:
+                    time.sleep(max(0.0, float(fade_ms)) / 1000.0 / steps)
+
+        threading.Thread(target=_ramp, name="jukebox-duck", daemon=True).start()
+        return {"ok": True, "ducked": ducked, "duck_level": target_level if ducked else None,
+                "request_id": snap.get("request_id")}
+
+    def duck_toggle(self, level: float = DUCK_LEVEL_DEFAULT) -> dict:
+        return self.duck(None if self.status().get("ducked") else level)
 
     # -- intern ----------------------------------------------------------------------------
     def _pipe_name(self, rid: str) -> str:

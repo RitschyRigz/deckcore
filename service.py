@@ -4726,6 +4726,13 @@ class DeckCoreService:
         style = str(action.get("style") or "").strip()
         if mode == "stop":
             res = jb.stop()
+        elif mode == "duck":
+            # Push to Duck: Musik weich absenken / wieder hochholen (Toggle); level 0..1
+            try:
+                level = float(action.get("level") if action.get("level") is not None else 0.25)
+            except (TypeError, ValueError):
+                level = 0.25
+            res = jb.duck_toggle(level)
         elif mode == "random":
             res = jb.play_random(style, pick=str(action.get("pick") or "random"))
         elif mode == "play":
