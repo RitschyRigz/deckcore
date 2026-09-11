@@ -228,7 +228,9 @@ def build_streamdeck_router(
 
     @r.post("/api/jukebox/random")
     def jukebox_random(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        return JSONResponse(get_service(request).jukebox().play_random(str((body or {}).get("style") or "")))
+        b = body or {}
+        return JSONResponse(get_service(request).jukebox().play_random(
+            str(b.get("style") or ""), pick=str(b.get("pick") or "random")))
 
     @r.post("/api/jukebox/config")
     def jukebox_config(request: Request, body: dict = Body(default={})) -> JSONResponse:

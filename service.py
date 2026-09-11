@@ -4727,7 +4727,7 @@ class DeckCoreService:
         if mode == "stop":
             res = jb.stop()
         elif mode == "random":
-            res = jb.play_random(style)
+            res = jb.play_random(style, pick=str(action.get("pick") or "random"))
         elif mode == "play":
             res = jb.play(track, style_override=style)
         else:
@@ -4781,6 +4781,7 @@ class DeckCoreService:
 
         def states(key: str, title: str, icon: str) -> list:
             return [
+                {"when": {"op": "eq", "value": f"preparing:{key}"}, "icon": icon, "title": f"{title}\nVorhang auf", "color": "warn", "blink": True},
                 {"when": {"op": "eq", "value": f"starting:{key}"}, "icon": icon, "title": f"{title}\nstartet", "color": "warn", "blink": True},
                 {"when": {"op": "eq", "value": f"playing:{key}"}, "icon": icon, "title": f"{title}\nläuft (Stop)", "color": "ok", "blink": True},
                 {"when": {"op": "eq", "value": f"paused:{key}"}, "icon": icon, "title": f"{title}\nPause", "color": "warn", "blink": False},
@@ -5484,8 +5485,12 @@ class DeckCoreService:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         try:
+            timeout = float(action.get("timeout") or _HTTP_TIMEOUT)   # je Action, z.B. synchrone Buehne
+        except (TypeError, ValueError):
+            timeout = _HTTP_TIMEOUT
+        try:
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=max(0.5, timeout)) as resp:
                 return {"success": 200 <= resp.status < 300,
                         "message": f"HTTP {resp.status} {url}"}
         except Exception as e:  # noqa: BLE001
