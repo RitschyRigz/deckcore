@@ -4858,7 +4858,10 @@ class DeckCoreService:
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
         if deck is not None:
             cats = [group] + [style_label(s) for s in order]
-            deck["categories"] = cats + [c for c in deck.get("categories") or [] if c not in cats]
+            # Category order belongs to the deck template. A library refresh only
+            # appends new sections; it must not undo the user's arrangement.
+            existing_cats = list(deck.get("categories") or [])
+            deck["categories"] = existing_cats + [c for c in cats if c not in existing_cats]
             old_items = {it["button"]: it for it in deck["items"] if it["button"] in keep}
             others = [it for it in deck["items"] if it["button"] not in keep]
             jb_items = []
