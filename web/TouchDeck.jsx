@@ -4,6 +4,8 @@ import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderVU, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph, suggestGlyphName } from './icons.jsx'
+import { CatalogDeck } from './CatalogDeck.jsx'
+import './catalog.css'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
 // ganze Panel um (Deck-Identität, z.B. rot=Dual / blau=Solo); verlässt man es, wird die globale Basis
@@ -748,6 +750,11 @@ export function TouchDeck() {
   const [deck, setDeck] = useState('')          // Tab-gewähltes Deck (Top-Level)
   const [vis, setVis] = useState({})            // button-id → {label,title,icon,image,color} (live)
   const [pressed, setPressed] = useState('')
+  const [pressError, setPressError] = useState('')
+  const [catalogButtons, setCatalogButtons] = useState({})
+  const navigationRef = useRef(0)
+  const openerRef = useRef({})
+  const pendingRef = useRef(new Set())
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
@@ -796,6 +803,7 @@ export function TouchDeck() {
     const am = {}, rm = {}, mm = {}, om = {}
     for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {} }
     setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om)
+    setCatalogButtons(Object.fromEntries((d.buttons || []).map(b => [b.id, b])))
     setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
@@ -905,6 +913,7 @@ export function TouchDeck() {
   }, [fullscreen])
 
   const switchDeck = (id) => {
+    navigationRef.current++; setPressError('')
     setDeck(id); setNavStack([]); setOverlay(null)
     try { localStorage.setItem('sd.deck', id) } catch {}
   }
@@ -921,8 +930,9 @@ export function TouchDeck() {
     clearTimeout(flashT.current)
     flashT.current = setTimeout(() => setDeckFlash(''), 1100)
   }
-  const goBack = () => { buzz(); setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
-  const closeOverlay = () => { buzz(); setOverlay(null) }
+  const goBack = () => { navigationRef.current++; setPressError(''); buzz(); setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
+  const goRoot = () => { navigationRef.current++; setPressError(''); buzz(); setSlideDir(0); setNavStack([]); setOverlay(null) }
+  const closeOverlay = () => { navigationRef.current++; buzz(); setOverlay(null) }
 
   // Cache-umgehender Hard-Reload (frische index.html → frisches Bundle; Tablet muss die App nicht mehr
   // schließen/öffnen). Cache-Bust per Query-Param + replace (keine History-Einträge).
@@ -975,6 +985,8 @@ export function TouchDeck() {
     buzz()                                               // bestätigter Tap → kurzer Haptik-Puls (falls aktiviert)
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
+      navigationRef.current++; setPressError('')
+      openerRef.current[a.deck] = a
       if ((a.mode || 'replace') === 'radial') {
         const r = evt.currentTarget.getBoundingClientRect()
         setOverlay({ deck: a.deck, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
@@ -983,18 +995,31 @@ export function TouchDeck() {
       }
       return
     }
-    setPressed(id)
-    try { await postJSON('/api/streamdeck/press/' + encodeURIComponent(id)) } catch {}
-    setTimeout(() => setPressed(''), 220)
+    if (pendingRef.current.has(id)) return
+    pendingRef.current.add(id)
+    const navigation = navigationRef.current
+    setPressed(id); setPressError('')
+    let accepted = false
+    try {
+      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id))
+      accepted = result?.success === true
+      if (!accepted && navigation === navigationRef.current) setPressError(result?.message || 'Auftrag nicht angenommen. Bitte erneut versuchen.')
+    } catch {
+      if (navigation === navigationRef.current) setPressError('Keine Bestätigung erhalten. Bitte den Status prüfen, bevor du erneut anfragst.')
+    } finally {
+      pendingRef.current.delete(id)
+      setTimeout(() => setPressed(cur => cur === id ? '' : cur), 220)
+    }
+    if (!accepted || navigation !== navigationRef.current) return
     // Ordner-Verhalten NACH einer Aktion: „direkt zurück zum Original-Deck" ODER „offen lassen"
     // (Radial bis Mitte/Display-Tap, Sub-Deck bis „‹ Zurück"). Pro Ordner-Öffner wählbar über
     // action.close_on_action; Default = bisheriges Verhalten (Radial schließt · Sub-Deck bleibt offen).
     const inRadial = !!overlay
     const folderDeck = inRadial ? overlay.deck : (navStack.length ? navStack[navStack.length - 1] : '')
     if (folderDeck) {
-      const opener = Object.values(actionById).find((ac) => ac && ac.type === 'open_deck' && ac.deck === folderDeck)
+      const opener = openerRef.current[folderDeck]
       const auto = (opener && typeof opener.close_on_action === 'boolean') ? opener.close_on_action : inRadial
-      if (auto) { setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
+      if (auto) { navigationRef.current++; setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
     } else {
       setOverlay(null)
     }
@@ -1037,6 +1062,7 @@ export function TouchDeck() {
   // Positionen (Item x/y; un-platzierte Items fließen in die Lücken). Ohne das Flag = bisheriges responsives
   // Kategorie-Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt").
   const freeMode = !!layout.free
+  const catalogMode = layout.view === 'categories'
   const freeCols = layout.cols > 0 ? layout.cols : 6
   const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${Math.round((layout.gap || 12) * scale)}px;justify-content:start`
   const tile = (it) => {
@@ -1127,9 +1153,13 @@ export function TouchDeck() {
   }
 
   return (
-    <div class="t-deck" style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
+    <div class={'t-deck' + (catalogMode ? ' is-catalog' : '')} style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
          onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
+      {catalogMode ? <CatalogDeck key={shownId} groups={groups} buttons={catalogButtons} vis={vis}
+        onTap={onTap} pressed={pressed} scale={scale} back={navStack.length ? goRoot : null}
+        title={active.label || active.id} extra={<FsBtn />} error={pressError} /> : <>
+      {pressError && <div class="t-press-error" role="alert">{pressError}</div>}
       {navStack.length > 0 ? (
         <div class="t-nav">
           <button class="t-nav-back" onClick={goBack}>‹ Zurück</button>
@@ -1171,6 +1201,7 @@ export function TouchDeck() {
             ))
           )}
       </div>
+      </>}
       {/* System-Knopf unten links — IMMER sichtbar (auch im Vollbild). Ersetzt die vertikalen Pull-Gesten:
           Menü (öffnet nach oben) mit „Neu laden" + Vollbild auf/zu. (Verbindungen bleiben der native ☰-Griff.) */}
       {sysMenu && <div class="t-sysmenu-backdrop" onClick={() => setSysMenu(false)} />}

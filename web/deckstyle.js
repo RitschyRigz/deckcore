@@ -5,6 +5,7 @@
 // style-Werte: 'inherit' (erbt Default) | 'on' | 'off'; label_pos: 'inherit'|'top'|'bottom'.
 
 export const DECK_LAYOUT_DEF = {
+  view: 'grid',
   cols: 0, button_size: 116, gap: 12, font_scale: 1.0,
   show_label: true, label_pos: 'bottom', show_title: true, frame: true, show_category_titles: true,
 }

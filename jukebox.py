@@ -423,14 +423,35 @@ class Jukebox:
             tid = _slug(str(rel.with_suffix("")))
             m = meta.get(tid) if isinstance(meta.get(tid), dict) else {}
             folder_style = rel.parts[0] if len(rel.parts) > 1 else ""
+            cover = self._cover_sidecar(p, root)
             out.append({
                 "id": tid, "file": str(p), "rel": str(rel).replace("\\", "/"),
                 "title": str(m.get("title") or p.stem),
                 "style": str(m.get("style") or folder_style or ""),
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
                 "mtime": mtime,
+                "cover_url": f"/api/jukebox/cover/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
             })
         return out
+
+    @staticmethod
+    def _cover_sidecar(audio: Path, root: Path) -> Optional[Path]:
+        """Only image sidecars belonging to this audio, inside the configured library."""
+        for suffix in (".jpg", ".png", ".webp", ".jpeg"):
+            p = audio.with_suffix(suffix)
+            try:
+                if p.resolve().is_relative_to(root.resolve()) and p.is_file() and 0 < p.stat().st_size <= 16_000_000:
+                    return p
+            except OSError:
+                continue
+        return None
+
+    def cover(self, track_id: str) -> Optional[Path]:
+        """Resolve by catalog ID; HTTP clients cannot supply filesystem paths."""
+        tr = self.track(track_id)
+        if not tr:
+            return None
+        return self._cover_sidecar(Path(tr["file"]), Path(str(self.config().get("library_dir") or "")))
 
     def style_pool(self, style: str = "") -> tuple[list[dict], str]:
         """Tracks eines Stils — samt Musik-Leihe: traegt der Stil ``tracks: "<anderer>"``,
@@ -479,16 +500,16 @@ class Jukebox:
         parts: list[str] = []
         if root.is_dir():
             for p in sorted(root.rglob("*")):
-                if p.is_file() and _published(p):
+                if p.is_file() and (_published(p) or (not p.name.startswith('_') and p.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'))):
                     try:
                         st = p.stat()
-                        parts.append(f"{p.relative_to(root)}|{st.st_size}|{int(st.st_mtime)}")
+                        parts.append(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}")
                     except OSError:
                         continue
-        for name in ("library.json", "styles.json"):
+        for name in ("library.json", "styles.json", "config.json"):
             f = self._dir / name
             try:
-                parts.append(f"{name}|{int(f.stat().st_mtime)}" if f.exists() else f"{name}|-")
+                parts.append(f"{name}|{f.stat().st_mtime_ns}" if f.exists() else f"{name}|-")
             except OSError:
                 parts.append(f"{name}|?")
         return "\n".join(parts)

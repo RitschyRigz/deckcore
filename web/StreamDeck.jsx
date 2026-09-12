@@ -933,6 +933,11 @@ function DeckLayout({ deck, onReload }) {
   return (
     <div class="sd-lay-wrap">
       <div class="sd-lay-ctl">
+        <label>Ansicht
+          <select value={lay.view || 'grid'} onChange={(e) => save({ view: e.currentTarget.value }, true)}>
+            <option value="grid">Raster</option><option value="categories">Kategorien links · Kacheln rechts</option>
+          </select>
+        </label>
         <label>Spalten
           <select value={lay.cols} onChange={(e) => save({ cols: Number(e.currentTarget.value) }, true)}>
             <option value="0">Auto</option>{Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option value={n}>{n}</option>)}

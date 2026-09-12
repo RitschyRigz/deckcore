@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 
 def build_streamdeck_router(
@@ -214,6 +214,13 @@ def build_streamdeck_router(
         jb = get_service(request).jukebox()
         return JSONResponse({"tracks": jb.library(), "styles": jb.styles(), "config": jb.config()})
 
+    @r.get("/api/jukebox/cover/{track_id}")
+    def jukebox_cover(track_id: str, request: Request) -> FileResponse:
+        path = get_service(request).jukebox().cover(track_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Kein Cover vorhanden")
+        return FileResponse(path, headers={"Cache-Control": "private, max-age=300"})
+
     @r.post("/api/jukebox/play")
     def jukebox_play(request: Request, body: dict = Body(default={})) -> JSONResponse:
         """{track, style?, request_id?} → Song starten (laufender Auftrag wird sauber ersetzt)."""
@@ -248,7 +255,7 @@ def build_streamdeck_router(
         b = body or {}
         return JSONResponse(get_service(request).jukebox().set_config(
             library_dir=b.get("library_dir"), audio_device=b.get("audio_device"),
-            mpv_path=b.get("mpv_path"), volume=b.get("volume")))
+            mpv_path=b.get("mpv_path"), volume=b.get("volume"), category_pick=b.get("category_pick")))
 
     @r.post("/api/jukebox/track_style")
     def jukebox_track_style(request: Request, body: dict = Body(default={})) -> JSONResponse:
@@ -260,7 +267,7 @@ def build_streamdeck_router(
 
     @r.post("/api/jukebox/populate")
     def jukebox_populate(request: Request, body: dict = Body(default={})) -> JSONResponse:
-        """Pool-Buttons (je Track Toggle, je Stil Zufall, Stop) anlegen/auffrischen; {deck_id?}"""
+        """Pool-Buttons (je Track Toggle, je Stil Neuester, Stop) anlegen/auffrischen; {deck_id?}"""
         return JSONResponse(get_service(request).populate_jukebox(str((body or {}).get("deck_id") or "")))
 
     @r.get("/api/mediaplayer/status")

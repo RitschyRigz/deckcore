@@ -128,6 +128,7 @@ _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (
 # „hidden" ist KEINE Layout-Eigenschaft mehr → pro Item (item.hidden), weil ein Button auf
 # Deck A sichtbar und auf Deck B ausgeblendet sein kann.
 _LAYOUT_DEFAULT = {
+    "view": "grid",       # grid | categories: paged catalogue with a category sidebar
     "cols": 0,            # 0 = auto (responsiv), sonst feste Spaltenzahl
     "button_size": 116,   # px Kachelgröße
     "gap": 12,            # px Abstand
@@ -2699,6 +2700,8 @@ class DeckCoreService:
                 out[k] = bool(patch[k])
         if patch.get("label_pos") in ("top", "bottom"):
             out["label_pos"] = patch["label_pos"]
+        if patch.get("view") in ("grid", "categories"):
+            out["view"] = patch["view"]
         return {k: out.get(k, _LAYOUT_DEFAULT[k]) for k in _LAYOUT_DEFAULT}
 
     def _sanitize_item(self, it, valid_ids: set, seen: set) -> Optional[dict]:
@@ -4750,12 +4753,14 @@ class DeckCoreService:
         """Pool-Buttons aus der Bibliothek ableiten — der Ordner ist die Wahrheit:
         je Track ``jb_<id>`` (Toggle), je Stil MIT Tracks ``jb_random_<stil>``, plus ``jb_stop``.
         Tasten verschwundener Tracks/Stile werden entfernt. Auf dem Deck: Abschnitt ``group``
-        (Stop) zuerst, dann je Stil ein Abschnitt (Stil-Label) mit Wuerfel + Tracks alphabetisch.
+        (Stop) zuerst, dann je Stil ein Abschnitt (Stil-Label) mit Neuester + Tracks nach mtime.
         Idempotent (``_regen_preserve`` haelt User-Kosmetik). ``deck_id`` wird in der Jukebox-
         Config gemerkt, damit der Ordnerwaechter dasselbe Deck nachzieht."""
         jb = self.jukebox()
         tracks = jb.library()
         styles = jb.styles()
+        category_pick = "random" if jb.config().get("category_pick") == "random" else "newest"
+        pick_label, pick_icon = ("Zufall", "🎲") if category_pick == "random" else ("Neuester", "✦")
         if deck_id:
             try:
                 if str(jb.config().get("deck_id") or "") != str(deck_id):
@@ -4776,11 +4781,18 @@ class DeckCoreService:
         def style_label(sid: str) -> str:
             return str((styles.get(sid) or {}).get("label") or sid or "Musik")
 
-        def upsert(fn: dict) -> None:
+        def upsert(fn: dict, old_generated: Optional[dict] = None) -> None:
             existing = pool_by_id.get(fn["id"])
             if existing is not None:
+                # Upgrade only unchanged generator cosmetics; keep actual user edits.
+                if old_generated:
+                    existing = dict(existing)
+                    for field, old in old_generated.items():
+                        if existing.get(field) == old:
+                            existing.pop(field, None)
+                original = pool_by_id[fn["id"]]
                 fn = _regen_preserve(existing, fn)
-                self._buttons[self._buttons.index(existing)] = fn
+                self._buttons[self._buttons.index(original)] = fn
             else:
                 self._buttons.append(fn)
             pool_by_id[fn["id"]] = fn
@@ -4801,6 +4813,7 @@ class DeckCoreService:
         order = [s for s in styles.keys() if s in present] + sorted(s for s in present if s not in styles)
         wanted: list[tuple[str, str]] = []   # (button_id, deck-kategorie) in Zielreihenfolge
         upsert({"id": "jb_stop", "label": "Jukebox Stop", "pool_cat": group,
+                "catalog": {"role": "control", "label": "Stop"},
                 "action": {"type": "jukebox", "mode": "stop"},
                 "monitor": {"type": "jukebox_state"},
                 "states": [{"when": {"op": "eq", "value": "idle"}, "icon": "⏹", "title": "Jukebox\nstill", "color": "off"},
@@ -4811,16 +4824,25 @@ class DeckCoreService:
         for sid in order:
             label = style_label(sid)
             cat = label
-            upsert({"id": "jb_random_" + _slug(sid), "label": f"Zufall: {label}", "pool_cat": group, "_jukebox_style": sid,
-                    "action": {"type": "jukebox", "mode": "random", "style": sid},
+            old_pick = "Neuester" if category_pick == "random" else "Zufall"
+            old_icon = "✦" if category_pick == "random" else "🎲"
+            upsert({"id": "jb_random_" + _slug(sid), "label": f"{pick_label}: {label}", "pool_cat": group, "_jukebox_style": sid,
+                    "catalog": {"role": "primary", "label": pick_label},
+                    "action": {"type": "jukebox", "mode": "random", "style": sid, "pick": category_pick},
                     "monitor": {"type": "jukebox_state", "style": sid},
-                    "states": states(sid, f"Zufall\n{label}", "🎲"),
-                    "default": {"icon": "🎲", "title": f"Zufall\n{label}", "color": "off"}})
+                    "states": states(sid, f"{pick_label}\n{label}", pick_icon),
+                    "default": {"icon": pick_icon, "title": f"{pick_label}\n{label}", "color": "off"}},
+                   {"label": f"{old_pick}: {label}", "states": states(sid, f"{old_pick}\n{label}", old_icon),
+                    "default": {"icon": old_icon, "title": f"{old_pick}\n{label}", "color": "off"}})
             wanted.append(("jb_random_" + _slug(sid), cat))
             n += 1
-            for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: x["title"].lower()):
+            for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: (-x.get("mtime", 0), x["rel"])):
                 title = tr["title"][:28]
                 upsert({"id": "jb_" + tr["id"], "label": tr["title"], "pool_cat": group, "_jukebox_track": tr["id"],
+                        "catalog": {"role": "item", "image": tr.get("cover_url") or "",
+                                    "status_labels": {f"{state}:{tr['id']}": caption for state, caption in
+                                                      (("preparing", "Wird vorbereitet"), ("starting", "Startet"),
+                                                       ("playing", "Läuft · Tippen stoppt"), ("paused", "Pausiert"), ("error", "Fehler"))}},
                         "action": {"type": "jukebox", "mode": "toggle", "track": tr["id"]},
                         "monitor": {"type": "jukebox_state", "track": tr["id"]},
                         "states": states(tr["id"], title, "🎵"),
@@ -4879,7 +4901,7 @@ class DeckCoreService:
             have = {str(b.get("_jukebox_track") or "") for b in self._buttons
                     if str(b.get("id") or "").startswith("jb_") and b.get("_jukebox_track")}
             want = {t["id"] for t in jb.library()}
-            return have != want
+            return have != want or any(not b.get("catalog") for b in self._buttons if b.get("_jukebox_track") or b.get("_jukebox_style"))
         except Exception:  # noqa: BLE001
             return False
 
