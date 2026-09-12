@@ -7,8 +7,6 @@
 .catalog-command { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; padding:8px 15px; border-radius:10px; border:1px solid var(--line); color:var(--fg); background:var(--bg3); font:inherit; font-size:14px; font-weight:650; cursor:pointer; }
 .catalog-command svg { width:18px; height:18px; }
 .catalog-command .sd-icon { font-size:20px; }
-.catalog-stop { color:var(--err); }
-.catalog-primary { background:color-mix(in srgb,var(--accent) 22%,var(--bg3)); border-color:var(--accent); }
 .catalog-content { flex:1; min-height:0; display:grid; grid-template-columns:154px minmax(0,1fr); gap:16px; }
 .catalog-sidebar { min-height:0; display:flex; flex-direction:column; padding-bottom:42px; border-right:1px solid var(--line); padding-right:12px; }
 .catalog-sidebar nav { display:flex; flex-direction:column; gap:6px; }
@@ -24,11 +22,8 @@
 .catalog-card { min-width:0; min-height:0; padding:0; display:grid; grid-template-rows:minmax(0,1fr) auto; text-align:left; color:var(--fg); border:1px solid var(--line); border-radius:13px; overflow:hidden; background:var(--bg2); cursor:pointer; }
 .catalog-card:hover,.catalog-card:focus-visible { border-color:var(--accent); outline:2px solid var(--accent); outline-offset:2px; }
 .catalog-card:active { transform:scale(.98); }
-.catalog-card.pending { opacity:.7; border-color:var(--accent); }
 .catalog-art { position:relative; min-height:0; overflow:hidden; background:var(--bg3); }
 .catalog-art img { position:absolute; width:100%; height:100%; object-fit:contain; z-index:1; background:var(--bg2); padding:8px; }
-.catalog-art-fallback { display:flex; width:100%; height:100%; align-items:center; justify-content:center; font-size:32px; color:var(--muted); }
-.catalog-badge { position:absolute; z-index:2; bottom:6px; left:6px; background:var(--bg); padding:4px 6px; font-size:11px; border-radius:5px; }
 .catalog-caption { padding:10px 12px; display:flex; flex-direction:column; gap:5px; min-width:0; }
 .catalog-caption strong { font:inherit; font-size:15px; font-weight:650; line-height:1.2; overflow-wrap:anywhere; }
 .catalog-caption > span { color:var(--muted); font-size:11px; }
@@ -38,6 +33,25 @@
 .catalog-category-pages { margin-top:8px; justify-content:space-between; gap:3px; font-size:11px; }
 .catalog-category-pages button { padding:6px; }
 .catalog-deck button:disabled { opacity:.35; cursor:default; }
+/* The normal TouchDeck key renderer owns every actual button, including widgets.
+   Only placement and geometry differ; per-item frame/title/label/skin remain active. */
+.catalog-grid > .t-key { max-width:none; min-width:0; min-height:0; height:100%; aspect-ratio:auto; }
+.t-key.catalog-compact { max-width:none; width:auto; min-width:100px; min-height:44px; height:44px; aspect-ratio:auto; padding:4px 10px; flex-direction:row; gap:8px; }
+.t-key.catalog-compact .t-key-icon { font-size:20px; }
+.t-key.catalog-compact .t-key-img { width:32px; height:32px; }
+.t-key.catalog-compact .t-key-label { font-size:12px; }
+.t-key.catalog-compact .t-key-title { font-size:calc(12px * var(--sd-font)); white-space:pre-line; }
+.t-key.catalog-card { display:flex; flex-direction:column; padding:0; gap:0; align-items:stretch; text-align:left; }
+.t-key.catalog-card .catalog-art { flex:1; display:flex; justify-content:center; align-items:center; background:transparent; }
+.t-key.catalog-card .catalog-art .t-key-img { width:100%; height:100%; object-fit:contain; background:transparent; padding:8px; border-radius:0; }
+.t-key.catalog-card .catalog-art .t-key-title { position:absolute; left:0; right:0; bottom:0; font-size:calc(10px * var(--sd-font)); background:rgba(0,0,0,.65); padding:3px 6px; }
+.t-key.catalog-card.ttl-top .catalog-art .t-key-title { bottom:auto; top:0; }
+.catalog-grid .t-key.catalog-card .catalog-caption { display:flex; flex:none; position:static; padding:8px 10px; text-align:left; color:var(--fg); opacity:1; text-transform:none; letter-spacing:normal; white-space:normal; overflow:visible; text-overflow:clip; max-width:100%; }
+.catalog-grid .t-key.catalog-card .catalog-caption strong { font-size:calc(15px * var(--sd-font)); white-space:normal; overflow-wrap:anywhere; }
+.catalog-grid .t-key.catalog-card .catalog-caption > span { font-size:calc(11px * var(--sd-font)); }
+.t-key.catalog-card.lbl-off .catalog-caption { display:none; }
+.t-key.catalog-card.title-off .t-key-title { display:none; }
+.catalog-grid > .t-key.noframe { border:0; background:transparent; }
 .catalog-error,.t-press-error { padding:9px 12px; border:1px solid var(--err); border-radius:8px; color:var(--fg); font-size:13px; background:var(--bg2); }
 @media(max-width:740px) {
   .catalog-content { grid-template-columns:128px minmax(0,1fr); gap:10px; }

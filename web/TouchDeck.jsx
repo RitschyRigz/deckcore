@@ -4,7 +4,7 @@ import { useEventStream, usePageVisible } from './sse.js'
 import { DECK_LAYOUT_DEF, resolveStyle, keyClass, groupDeckItems, resolveColor, accentVar, applyDeckLook, LOOK_DEFAULT } from './deckstyle.js'
 import { Clock, Gauge, Bar, Readout, FaderVU, fontStack, widgetFontSize } from './widgets.jsx'
 import { Glyph, isGlyph, glyphName, hasGlyph, suggestGlyphName } from './icons.jsx'
-import { CatalogDeck } from './CatalogDeck.jsx'
+import { CatalogDeck, catalogLabel } from './CatalogDeck.jsx'
 import './catalog.css'
 
 // Theme-Farb-Variablen für das Deck-Theme-Override: ein Deck mit eigenem Theme färbt beim Aktivieren das
@@ -751,9 +751,7 @@ export function TouchDeck() {
   const [vis, setVis] = useState({})            // button-id → {label,title,icon,image,color} (live)
   const [pressed, setPressed] = useState('')
   const [pressError, setPressError] = useState('')
-  const [catalogButtons, setCatalogButtons] = useState({})
   const navigationRef = useRef(0)
-  const openerRef = useRef({})
   const pendingRef = useRef(new Set())
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
@@ -768,7 +766,7 @@ export function TouchDeck() {
   const [mixSessions, setMixSessions] = useState([]) // App-Session-Liste fürs Mixer-Deck (aus dem SSE-Push, all_apps)
   const tokenRef = useRef('')                         // eindeutiges Panel-Token für die Audio-Subscription (pro Mount)
   if (!tokenRef.current) tokenRef.current = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36)
-  const [navStack, setNavStack] = useState([])       // Ordner-Drilldown (replace-Modus)
+  const [navStack, setNavStack] = useState([])       // opening actions: target + mode + return policy per navigation level
   const [overlay, setOverlay] = useState(null)       // {deck, anchor:{x,y}} — Radial-Menü
   // Vollbild-Deck: nur das aktive Deck, Chrome weg. Beim Laden den LETZTEN Zustand wiederherstellen
   // (App-Neustart / Reconnect-Reload landen sonst auf der Nicht-Vollbild-Ansicht). Das aktive Deck merkt
@@ -803,8 +801,7 @@ export function TouchDeck() {
     const am = {}, rm = {}, mm = {}, om = {}
     for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {} }
     setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om)
-    setCatalogButtons(Object.fromEntries((d.buttons || []).map(b => [b.id, b])))
-    setNavStack((s) => s.filter((id) => dks.some((x) => x.id === id)))   // entfernte Decks aus dem Stack
+    setNavStack((s) => s.filter((entry) => dks.some((x) => x.id === entry.deck)))
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
 
@@ -853,7 +850,7 @@ export function TouchDeck() {
   // der oberste Ordner im navStack, plus (falls offen) das Radial-Overlay-Deck. Ein Fader auf einem nicht
   // angezeigten Deck pollte sonst dauerhaft mit → skaliert nicht (viele Decks × Fader). Sichtbare ids:
   const _tabSel = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
-  const _shownId = navStack.length ? navStack[navStack.length - 1] : _tabSel
+  const _shownId = navStack.length ? navStack[navStack.length - 1].deck : _tabSel
   const _visIds = new Set()
   for (const _d of [decks.find((d) => d.id === _shownId), overlay && decks.find((d) => d.id === overlay.deck)])
     for (const it of (_d && _d.items) || []) if (it && !it.hidden) _visIds.add(it.button)
@@ -931,7 +928,6 @@ export function TouchDeck() {
     flashT.current = setTimeout(() => setDeckFlash(''), 1100)
   }
   const goBack = () => { navigationRef.current++; setPressError(''); buzz(); setSlideDir(0); setNavStack((s) => s.slice(0, -1)) }
-  const goRoot = () => { navigationRef.current++; setPressError(''); buzz(); setSlideDir(0); setNavStack([]); setOverlay(null) }
   const closeOverlay = () => { navigationRef.current++; buzz(); setOverlay(null) }
 
   // Cache-umgehender Hard-Reload (frische index.html → frisches Bundle; Tablet muss die App nicht mehr
@@ -986,12 +982,11 @@ export function TouchDeck() {
     const a = actionById[id] || {}
     if (a.type === 'open_deck' && a.deck) {
       navigationRef.current++; setPressError('')
-      openerRef.current[a.deck] = a
       if ((a.mode || 'replace') === 'radial') {
         const r = evt.currentTarget.getBoundingClientRect()
-        setOverlay({ deck: a.deck, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
+        setOverlay({ deck: a.deck, opener: { ...a }, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
       } else {
-        setSlideDir(0); setOverlay(null); setNavStack((s) => [...s, a.deck])
+        setSlideDir(0); setOverlay(null); setNavStack((s) => [...s, { ...a }])
       }
       return
     }
@@ -1015,9 +1010,8 @@ export function TouchDeck() {
     // (Radial bis Mitte/Display-Tap, Sub-Deck bis „‹ Zurück"). Pro Ordner-Öffner wählbar über
     // action.close_on_action; Default = bisheriges Verhalten (Radial schließt · Sub-Deck bleibt offen).
     const inRadial = !!overlay
-    const folderDeck = inRadial ? overlay.deck : (navStack.length ? navStack[navStack.length - 1] : '')
-    if (folderDeck) {
-      const opener = openerRef.current[folderDeck]
+    const opener = inRadial ? overlay.opener : navStack[navStack.length - 1]
+    if (opener) {
       const auto = (opener && typeof opener.close_on_action === 'boolean') ? opener.close_on_action : inRadial
       if (auto) { navigationRef.current++; setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
     } else {
@@ -1028,7 +1022,7 @@ export function TouchDeck() {
   if (!decks.length) return <div class="t-empty" style="margin:30px auto">Keine Decks in der Registry.</div>
 
   const tabSel = (deck && decks.some((d) => d.id === deck)) ? deck : defaultDeck
-  const shownId = navStack.length ? navStack[navStack.length - 1] : tabSel
+  const shownId = navStack.length ? navStack[navStack.length - 1].deck : tabSel
   const active = decks.find((d) => d.id === shownId) || decks[0]
   const layout = { ...DECK_LAYOUT_DEF, ...(active.layout || {}) }
   const groups = groupDeckItems(active.items || [], active.categories || [], false)
@@ -1054,7 +1048,7 @@ export function TouchDeck() {
   // Layout-Signatur fürs Kachel-Memo (eff/Platzierung hängen am Layout; ändert sich selten).
   const layoutKey = JSON.stringify(layout)
 
-  const crumb = [tabSel, ...navStack].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
+  const crumb = [tabSel, ...navStack.map(entry => entry.deck)].map((id) => (decks.find((d) => d.id === id) || {}).label || id)
   const overlayDeck = overlay ? decks.find((d) => d.id === overlay.deck) : null
   const visibleDecks = decks.filter((d) => !d.folder)   // Ordner NICHT in der Tableiste (nur per open_deck)
 
@@ -1062,17 +1056,17 @@ export function TouchDeck() {
   // Positionen (Item x/y; un-platzierte Items fließen in die Lücken). Ohne das Flag = bisheriges responsives
   // Kategorie-Raster → un-editierte Decks bleiben EXAKT wie sie waren („nichts springt").
   const freeMode = !!layout.free
-  const catalogMode = layout.view === 'categories'
+  const catalogMode = navStack[navStack.length - 1]?.mode === 'categories'
   const freeCols = layout.cols > 0 ? layout.cols : 6
   const freeStyle = `grid-template-columns:repeat(${freeCols},var(--sd-size));gap:${Math.round((layout.gap || 12) * scale)}px;justify-content:start`
-  const tile = (it) => {
+  const tile = (it, compact = false) => {
     const id = it.button
     const w = Math.max(1, it.w || 1), h = Math.max(1, it.h || 1)
     const spanned = w > 1 || h > 1   // große/breite Kachel — NUR Panel (physisch bleibt 1×1)
     // Freie x/y-Position gilt NUR im Frei-Modus. Sonst (Kategorie-Raster) ignorieren — sonst „springt"
     // ein Deck, das mal frei platziert war, im Grid-Modus herum (Items kleben an alten x/y).
     const positioned = freeMode && Number.isInteger(it.x) && Number.isInteger(it.y)
-    const place = positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
+    const place = catalogMode ? '' : positioned ? `;grid-column:${it.x + 1}/span ${w};grid-row:${it.y + 1}/span ${h}`
       : (spanned ? `;grid-column:span ${w};grid-row:span ${h}` : '')
     const v = vis[id] || {}
     const eff = resolveStyle(it.style, layout)
@@ -1085,6 +1079,11 @@ export function TouchDeck() {
     const isClock = render === 'clock', isText = render === 'text', isReadout = render === 'readout'
     const isWidget = isClock || isText || isReadout
     const isFader = render === 'fader'
+    // Same resolved visual, style, widget renderer and action on every template.
+    // The category template only arranges these keys; it owns no button definitions.
+    const card = catalogMode && !compact && !isWidget && !isGraph && !isGauge && !isStat && !isBar && !isFader
+    const caption = catalogLabel(v.label || id)
+    const categoryClass = catalogMode ? (compact ? ' catalog-compact' : ' catalog-item') : ''
     const isFlat = !v.image && !isWidget && !isGraph && !isGauge && !isStat && !isBar   // normale Emoji/Farb-Kachel (kein Bild/Widget/Graph/Gauge/Stat/Bar/Fader)
     const isViz = isGraph || isGauge || isStat || isBar   // Daten-Viz: nimmt jetzt am Look teil (Skin/Rahmen/Glow/--acc/BG) wie flache Tasten
     const o = optsById[id] || {}
@@ -1095,7 +1094,7 @@ export function TouchDeck() {
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
       return (
-        <div key={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + (spanned ? ' spanned' : '')}
+        <div key={id} data-button-id={id} class={keyClass(eff, 't-key') + ' t-fader-key cqsize' + categoryClass + (spanned ? ' spanned' : '')}
              style={'background:var(--bg)' + place}>
           <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} skin={skin} opts={o}
                  dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
@@ -1106,7 +1105,9 @@ export function TouchDeck() {
     }
     return (
       <button key={id}
-              class={keyClass(eff, 't-key') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '')}
+              data-button-id={id} aria-label={v.label || id} title={v.label || id}
+              disabled={pendingRef.current.has(id)}
+              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '')}
               style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
               onClick={(e) => onTap(id, e)}>
         {isClock ? <Clock opts={o} skin={skin} />
@@ -1125,13 +1126,17 @@ export function TouchDeck() {
             <Bar value={v.value} opts={o} />
           ) : isStat ? (
             <span class="t-stat-v" style={statSty}>{v.title || (v.value != null ? String(v.value) : '—')}</span>
+          ) : card ? (
+            <div class="catalog-art"><KeyImg key={v.image || v.icon} image={v.image} icon={v.icon} />
+              {eff.title && v.title && (!eff.label || !String(v.label || '').startsWith(v.title)) && <span class="t-key-title">{v.title}</span>}
+            </div>
           ) : (
             <>
               <KeyImg image={v.image} icon={v.icon} />
               {v.title ? <span class="t-key-title" style={o.size ? `font-size:${widgetFontSize(o, 'text')}` : ''}>{v.title}</span> : null}
             </>
           )}
-        {!isWidget && <span class="t-key-label">{v.label || id}</span>}
+        {!isWidget && (card ? eff.label && <span class="catalog-caption t-key-label"><strong>{caption.title}</strong>{caption.date && <span>{caption.date}</span>}</span> : <span class="t-key-label">{v.label || id}</span>)}
         {folder && <span class="t-folder-badge">⋯</span>}
       </button>
     )
@@ -1156,9 +1161,9 @@ export function TouchDeck() {
     <div class={'t-deck' + (catalogMode ? ' is-catalog' : '')} style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
          onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
-      {catalogMode ? <CatalogDeck key={shownId} groups={groups} buttons={catalogButtons} vis={vis}
-        onTap={onTap} pressed={pressed} scale={scale} back={navStack.length ? goRoot : null}
-        title={active.label || active.id} extra={<FsBtn />} error={pressError} /> : <>
+      {catalogMode ? <CatalogDeck key={shownId} groups={groups} layout={layout} renderItem={tile}
+        scale={scale} back={navStack.length ? goBack : null}
+        title={active.label || active.id} extra={<>{!navStack.length && visibleDecks.length > 1 && <select aria-label="Hauptdeck wählen" value={tabSel} onChange={e => switchDeck(e.currentTarget.value)}>{visibleDecks.map(d => <option value={d.id}>{d.label || d.id}</option>)}</select>}<FsBtn /></>} error={pressError} /> : <>
       {pressError && <div class="t-press-error" role="alert">{pressError}</div>}
       {navStack.length > 0 ? (
         <div class="t-nav">

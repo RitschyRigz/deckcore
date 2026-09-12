@@ -933,11 +933,6 @@ function DeckLayout({ deck, onReload }) {
   return (
     <div class="sd-lay-wrap">
       <div class="sd-lay-ctl">
-        <label>Ansicht
-          <select value={lay.view || 'grid'} onChange={(e) => save({ view: e.currentTarget.value }, true)}>
-            <option value="grid">Raster</option><option value="categories">Kategorien links · Kacheln rechts</option>
-          </select>
-        </label>
         <label>Spalten
           <select value={lay.cols} onChange={(e) => save({ cols: Number(e.currentTarget.value) }, true)}>
             <option value="0">Auto</option>{Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option value={n}>{n}</option>)}
@@ -991,6 +986,7 @@ function ItemInspector({ deck, item, onReload }) {
       <span class="muted" style="font-size:12px">Überschreibt das Aussehen von <b>{item.button}</b> — aber nur auf <b>diesem</b> Deck. (Das „🎨 Aussehen" oben gilt überall.)</span>
       <div class="sd-lay-ctl">
         <Sel k="frame" label="Rahmen" opts={[['inherit', 'Standard'], ['on', 'mit Rahmen'], ['off', 'nur Symbol']]} />
+        <Sel k="placement" label="Position in Kategorienansicht" opts={[['inherit', 'Kachelraster'], ['grid', 'Kachelraster'], ['category', 'Bei der Kategorie'], ['toolbar', 'Obere Leiste']]} />
         <Sel k="label" label="Name" opts={[['inherit', 'Standard'], ['on', 'an'], ['off', 'aus']]} />
         <Sel k="label_pos" label="Name-Position" opts={[['inherit', 'Standard'], ['bottom', 'unten'], ['top', 'oben']]} />
         <Sel k="title" label="Titel" opts={[['inherit', 'Standard'], ['on', 'an'], ['off', 'aus']]} />
@@ -3056,6 +3052,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             <select class="so-delay" value={action.mode || 'replace'} onChange={(e) => onChange({ mode: e.currentTarget.value })}>
               <option value="replace">Unterseite (Vollbild + Zurück-Pfeil)</option>
               <option value="radial">Radial-Menü (Kreis um den Button)</option>
+              <option value="categories">Kategorienansicht (Kategorien links, Tasten rechts)</option>
             </select>
           </div>
           <div class="reward-row">
@@ -3069,7 +3066,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
             </select>
           </div>
           <p class="muted sd-help">Macht diesen Button zu einem <b>Ordner</b>: beim Tippen öffnet sich das
-            gewählte Deck — als Unterseite (mit Zurück-Pfeil) oder als Radial-Menü. Den Ordner-Inhalt füllst du
+            gewählte Deck — als Unterseite, Radial-Menü oder Kategorienansicht mit Seitenwechsel. Den Ordner-Inhalt füllst du
             im <b>Decks-Tab</b> (Buttons reinziehen oder „📥 Füllen aus OBS/DisplayFusion"). Das <b>Aussehen</b>
             dieses Buttons ist frei — z.B. via „🎨 Aussehen einfügen" die Health-Ampel statt des Ordner-Symbols.
             Nur im Touch-Panel; auf der Elgato-Hardware ohne Wirkung.</p>

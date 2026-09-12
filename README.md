@@ -39,6 +39,23 @@ svc = DeckCoreService(bus, runtime_dir=..., default_buttons=[...])
 svc.register_action("my_thing", lambda action, btn: {"success": True, "message": "ok"})
 ```
 
+## Folder templates
+
+The normal `open_deck` action supports three presentation modes: `replace` (grid
+subpage), `radial`, and `categories` (category sidebar with paged keys). Select the
+mode in the existing action editor. All modes reference the same deck template and
+shared button pool; no content-specific page or plugin action is required.
+
+For category mode, `item.style.placement` places a key in the `grid`, beside its
+`category`, or in the `toolbar`. This is local to the deck item and editable in the
+existing inspector. Category mode uses equal-sized cells and the deck's size/gap/font
+settings; free coordinates and multi-cell spans remain available in grid mode.
+The usual key renderer handles widgets, status and per-item style in both views.
+
+The Elgato plugin continues to consume resolved visuals and press stable button IDs;
+it does not mirror web folder navigation. A state's omitted `image` inherits the
+button's `default.image`; an explicit empty image suppresses it.
+
 ## Status
 
 v0.1.0 — early but functional.

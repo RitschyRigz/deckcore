@@ -128,7 +128,6 @@ _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (
 # „hidden" ist KEINE Layout-Eigenschaft mehr → pro Item (item.hidden), weil ein Button auf
 # Deck A sichtbar und auf Deck B ausgeblendet sein kann.
 _LAYOUT_DEFAULT = {
-    "view": "grid",       # grid | categories: paged catalogue with a category sidebar
     "cols": 0,            # 0 = auto (responsiv), sonst feste Spaltenzahl
     "button_size": 116,   # px Kachelgröße
     "gap": 12,            # px Abstand
@@ -147,7 +146,7 @@ _LAYOUT_BOUNDS = {  # (min, max) für die numerischen Felder
 _LAYOUT_BOOLS = ("show_label", "show_title", "frame", "show_category_titles", "free")
 # Pro-Item-Stil-Felder (was ein Item im Deck an Stil überschreiben darf).
 # title_pos = Position des großen Titel-Texts (über dem Bild), "top"|"bottom" (wie Stream Deck).
-_STYLE_KEYS = ("frame", "label", "label_pos", "title", "title_pos")
+_STYLE_KEYS = ("frame", "label", "label_pos", "title", "title_pos", "placement")
 
 # Kachel-Span im Touch-Panel — w = Spalten, h = Reihen (Default 1). ⚠ REIN ANZEIGE: das physische
 # Stream-Deck-Plugin liest nur resolved[button] und rendert IMMER 1×1; Größe betrifft nur das Web-Panel.
@@ -2700,8 +2699,6 @@ class DeckCoreService:
                 out[k] = bool(patch[k])
         if patch.get("label_pos") in ("top", "bottom"):
             out["label_pos"] = patch["label_pos"]
-        if patch.get("view") in ("grid", "categories"):
-            out["view"] = patch["view"]
         return {k: out.get(k, _LAYOUT_DEFAULT[k]) for k in _LAYOUT_DEFAULT}
 
     def _sanitize_item(self, it, valid_ids: set, seen: set) -> Optional[dict]:
@@ -4813,7 +4810,6 @@ class DeckCoreService:
         order = [s for s in styles.keys() if s in present] + sorted(s for s in present if s not in styles)
         wanted: list[tuple[str, str]] = []   # (button_id, deck-kategorie) in Zielreihenfolge
         upsert({"id": "jb_stop", "label": "Jukebox Stop", "pool_cat": group,
-                "catalog": {"role": "control", "label": "Stop"},
                 "action": {"type": "jukebox", "mode": "stop"},
                 "monitor": {"type": "jukebox_state"},
                 "states": [{"when": {"op": "eq", "value": "idle"}, "icon": "⏹", "title": "Jukebox\nstill", "color": "off"},
@@ -4827,7 +4823,6 @@ class DeckCoreService:
             old_pick = "Neuester" if category_pick == "random" else "Zufall"
             old_icon = "✦" if category_pick == "random" else "🎲"
             upsert({"id": "jb_random_" + _slug(sid), "label": f"{pick_label}: {label}", "pool_cat": group, "_jukebox_style": sid,
-                    "catalog": {"role": "primary", "label": pick_label},
                     "action": {"type": "jukebox", "mode": "random", "style": sid, "pick": category_pick},
                     "monitor": {"type": "jukebox_state", "style": sid},
                     "states": states(sid, f"{pick_label}\n{label}", pick_icon),
@@ -4838,15 +4833,20 @@ class DeckCoreService:
             n += 1
             for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: (-x.get("mtime", 0), x["rel"])):
                 title = tr["title"][:28]
+                previous_image = (pool_by_id.get("jb_" + tr["id"]) or {}).get("_jukebox_cover", "")
                 upsert({"id": "jb_" + tr["id"], "label": tr["title"], "pool_cat": group, "_jukebox_track": tr["id"],
-                        "catalog": {"role": "item", "image": tr.get("cover_url") or "",
-                                    "status_labels": {f"{state}:{tr['id']}": caption for state, caption in
-                                                      (("preparing", "Wird vorbereitet"), ("starting", "Startet"),
-                                                       ("playing", "Läuft · Tippen stoppt"), ("paused", "Pausiert"), ("error", "Fehler"))}},
                         "action": {"type": "jukebox", "mode": "toggle", "track": tr["id"]},
                         "monitor": {"type": "jukebox_state", "track": tr["id"]},
                         "states": states(tr["id"], title, "🎵"),
                         "default": {"icon": "🎵", "title": title, "color": "off"}})
+                # Artwork belongs to the shared button visual, consumed by every client.
+                # Refresh our previous source image only; retain manually chosen imagery.
+                button = next(b for b in self._buttons if b["id"] == "jb_" + tr["id"])
+                cover_image = tr.get("cover_url") or ""
+                default = button.setdefault("default", {})
+                if not default.get("image") or default.get("image") == previous_image:
+                    default["image"] = cover_image
+                button["_jukebox_cover"] = cover_image
                 wanted.append(("jb_" + tr["id"], cat))
                 n += 1
         # Aufraeumen: Tasten, die die Bibliothek nicht mehr hergibt
@@ -4865,6 +4865,12 @@ class DeckCoreService:
             for bid, cat in wanted:
                 it = old_items.get(bid) or {"button": bid, "style": {}, "hidden": False}
                 it["category"] = cat
+                # Placement is local to this deck template. Another deck may place
+                # the very same pool button in its grid, toolbar or another category.
+                placement = "toolbar" if bid == "jb_stop" else "category" if bid.startswith("jb_random_") else "grid"
+                it.setdefault("style", {}).setdefault("placement", placement)
+                if placement != "grid":
+                    it["style"].setdefault("label", "off")
                 jb_items.append(it)
             deck["items"] = others + jb_items
         self._save(); self._schedule_recompute(); self._publish_cfg()
@@ -4901,7 +4907,7 @@ class DeckCoreService:
             have = {str(b.get("_jukebox_track") or "") for b in self._buttons
                     if str(b.get("id") or "").startswith("jb_") and b.get("_jukebox_track")}
             want = {t["id"] for t in jb.library()}
-            return have != want or any(not b.get("catalog") for b in self._buttons if b.get("_jukebox_track") or b.get("_jukebox_style"))
+            return have != want or any("_jukebox_cover" not in b for b in self._buttons if b.get("_jukebox_track"))
         except Exception:  # noqa: BLE001
             return False
 
@@ -5897,7 +5903,9 @@ class DeckCoreService:
                     "label": btn.get("label", btn.get("id")),
                     "title": tpl(st.get("title", "")),
                     "icon": st.get("icon", ""),
-                    "image": st.get("image", ""),
+                    # An absent state image inherits the standard image. An explicit
+                    # empty string still suppresses it for that state on every client.
+                    "image": st.get("image", default.get("image", "")),
                     "color": _col(st.get("color"), "accent"),
                     "value": value,   # Rohwert (für Graph-/Gauge-Kacheln, die eine Verlaufskurve brauchen)
                     **({"blink": True} if st.get("blink") else {}),   # Zustand pulsieren lassen (z.B. scene_suggest)
