@@ -1468,8 +1468,11 @@ class DeckCoreService:
         self._sse_task: Optional[asyncio.Task] = None
         self._coupling_task: Optional[asyncio.Task] = None
         self._audio_task: Optional[asyncio.Task] = None
-        self._jukebox_task: Optional[asyncio.Task] = None
-        self._jukebox_sig: Optional[str] = None   # letzter Bibliotheks-Fingerabdruck (Ordnerwaechter)
+        # Mediatheken (Ordner = Wahrheit, Ordnerwaechter je Instanz): key -> {"get": Instanz-
+        # Getter, "populate": Tasten ableiten, "sig": letzter Fingerabdruck, "task": Waechter}.
+        # Die Musik-Jukebox registriert sich beim Start selbst; ein Host haengt weitere
+        # Mediatheken (z.B. eine Videobox) ueber ``register_library`` an — kein Sondercode.
+        self._libraries: dict[str, dict] = {}
         self._stop = asyncio.Event()
         self._load()
         self._load_integrations()
@@ -4747,13 +4750,22 @@ class DeckCoreService:
         return self.jukebox().deck_state(str(mon.get("track") or ""), str(mon.get("style") or ""))
 
     def populate_jukebox(self, deck_id: str = "", *, group: str = "Jukebox") -> dict:
-        """Pool-Buttons aus der Bibliothek ableiten — der Ordner ist die Wahrheit:
-        je Track ``jb_<id>`` (Toggle), je Stil MIT Tracks ``jb_random_<stil>``, plus ``jb_stop``.
-        Tasten verschwundener Tracks/Stile werden entfernt. Auf dem Deck: Abschnitt ``group``
-        (Stop) zuerst, dann je Stil ein Abschnitt (Stil-Label) mit Neuester + Tracks nach mtime.
-        Idempotent (``_regen_preserve`` haelt User-Kosmetik). ``deck_id`` wird in der Jukebox-
-        Config gemerkt, damit der Ordnerwaechter dasselbe Deck nachzieht."""
-        jb = self.jukebox()
+        """Musik-Jukebox: siehe ``populate_library`` (Prefix ``jb_``, Aktion ``jukebox``)."""
+        return self.populate_library(self.jukebox(), deck_id, group=group)
+
+    def populate_library(self, lib, deck_id: str = "", *, group: str = "Jukebox",
+                         prefix: str = "jb_", action_type: str = "jukebox",
+                         monitor_type: str = "jukebox_state", meta_prefix: str = "_jukebox",
+                         track_icon: str = "🎵") -> dict:
+        """Pool-Buttons aus einer Mediathek ableiten — der Ordner ist die Wahrheit:
+        je Track ``<prefix><id>`` (Toggle), je Stil MIT Tracks ``<prefix>random_<stil>``, plus
+        ``<prefix>stop``. Tasten verschwundener Tracks/Stile werden entfernt. Auf dem Deck:
+        Abschnitt ``group`` (Stop) zuerst, dann je Stil ein Abschnitt (Stil-Label) mit
+        Neuester + Tracks nach mtime. Idempotent (``_regen_preserve`` haelt User-Kosmetik).
+        ``deck_id`` wird in der Config der Mediathek gemerkt, damit ihr Ordnerwaechter dasselbe
+        Deck nachzieht. ``action_type``/``monitor_type`` sind die beim Host registrierten
+        Handler der Instanz (Musik: ``jukebox``/``jukebox_state``)."""
+        jb = lib
         tracks = jb.library()
         styles = jb.styles()
         category_pick = "random" if jb.config().get("category_pick") == "random" else "newest"
@@ -4766,12 +4778,12 @@ class DeckCoreService:
                 pass
         deck = self._deck(deck_id) if deck_id else None
         if not tracks:
-            removed = [b["id"] for b in list(self._buttons) if str(b.get("id") or "").startswith("jb_")]
+            removed = [b["id"] for b in list(self._buttons) if str(b.get("id") or "").startswith(prefix)]
             for bid in removed:
                 self._pool_remove(bid)
             if removed:
                 self._save(); self._schedule_recompute(); self._publish_cfg()
-            return {"ok": False, "reason": "library_empty_or_missing (runtime/jukebox/config.json library_dir)",
+            return {"ok": False, "reason": "library_empty_or_missing (config.json library_dir der Mediathek)",
                     "removed": len(removed)}
         pool_by_id = {b.get("id"): b for b in self._buttons}
 
@@ -4809,50 +4821,50 @@ class DeckCoreService:
         present = {t["style"] for t in tracks}
         order = [s for s in styles.keys() if s in present] + sorted(s for s in present if s not in styles)
         wanted: list[tuple[str, str]] = []   # (button_id, deck-kategorie) in Zielreihenfolge
-        upsert({"id": "jb_stop", "label": "Jukebox Stop", "pool_cat": group,
-                "action": {"type": "jukebox", "mode": "stop"},
-                "monitor": {"type": "jukebox_state"},
-                "states": [{"when": {"op": "eq", "value": "idle"}, "icon": "⏹", "title": "Jukebox\nstill", "color": "off"},
-                           {"when": {"op": "any"}, "icon": "⏹", "title": "Jukebox\nSTOP", "color": "accent", "blink": False}],
-                "default": {"icon": "⏹", "title": "Jukebox\nStop", "color": "off"}})
-        wanted.append(("jb_stop", group))
+        upsert({"id": prefix + "stop", "label": f"{group} Stop", "pool_cat": group,
+                "action": {"type": action_type, "mode": "stop"},
+                "monitor": {"type": monitor_type},
+                "states": [{"when": {"op": "eq", "value": "idle"}, "icon": "⏹", "title": f"{group}\nstill", "color": "off"},
+                           {"when": {"op": "any"}, "icon": "⏹", "title": f"{group}\nSTOP", "color": "accent", "blink": False}],
+                "default": {"icon": "⏹", "title": f"{group}\nStop", "color": "off"}})
+        wanted.append((prefix + "stop", group))
         n = 1
         for sid in order:
             label = style_label(sid)
             cat = label
             old_pick = "Neuester" if category_pick == "random" else "Zufall"
             old_icon = "✦" if category_pick == "random" else "🎲"
-            upsert({"id": "jb_random_" + _slug(sid), "label": f"{pick_label}: {label}", "pool_cat": group, "_jukebox_style": sid,
-                    "action": {"type": "jukebox", "mode": "random", "style": sid, "pick": category_pick},
-                    "monitor": {"type": "jukebox_state", "style": sid},
+            upsert({"id": prefix + "random_" + _slug(sid), "label": f"{pick_label}: {label}", "pool_cat": group, meta_prefix + "_style": sid,
+                    "action": {"type": action_type, "mode": "random", "style": sid, "pick": category_pick},
+                    "monitor": {"type": monitor_type, "style": sid},
                     "states": states(sid, f"{pick_label}\n{label}", pick_icon),
                     "default": {"icon": pick_icon, "title": f"{pick_label}\n{label}", "color": "off"}},
                    {"label": f"{old_pick}: {label}", "states": states(sid, f"{old_pick}\n{label}", old_icon),
                     "default": {"icon": old_icon, "title": f"{old_pick}\n{label}", "color": "off"}})
-            wanted.append(("jb_random_" + _slug(sid), cat))
+            wanted.append((prefix + "random_" + _slug(sid), cat))
             n += 1
             for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: (-x.get("mtime", 0), x["rel"])):
                 title = tr["title"][:28]
-                previous_image = (pool_by_id.get("jb_" + tr["id"]) or {}).get("_jukebox_cover", "")
-                upsert({"id": "jb_" + tr["id"], "label": tr["title"], "pool_cat": group, "_jukebox_track": tr["id"],
-                        "action": {"type": "jukebox", "mode": "toggle", "track": tr["id"]},
-                        "monitor": {"type": "jukebox_state", "track": tr["id"]},
-                        "states": states(tr["id"], title, "🎵"),
-                        "default": {"icon": "🎵", "title": title, "color": "off"}})
+                previous_image = (pool_by_id.get(prefix + tr["id"]) or {}).get(meta_prefix + "_cover", "")
+                upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
+                        "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
+                        "monitor": {"type": monitor_type, "track": tr["id"]},
+                        "states": states(tr["id"], title, track_icon),
+                        "default": {"icon": track_icon, "title": title, "color": "off"}})
                 # Artwork belongs to the shared button visual, consumed by every client.
                 # Refresh our previous source image only; retain manually chosen imagery.
-                button = next(b for b in self._buttons if b["id"] == "jb_" + tr["id"])
+                button = next(b for b in self._buttons if b["id"] == prefix + tr["id"])
                 cover_image = tr.get("cover_url") or ""
                 default = button.setdefault("default", {})
                 if not default.get("image") or default.get("image") == previous_image:
                     default["image"] = cover_image
-                button["_jukebox_cover"] = cover_image
-                wanted.append(("jb_" + tr["id"], cat))
+                button[meta_prefix + "_cover"] = cover_image
+                wanted.append((prefix + tr["id"], cat))
                 n += 1
         # Aufraeumen: Tasten, die die Bibliothek nicht mehr hergibt
         keep = {bid for bid, _ in wanted}
         removed = [b["id"] for b in list(self._buttons)
-                   if str(b.get("id") or "").startswith("jb_") and b["id"] not in keep]
+                   if str(b.get("id") or "").startswith(prefix) and b["id"] not in keep]
         for bid in removed:
             self._pool_remove(bid)
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
@@ -4870,7 +4882,7 @@ class DeckCoreService:
                 it["category"] = cat
                 # Placement is local to this deck template. Another deck may place
                 # the very same pool button in its grid, toolbar or another category.
-                placement = "toolbar" if bid == "jb_stop" else "category" if bid.startswith("jb_random_") else "grid"
+                placement = "toolbar" if bid == prefix + "stop" else "category" if bid.startswith(prefix + "random_") else "grid"
                 it.setdefault("style", {}).setdefault("placement", placement)
                 if placement != "grid":
                     it["style"].setdefault("label", "off")
@@ -4879,40 +4891,66 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "buttons": n, "removed": len(removed), "styles": order, "deck": deck_id or None}
 
-    async def _jukebox_watch_loop(self) -> None:
+    def register_library(self, key: str, get_instance, populate, *, prefix: str = "jb_",
+                         meta_prefix: str = "_jukebox") -> None:
+        """Mediathek beim Ordnerwaechter anmelden. ``get_instance()`` liefert die Instanz
+        (``deckcore.jukebox.Jukebox`` oder kompatibel), ``populate(deck_id)`` leitet die
+        Tasten ab (typisch ein ``functools.partial`` auf ``populate_library``); ``prefix``/
+        ``meta_prefix`` muessen zu diesem populate passen (Abgleich Pool <-> Ordner). Erneute
+        Anmeldung ersetzt; laeuft der Service schon, startet der Waechter sofort."""
+        entry = self._libraries.get(key) or {}
+        task = entry.get("task")
+        self._libraries[key] = {"get": get_instance, "populate": populate, "sig": None, "task": task,
+                                "prefix": str(prefix), "meta_prefix": str(meta_prefix)}
+        if self._loop is not None and (task is None or task.done()):
+            self._libraries[key]["task"] = asyncio.create_task(self._library_watch_loop(key))
+
+    async def _library_watch_loop(self, key: str) -> None:
         """Ordnerwaechter: alle paar Sekunden den Bibliotheks-Fingerabdruck pruefen; bei Aenderung
-        (Song rein/raus, library.json, styles.json) die Tasten neu ableiten — aufs gemerkte Deck
-        (``runtime/jukebox/config.json -> deck_id``). Ohne library_dir: Leerlauf."""
+        (Datei rein/raus, library.json, styles.json) die Tasten neu ableiten — aufs gemerkte Deck
+        (``config.json -> deck_id`` der Mediathek). Ohne library_dir: Leerlauf."""
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(_JUKEBOX_WATCH_SEC)
-                jb = self.jukebox()
-                cfg = jb.config()
+                entry = self._libraries.get(key)
+                if not entry:
+                    return
+                lib = entry["get"]()
+                cfg = lib.config()
                 if not str(cfg.get("library_dir") or ""):
                     continue
-                sig = await asyncio.to_thread(jb.library_signature)
-                if sig == self._jukebox_sig:
+                sig = await asyncio.to_thread(lib.library_signature)
+                if sig == entry.get("sig"):
                     continue
-                first = self._jukebox_sig is None
-                self._jukebox_sig = sig
-                if first and not self._jukebox_needs_sync(jb):
+                first = entry.get("sig") is None
+                entry["sig"] = sig
+                if first and not self._library_needs_sync(lib, entry):
                     continue   # Start: Tasten passen schon zum Ordner -> nichts schreiben
-                res = await asyncio.to_thread(self.populate_jukebox, str(cfg.get("deck_id") or ""))
-                log.info("Jukebox-Ordner geaendert -> Tasten nachgezogen: %s", res)
+                res = await asyncio.to_thread(entry["populate"], str(cfg.get("deck_id") or ""))
+                log.info("Mediathek %s geaendert -> Tasten nachgezogen: %s", key, res)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                log.debug("jukebox watch: %s", e)
+                log.debug("library watch %s: %s", key, e)
 
-    def _jukebox_needs_sync(self, jb) -> bool:
+    async def _jukebox_watch_loop(self) -> None:
+        """Kompatibilitaet: der Waechter der Musik-Jukebox (Key ``jukebox``)."""
+        await self._library_watch_loop("jukebox")
+
+    def _library_needs_sync(self, lib, entry: dict) -> bool:
         """True, wenn Pool und Bibliothek auseinanderliegen (Track ohne Taste / Taste ohne Track)."""
+        prefix = str(entry.get("prefix") or "jb_")
+        meta = str(entry.get("meta_prefix") or "_jukebox")
         try:
-            have = {str(b.get("_jukebox_track") or "") for b in self._buttons
-                    if str(b.get("id") or "").startswith("jb_") and b.get("_jukebox_track")}
-            want = {t["id"] for t in jb.library()}
-            return have != want or any("_jukebox_cover" not in b for b in self._buttons if b.get("_jukebox_track"))
+            have = {str(b.get(meta + "_track") or "") for b in self._buttons
+                    if str(b.get("id") or "").startswith(prefix) and b.get(meta + "_track")}
+            want = {t["id"] for t in lib.library()}
+            return have != want or any(meta + "_cover" not in b for b in self._buttons if b.get(meta + "_track"))
         except Exception:  # noqa: BLE001
             return False
+
+    def _jukebox_needs_sync(self, jb) -> bool:
+        return self._library_needs_sync(jb, {"prefix": "jb_", "meta_prefix": "_jukebox"})
 
     def mediaplayer_adjust(self, slot: str, eq: dict) -> dict:
         """Bild-Equalizer LIVE am laufenden mpv-Slot setzen (IPC) — fürs Echtzeit-Tunen im Editor."""
@@ -5981,7 +6019,11 @@ class DeckCoreService:
         self._sse_task = asyncio.create_task(self._sse_loop())
         self._coupling_task = asyncio.create_task(self._coupling_loop())
         self._audio_task = asyncio.create_task(self._audio_loop())
-        self._jukebox_task = asyncio.create_task(self._jukebox_watch_loop())
+        if "jukebox" not in self._libraries:
+            self.register_library("jukebox", self.jukebox, self.populate_jukebox)
+        for key, entry in self._libraries.items():
+            if entry.get("task") is None or entry["task"].done():
+                entry["task"] = asyncio.create_task(self._library_watch_loop(key))
         log.info("StreamDeckService gestartet (%d Buttons, Rate %.2fs)",
                  len(self._buttons), self._tick)
 
@@ -6000,7 +6042,7 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         for t in (self._eval_task, self._sse_task, self._coupling_task, self._audio_task,
-                  self._jukebox_task):
+                  *[e.get("task") for e in self._libraries.values()]):
             if t:
                 t.cancel()
                 try:

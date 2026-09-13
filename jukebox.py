@@ -57,6 +57,7 @@ from typing import Any, Callable, Optional
 log = logging.getLogger("deckcore.jukebox")
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac"}
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".m4v"}
 STATES = ("idle", "queued", "preparing", "starting", "playing", "paused", "ended", "stopped", "error")
 _ACTIVE = {"preparing", "starting", "playing", "paused"}
 PICKS = ("random", "newest")
@@ -67,9 +68,10 @@ DUCK_FADE_STEPS = 6
 _UNPUBLISHED_PREFIX = "_"
 
 
-def _published(path: Path) -> bool:
-    """Audiodatei unter endgueltigem Namen (siehe Modul-Docstring)."""
-    return path.suffix.lower() in AUDIO_EXTS and not path.name.startswith(_UNPUBLISHED_PREFIX)
+def _published(path: Path, exts: Optional[set] = None) -> bool:
+    """Mediendatei unter endgueltigem Namen (siehe Modul-Docstring). ``exts`` = erlaubte
+    Endungen der Mediathek (Default Audio)."""
+    return path.suffix.lower() in (exts or AUDIO_EXTS) and not path.name.startswith(_UNPUBLISHED_PREFIX)
 
 
 def _slug(s: str) -> str:
@@ -331,12 +333,22 @@ def lyric_at(cues: list[dict], position: float) -> dict:
 class Jukebox:
     def __init__(self, runtime_dir: Path, *, mpv_resolver: Callable[[Optional[str]], str],
                  run_actions: Callable[[list, dict], dict],
-                 publish: Optional[Callable[[str, dict], None]] = None) -> None:
-        self._dir = Path(runtime_dir) / "jukebox"
+                 publish: Optional[Callable[[str, dict], None]] = None,
+                 subdir: str = "jukebox", media_exts: Optional[set] = None,
+                 player_factory: Optional[Callable[..., Any]] = None,
+                 cover_route: str = "/api/jukebox/cover") -> None:
+        # EINE Mediathek-Klasse, N Instanzen: ``subdir`` = eigener Laufzeitordner (config/
+        # styles/library/state), ``media_exts`` = welche Dateien zaehlen (Audio-Default),
+        # ``player_factory(mpv, pipe, on_event)`` = anderer Player als mpv (z.B. eine OBS-
+        # Medienquelle beim Host); ohne Factory bleibt alles wie bei der Musik-Jukebox.
+        self._dir = Path(runtime_dir) / str(subdir or "jukebox")
         self._dir.mkdir(parents=True, exist_ok=True)
         self._resolve_mpv = mpv_resolver
         self._run_actions = run_actions
         self._publish = publish
+        self._exts = set(media_exts) if media_exts else set(AUDIO_EXTS)
+        self._player_factory = player_factory
+        self._cover_route = str(cover_route or "/api/jukebox/cover").rstrip("/")
         self._lock = threading.RLock()
         # Start-Sperre: Abloesung, Uebernahme (preparing -> starting) und Player-Start bilden
         # EINE kritische Sektion gegenueber stop()/_cap(). Sonst ueberschreibt ein Start im
@@ -413,7 +425,7 @@ class Jukebox:
         meta = meta if isinstance(meta, dict) else {}
         out: list[dict] = []
         for p in sorted(root.rglob("*")):
-            if not p.is_file() or not _published(p):
+            if not p.is_file() or not _published(p, self._exts):
                 continue
             try:
                 mtime = float(p.stat().st_mtime)
@@ -430,7 +442,7 @@ class Jukebox:
                 "style": str(m.get("style") or folder_style or ""),
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
                 "mtime": mtime,
-                "cover_url": f"/api/jukebox/cover/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
+                "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
             })
         return out
 
@@ -500,7 +512,7 @@ class Jukebox:
         parts: list[str] = []
         if root.is_dir():
             for p in sorted(root.rglob("*")):
-                if p.is_file() and (_published(p) or (not p.name.startswith('_') and p.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'))):
+                if p.is_file() and (_published(p, self._exts) or (not p.name.startswith('_') and p.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'))):
                     try:
                         st = p.stat()
                         parts.append(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}")
@@ -549,7 +561,7 @@ class Jukebox:
     def _emit(self, snap: dict) -> None:
         if self._publish:
             try:
-                self._publish("jukebox:state", snap)
+                self._publish(f"{self._dir.name}:state", snap)   # jukebox:state / videobox:state
             except Exception:  # noqa: BLE001
                 pass
         for fn in list(self.listeners):
@@ -584,9 +596,12 @@ class Jukebox:
         t = self.track(track_id)
         if not t:
             return {"ok": False, "reason": f"unbekannter Track: {track_id}"}
-        mpv = self._resolve_mpv(self.config().get("mpv_path") or None)
-        if not mpv:
-            return {"ok": False, "reason": "mpv nicht gefunden"}
+        if self._player_factory is None:
+            mpv = self._resolve_mpv(self.config().get("mpv_path") or None)
+            if not mpv:
+                return {"ok": False, "reason": "mpv nicht gefunden"}
+        else:
+            mpv = ""   # fremder Player (Factory) — braucht weder mpv noch Audio-Geraet
         style = str(style_override or t.get("style") or "")
         rid = str(request_id or uuid.uuid4().hex[:12])
         if not direct and self.before_play is not None:
@@ -601,7 +616,8 @@ class Jukebox:
                           file=t["file"])
                 return {"ok": True, "deferred": True, "request_id": rid, "track": t["id"], "style": style,
                         "title": t["title"], "reason": gate.get("reason")}
-        device = resolve_audio_device(mpv, str(self.config().get("audio_device") or ""))
+        device = (resolve_audio_device(mpv, str(self.config().get("audio_device") or ""))
+                  if self._player_factory is None else "")
         common = dict(request_id=rid, track=t["id"], title=t["title"], style=style,
                       position=0.0, duration=0.0, reason=None, detail=None, file=t["file"],
                       ducked=False, duck_level=None)
@@ -639,7 +655,8 @@ class Jukebox:
                       common: dict) -> dict:
         """Uebernahme (``starting``) und Player-Start — NUR unter ``_start_lock``: kein
         stop()/_cap() kann sich zwischen Zustand und Prozessstart schieben."""
-        player = _MpvAudio(mpv, self._pipe_name(rid), lambda ev, _rid=rid: self._on_player_event(_rid, ev))
+        factory = self._player_factory or _MpvAudio
+        player = factory(mpv, self._pipe_name(rid), lambda ev, _rid=rid: self._on_player_event(_rid, ev))
         with self._lock:
             self._player = player
         self._set(state="starting", **common)
