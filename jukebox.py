@@ -418,7 +418,10 @@ class Jukebox:
     def library(self) -> list[dict]:
         """Ordner scannen; Stil aus library.json, sonst aus dem Unterordnernamen; sonst leer."""
         cfg = self.config()
-        root = Path(str(cfg.get("library_dir") or ""))
+        lib_dir = str(cfg.get("library_dir") or "").strip()
+        if not lib_dir:
+            return []      # kein Ordner konfiguriert: Path("") waere das Arbeitsverzeichnis
+        root = Path(lib_dir)
         if not root.is_dir():
             return []
         meta = self._json("library.json").get("tracks")
