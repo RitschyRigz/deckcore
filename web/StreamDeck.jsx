@@ -1,3 +1,4 @@
+import { renameStateKey } from './state-map.mjs'
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { getJSON, postJSON, delJSON } from './api.js'
 import { resolveStyle, keyClass, groupDeckItems, UNCAT, DECK_LAYOUT_DEF, resolveColor, accentVar, isThemeColor, THEME_COLORS, TILE_SKINS, PRESS_MODES, applyDeckLook, applyPalette, LOOK_DEFAULT, FAM_KEYS, FAM_PALETTE, FAM_LABELS, GRAPH_VARIANTS, GAUGE_VARIANTS, BAR_VARIANTS, FADER_VARIANTS, VU_VARIANTS } from './deckstyle.js'
@@ -2870,10 +2871,16 @@ function PlayMediaEditor({ action, onChange }) {
 // „*" = Standard für alle nicht gelisteten Werte. Gespeichert als flaches Objekt {wert: action_id}.
 function StateMapEditor({ map, eaActions, onChange }) {
   const entries = Object.entries(map || {}).filter(([k]) => k !== '*')
-  const setKey = (oldKey, newKey) => {
-    const next = {}
-    for (const [k, v] of Object.entries(map || {})) next[k === oldKey ? newKey : k] = v
-    onChange(next)
+  const setKey = (oldKey, input) => {
+    try {
+      const next = renameStateKey(map || {}, oldKey, input.value)
+      input.setCustomValidity('')
+      onChange(next)
+    } catch (error) {
+      input.value = oldKey
+      input.setCustomValidity(error.message)
+      input.reportValidity()
+    }
   }
   const setVal = (k, v) => onChange({ ...(map || {}), [k]: v })
   const remove = (k) => { const next = { ...(map || {}) }; delete next[k]; onChange(next) }
@@ -2893,7 +2900,8 @@ function StateMapEditor({ map, eaActions, onChange }) {
       {entries.map(([k, v]) => (
         <div class="reward-row">
           <input class="reward-input" style="max-width:9em" value={k} placeholder="Wert" title="Wert des Status-Monitors (Text-Vergleich)"
-                 onInput={(e) => setKey(k, e.currentTarget.value)} />
+                 onInput={(e) => e.currentTarget.setCustomValidity('')}
+                 onChange={(e) => setKey(k, e.currentTarget)} />
           <span class="muted">→</span>
           <ActionSelect value={v} onPick={(nv) => setVal(k, nv)} />
           <button class="btn small ghost" title="Zeile entfernen" onClick={() => remove(k)}>✕</button>
