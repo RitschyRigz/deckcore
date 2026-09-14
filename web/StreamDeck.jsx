@@ -2864,6 +2864,53 @@ function PlayMediaEditor({ action, onChange }) {
   )
 }
 
+// events_action „Wert → Action": eine Taste folgt einem mehrstufigen Status (z.B. idle/hold/
+// final/done) und feuert je Wert eine andere Action — oder bewusst KEINE („nichts tun"), damit
+// ein Druck in einer Phase, in der die Taste nichts kann, nie die falsche Action auslöst.
+// „*" = Standard für alle nicht gelisteten Werte. Gespeichert als flaches Objekt {wert: action_id}.
+function StateMapEditor({ map, eaActions, onChange }) {
+  const entries = Object.entries(map || {}).filter(([k]) => k !== '*')
+  const setKey = (oldKey, newKey) => {
+    const next = {}
+    for (const [k, v] of Object.entries(map || {})) next[k === oldKey ? newKey : k] = v
+    onChange(next)
+  }
+  const setVal = (k, v) => onChange({ ...(map || {}), [k]: v })
+  const remove = (k) => { const next = { ...(map || {}) }; delete next[k]; onChange(next) }
+  const add = () => {
+    let k = 'neu'; let n = 2
+    while (Object.prototype.hasOwnProperty.call(map || {}, k)) k = 'neu' + n++
+    onChange({ ...(map || {}), [k]: '' })
+  }
+  const ActionSelect = ({ value, onPick }) => (
+    <select class="reward-input" value={value ?? ''} onChange={(e) => onPick(e.currentTarget.value)}>
+      <option value="">— nichts tun —</option>
+      {eaActions.map((a) => <option value={a.id}>{(a.label || a.id) + (a.enabled ? '' : ' (aus)')}</option>)}
+    </select>
+  )
+  return (
+    <>
+      {entries.map(([k, v]) => (
+        <div class="reward-row">
+          <input class="reward-input" style="max-width:9em" value={k} placeholder="Wert" title="Wert des Status-Monitors (Text-Vergleich)"
+                 onInput={(e) => setKey(k, e.currentTarget.value)} />
+          <span class="muted">→</span>
+          <ActionSelect value={v} onPick={(nv) => setVal(k, nv)} />
+          <button class="btn small ghost" title="Zeile entfernen" onClick={() => remove(k)}>✕</button>
+        </div>
+      ))}
+      <div class="reward-row">
+        <span class="muted conn-label" title="Standard für jeden Wert ohne eigene Zeile">sonst (*)</span>
+        <ActionSelect value={(map || {})['*']} onPick={(nv) => setVal('*', nv)} />
+      </div>
+      <button class="btn small" onClick={add}>➕ Wert</button>
+      <p class="muted sd-help">Liest beim Druck den <b>Status-Monitor</b> frisch aus und feuert die Action, die zum Wert
+        passt. „nichts tun" = in dieser Phase bewusst kein Effekt (die Taste zeigt über ihren Status-Titel,
+        warum). Fehlt ein Wert und es gibt kein „sonst", meldet die Taste das als Fehler statt zu raten.</p>
+    </>
+  )
+}
+
 function ActionEditor({ action, options, onChange, replace, onPicked }) {
   const t = action.type || 'none'
   const proc = (options.processes || []).find((p) => p.key === action.process)
@@ -2985,9 +3032,12 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
                     onChange={(e) => onChange({ mode: e.currentTarget.value === 'single' ? undefined : e.currentTarget.value })}>
               <option value="single">Eine Action</option>
               <option value="state_toggle">Statusabhängig EIN / AUS</option>
+              <option value="state_map">Statusabhängig: Wert → Action</option>
             </select>
           </div>
-          {action.mode !== 'state_toggle' ? (
+          {action.mode === 'state_map' ? (
+            <StateMapEditor map={action.map || {}} eaActions={eaActions} onChange={(map) => onChange({ map })} />
+          ) : action.mode !== 'state_toggle' ? (
             <>
               <div class="reward-row">
                 <span class="muted conn-label">Action</span>
