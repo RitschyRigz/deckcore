@@ -748,7 +748,13 @@ class Jukebox:
             base = 100.0
         ducked = level is not None and float(level) < 1.0
         target_level = max(0.0, min(1.0, float(level))) if ducked else 1.0
-        start_level = float(snap.get("duck_level") or 1.0) if snap.get("ducked") else 1.0
+        # Ausgangspegel = zuletzt angewiesener Pegel. Null ist dabei ein GUELTIGER Wert (ein
+        # auf 0 gesenktes Bett kehrt aus der Stille zurueck) — ``or 1.0`` machte daraus den
+        # vollen Pegel: die Rampe stand dann auf dem Zielwert, ein erneutes duck(0) begann
+        # hoerbar bei 100 % (Codex-Pruefung Musikbett 15.09.2026).
+        prev_level = snap.get("duck_level")
+        start_level = (float(prev_level) if snap.get("ducked") and prev_level is not None
+                       else 1.0)
         with self._lock:
             self._duck_generation += 1
             generation = self._duck_generation
