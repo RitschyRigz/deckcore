@@ -4817,9 +4817,16 @@ class DeckCoreService:
                 {"when": {"op": "any"}, "icon": icon, "title": title, "color": "off"},
             ]
 
-        # Stile in Reihenfolge von styles.json, danach unbekannte Ordner-Stile alphabetisch
+        # Stile in Reihenfolge von styles.json, danach unbekannte Ordner-Stile alphabetisch.
+        # Leih-Stile (``tracks: "<anderer Stil>"``, z.B. eine Exkursion, die die Musik eines
+        # anderen Stils mit eigenem Rezept spielt) bekommen ihren Wuerfel, sobald der geliehene
+        # Pool Songs hat — eigene Track-Tasten haben sie nicht, die Songs stehen beim Verleiher
+        # (Richard 15.09.2026: „Musical (live, Exkursion)" hatte sonst keinen Weg am Deck).
         present = {t["style"] for t in tracks}
-        order = [s for s in styles.keys() if s in present] + sorted(s for s in present if s not in styles)
+        loans = {sid: str(spec.get("tracks") or "") for sid, spec in styles.items()
+                 if isinstance(spec, dict) and spec.get("tracks")}
+        order = ([s for s in styles.keys() if s in present or loans.get(s) in present]
+                 + sorted(s for s in present if s not in styles))
         wanted: list[tuple[str, str]] = []   # (button_id, deck-kategorie) in Zielreihenfolge
         upsert({"id": prefix + "stop", "label": f"{group} Stop", "pool_cat": group,
                 "action": {"type": action_type, "mode": "stop"},
