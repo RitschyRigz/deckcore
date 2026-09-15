@@ -81,6 +81,30 @@ def _slug(s: str) -> str:
 
 # ───────────────────────────── Player (mpv, nur Audio) ─────────────────────────────
 
+def _pipe_available(fh) -> Optional[int]:
+    """Bytes, die auf der Pipe ohne Blockieren lesbar sind (Windows ``PeekNamedPipe``);
+    ``None`` = Pipe geschlossen/kaputt, ``-1`` = nicht feststellbar (kein Windows).
+
+    Hintergrund: Windows serialisiert Lese- und Schreibzugriffe auf EINER synchronen
+    Named-Pipe. Ein blockierendes ``ReadFile`` (``readline``) haelt damit jeden ``WriteFile``
+    hinter sich fest. Solange mpv spielt, kommen laufend ``time-pos``-Events und das faellt nie
+    auf — sobald mpv **pausiert**, kommt kein Event mehr, der Read blockiert fuer immer und
+    ``pause(False)`` dahinter auch (Musikbett 15.09.2026: Bett kam nach dem Jukebox-Song nicht
+    zurueck). Deshalb liest der Lesethread nur, wenn wirklich Daten anliegen."""
+    if os.name != "nt":
+        return -1
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(fh.fileno())
+        avail = ctypes.c_ulong(0)
+        ok = ctypes.windll.kernel32.PeekNamedPipe(
+            ctypes.c_void_p(handle), None, 0, None, ctypes.byref(avail), None)
+        return int(avail.value) if ok else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class _MpvAudio:
     """Ein mpv-Prozess je Song mit persistenter IPC-Verbindung (ein Client = keine BUSY-Pipe).
 
@@ -171,11 +195,25 @@ class _MpvAudio:
         position = 0.0
         duration = 0.0
         ended = False
+        buf = b""
         try:
             while True:
-                line = fh.readline()
-                if not line:
-                    break
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    avail = _pipe_available(fh)
+                    if avail is None:
+                        break                       # Pipe weg (mpv beendet)
+                    if avail == 0:
+                        if self._proc is not None and self._proc.poll() is not None:
+                            break                   # Prozess weg, nichts mehr zu lesen
+                        time.sleep(0.02)
+                        continue
+                    chunk = fh.read(avail) if avail > 0 else fh.readline()
+                    if not chunk:
+                        break
+                    buf += chunk
+                    continue
+                line, buf = buf[:nl + 1], buf[nl + 1:]
                 try:
                     msg = json.loads(line.decode("utf-8", "replace"))
                 except ValueError:
