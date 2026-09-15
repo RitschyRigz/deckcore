@@ -89,3 +89,19 @@ def test_pipe_available_ist_auf_windows_eine_zahl():
     finally:
         os.close(w)
         fh.close()
+
+
+def test_reap_orphans_kills_only_own_marker(tmp_path):
+    """Waisen: nur mpv mit dem Marker DIESER Instanz (Laufzeitordner) werden beendet — nicht der
+    eigene laufende Player, nicht fremde Instanzen (anderer Laufzeitordner, z.B. RigzDeck)."""
+    a = jb.Jukebox(tmp_path / "a", mpv_resolver=lambda p: "", run_actions=lambda x, c: {}, subdir="bed")
+    b = jb.Jukebox(tmp_path / "b", mpv_resolver=lambda p: "", run_actions=lambda x, c: {}, subdir="bed")
+    assert a.orphan_marker() != b.orphan_marker()
+    assert a.orphan_marker() in a._pipe_name("r1") and b.orphan_marker() not in a._pipe_name("r1")
+    procs = [(11, f"mpv.exe x --input-ipc-server={a._pipe_name('old1')}"),
+             (12, f"mpv.exe x --input-ipc-server={b._pipe_name('foreign')}"),
+             (13, "mpv.exe x --input-ipc-server=\\.\pipe\rigzdeck-mpv-slot"),
+             (14, f"mpv.exe x --input-ipc-server={a._pipe_name('old2')}")]
+    killed = []
+    out = a.reap_orphans(list_processes=lambda: procs, kill=killed.append)
+    assert out == [11, 14] and killed == [11, 14]

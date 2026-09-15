@@ -42,6 +42,7 @@ Dateien existieren fuer Bibliothek, Auswahl, Tasten und Ordnerwaechter nicht.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -269,6 +270,26 @@ class _MpvAudio:
                             "duration": duration, "detail": f"pipe closed (exit {code})"})
 
 
+def _list_mpv_processes() -> list:
+    """[(pid, cmdline)] aller mpv.exe (Windows, Win32_Process)."""
+    out = subprocess.run(
+        ["powershell", "-NonInteractive", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='mpv.exe'\" | ForEach-Object { "
+         "$_.ProcessId.ToString() + '|' + $_.CommandLine }"],
+        capture_output=True, text=True, timeout=15, creationflags=0x08000000).stdout
+    rows = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition("|")
+        if pid.isdigit():
+            rows.append((int(pid), cmd))
+    return rows
+
+
+def _kill_process(pid: int) -> None:
+    subprocess.run(["taskkill", "/PID", str(int(pid)), "/F", "/T"], capture_output=True, timeout=10,
+                   creationflags=0x08000000)
+
+
 def list_audio_devices(mpv_path: str) -> list[dict]:
     """``mpv --audio-device=help`` parsen → [{"id": "wasapi/{...}", "name": "..."}]."""
     try:
@@ -398,6 +419,11 @@ class Jukebox:
         self._exts = set(media_exts) if media_exts else set(AUDIO_EXTS)
         self._player_factory = player_factory
         self._cover_route = str(cover_route or "/api/jukebox/cover").rstrip("/")
+        # Kennung dieser Instanz (Laufzeitordner) in jedem Pipe-Namen: so erkennt ein neuer
+        # Host-Prozess die mpv-Waisen SEINER Vorgaenger-Instanz (Cockpit per Kill neu gestartet,
+        # Player lief weiter: „zwei Tracks uebereinander", Test-Stream 15.09.2026) — und laesst
+        # fremde Instanzen (RigzDeck auf derselben Maschine) in Ruhe.
+        self._pipe_tag = hashlib.sha1(str(self._dir.resolve()).lower().encode("utf-8")).hexdigest()[:8]
         self._lock = threading.RLock()
         # Start-Sperre: Abloesung, Uebernahme (preparing -> starting) und Player-Start bilden
         # EINE kritische Sektion gegenueber stop()/_cap(). Sonst ueberschreibt ein Start im
@@ -828,7 +854,49 @@ class Jukebox:
 
     # -- intern ----------------------------------------------------------------------------
     def _pipe_name(self, rid: str) -> str:
-        return (r"\\.\pipe\deckcore-jukebox-" + rid) if os.name == "nt" else f"/tmp/deckcore-jukebox-{rid}"
+        stem = f"deckcore-jukebox-{self._pipe_tag}-{rid}"
+        return (r"\\.\pipe\\" + stem) if os.name == "nt" else f"/tmp/{stem}"
+
+    def orphan_marker(self) -> str:
+        """Teil des Pipe-Namens, der alle Player DIESER Instanz kennzeichnet."""
+        return f"deckcore-jukebox-{self._pipe_tag}-"
+
+    def reap_orphans(self, *, list_processes: Optional[Callable[[], list]] = None,
+                     kill: Optional[Callable[[int], None]] = None) -> list[int]:
+        """mpv-Prozesse einer frueheren Instanz mit demselben Laufzeitordner beenden — beim
+        Start des Hosts, bevor etwas Neues spielt. Ein abgeschossener Host (Neustart-Helfer,
+        Absturz) nimmt seine Player nicht mit; sie spielten weiter, und der neue Host legte
+        einen zweiten Track darueber (Test-Stream 15.09.2026). Fremde Instanzen bleiben
+        unberuehrt (anderer Marker). ``list_processes`` liefert ``[(pid, cmdline)]``
+        (Default: Win32_Process), ``kill`` beendet einen Prozess (Default: taskkill)."""
+        marker = self.orphan_marker()
+        with self._lock:
+            own = self._player
+        own_pid = None
+        try:
+            own_pid = own._proc.pid if own is not None and own._proc is not None else None
+        except Exception:  # noqa: BLE001
+            own_pid = None
+        if list_processes is None:
+            if os.name != "nt":
+                return []
+            list_processes = _list_mpv_processes
+        if kill is None:
+            kill = _kill_process
+        killed: list[int] = []
+        try:
+            for pid, cmdline in list_processes():
+                if marker in str(cmdline or "") and int(pid) != own_pid:
+                    try:
+                        kill(int(pid))
+                        killed.append(int(pid))
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("Jukebox: Waise %s nicht beendet: %s", pid, e)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Jukebox: Waisen-Suche fehlgeschlagen: %s", e)
+        if killed:
+            log.warning("JUKEBOX_ORPHANS_REAPED instance=%s pids=%s", self._dir.name, killed)
+        return killed
 
     def _cap(self, rid: str) -> None:
         with self._start_lock:
