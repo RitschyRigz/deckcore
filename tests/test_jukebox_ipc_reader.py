@@ -105,3 +105,22 @@ def test_reap_orphans_kills_only_own_marker(tmp_path):
     killed = []
     out = a.reap_orphans(list_processes=lambda: procs, kill=killed.append)
     assert out == [11, 14] and killed == [11, 14]
+
+
+def test_set_config_verwirft_aenderung_statt_config_zu_zerschiessen(tmp_path):
+    """Test-Stream 15.09.: eine waehrend des Schreibens gelesene (leere) Config wurde als {}
+    gedeutet, und set_config(volume) schrieb nur noch {volume} zurueck — Ordner, Geraet, Regeln weg.
+    Jetzt: unlesbar -> Aenderung verworfen, Datei bleibt; lesbar -> atomar geschrieben."""
+    lib = jb.Jukebox(tmp_path, mpv_resolver=lambda p: "", run_actions=lambda a, c: {}, subdir="bed")
+    lib.set_config(library_dir="C:/x", audio_device="Music", volume=30)
+    cfg_path = tmp_path / "bed" / "config.json"
+    assert json.loads(cfg_path.read_text("utf-8"))["library_dir"] == "C:/x"
+    # kaputter Stand auf der Platte (halb geschrieben)
+    cfg_path.write_text("{", encoding="utf-8")
+    out = lib.set_config(volume=40)
+    assert cfg_path.read_text("utf-8") == "{"          # nichts ueberschrieben
+    assert out == {}                                    # und keine Phantom-Config
+    # heile Datei: normal weiter, atomar (keine .tmp-Reste)
+    cfg_path.write_text(json.dumps({"library_dir": "C:/x", "volume": 30}), encoding="utf-8")
+    assert lib.set_config(volume=40)["library_dir"] == "C:/x"
+    assert not (tmp_path / "bed" / "config.json.tmp").exists()

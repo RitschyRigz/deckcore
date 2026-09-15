@@ -424,6 +424,7 @@ class Jukebox:
         # Player lief weiter: „zwei Tracks uebereinander", Test-Stream 15.09.2026) — und laesst
         # fremde Instanzen (RigzDeck auf derselben Maschine) in Ruhe.
         self._pipe_tag = hashlib.sha1(str(self._dir.resolve()).lower().encode("utf-8")).hexdigest()[:8]
+        self._config_lock = threading.Lock()
         self._lock = threading.RLock()
         # Start-Sperre: Abloesung, Uebernahme (preparing -> starting) und Player-Start bilden
         # EINE kritische Sektion gegenueber stop()/_cap(). Sonst ueberschreibt ein Start im
@@ -455,24 +456,51 @@ class Jukebox:
 
     # -- Config / Daten -------------------------------------------------------------------
     def _json(self, name: str) -> dict:
+        """Datei lesen; ein voruebergehend unlesbarer Stand (jemand schreibt gerade) wird kurz
+        erneut versucht statt sofort als „leer" gedeutet."""
+        v = self._json_strict(name)
+        return v if v is not None else {}
+
+    def _json_strict(self, name: str) -> Optional[dict]:
+        """``None`` = Datei existiert, ist aber (auch nach Wiederholung) nicht lesbar."""
         p = self._dir / name
-        try:
-            v = json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else {}
-            return v if isinstance(v, dict) else {}
-        except Exception as e:  # noqa: BLE001
-            log.warning("jukebox/%s unlesbar: %s", name, e)
+        if not p.exists():
             return {}
+        last = None
+        for attempt in range(4):
+            try:
+                v = json.loads(p.read_text(encoding="utf-8-sig"))
+                return v if isinstance(v, dict) else {}
+            except Exception as e:  # noqa: BLE001
+                last = e
+                time.sleep(0.03 * (attempt + 1))
+        log.warning("%s/%s unlesbar: %s", self._dir.name, name, last)
+        return None
+
+    def _write_json(self, name: str, data: dict) -> None:
+        """Atomar: erst Nachbardatei, dann umbenennen — ein Leser sieht nie eine halbe Datei."""
+        p = self._dir / name
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
+        os.replace(tmp, p)
 
     def config(self) -> dict:
         return self._json("config.json")
 
     def set_config(self, **kw) -> dict:
-        cfg = self.config()
-        for k, v in kw.items():
-            if v is not None:
-                cfg[k] = v
-        (self._dir / "config.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
-        return cfg
+        """Lesen-aendern-schreiben unter einer Sperre und atomar. Ist die Datei gerade nicht
+        lesbar, wird NICHT geschrieben (sonst schrumpft die Config auf die Aenderung —
+        Test-Stream 15.09.2026: Bett-Config bestand nur noch aus ``volume``, Bibliothek leer)."""
+        with self._config_lock:
+            cfg = self._json_strict("config.json")
+            if cfg is None:
+                log.warning("%s/config.json nicht lesbar — Aenderung %s verworfen", self._dir.name, sorted(kw))
+                return self.config()
+            for k, v in kw.items():
+                if v is not None:
+                    cfg[k] = v
+            self._write_json("config.json", cfg)
+            return cfg
 
     def styles(self) -> dict:
         raw = self._json("styles.json").get("styles")
