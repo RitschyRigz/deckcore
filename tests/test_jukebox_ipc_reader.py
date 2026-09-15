@@ -100,7 +100,7 @@ def test_reap_orphans_kills_only_own_marker(tmp_path):
     assert a.orphan_marker() in a._pipe_name("r1") and b.orphan_marker() not in a._pipe_name("r1")
     procs = [(11, f"mpv.exe x --input-ipc-server={a._pipe_name('old1')}"),
              (12, f"mpv.exe x --input-ipc-server={b._pipe_name('foreign')}"),
-             (13, "mpv.exe x --input-ipc-server=\\.\pipe\rigzdeck-mpv-slot"),
+             (13, r"mpv.exe x --input-ipc-server=\\\\.\\pipe\\rigzdeck-mpv-slot"),
              (14, f"mpv.exe x --input-ipc-server={a._pipe_name('old2')}")]
     killed = []
     out = a.reap_orphans(list_processes=lambda: procs, kill=killed.append)
