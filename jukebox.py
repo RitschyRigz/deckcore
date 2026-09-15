@@ -100,7 +100,15 @@ def _pipe_available(fh) -> Optional[int]:
         avail = ctypes.c_ulong(0)
         ok = ctypes.windll.kernel32.PeekNamedPipe(
             ctypes.c_void_p(handle), None, 0, None, ctypes.byref(avail), None)
-        return int(avail.value) if ok else None
+        if ok:
+            return int(avail.value)
+        err = ctypes.get_last_error() or ctypes.windll.kernel32.GetLastError()
+        # 109 ERROR_BROKEN_PIPE, 233 ERROR_PIPE_NOT_CONNECTED, 6 ERROR_INVALID_HANDLE = weg.
+        # Alles andere (z.B. waehrend eines gleichzeitigen WriteFile auf demselben Handle)
+        # ist ein voruebergehender Fehlschlag: als "keine Daten" werten, der Aufrufer
+        # entscheidet ueber den Prozesszustand (Musikbett 15.09.2026: ein einzelner
+        # Fehlschlag beim Pausieren wurde als Pipe-Ende gelesen -> Track "error").
+        return None if err in (109, 233, 6) else 0
     except Exception:  # noqa: BLE001
         return None
 
@@ -205,7 +213,10 @@ class _MpvAudio:
                         break                       # Pipe weg (mpv beendet)
                     if avail == 0:
                         if self._proc is not None and self._proc.poll() is not None:
-                            break                   # Prozess weg, nichts mehr zu lesen
+                            # Prozess weg: Rest lesen, dann Schluss
+                            if _pipe_available(fh):
+                                continue
+                            break
                         time.sleep(0.02)
                         continue
                     chunk = fh.read(avail) if avail > 0 else fh.readline()
