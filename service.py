@@ -355,6 +355,26 @@ def _sanitize_opts(o) -> dict:
 # behalten (action/monitor + interne Marker bleiben die Funktions-Wahrheit des Generators).
 _REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v", "pool_cat")
 
+# Besitzer-Registry der generierten Buttons: Generator-Praefix → Integration. EINE Tabelle fuer alle
+# Kern-Generatoren (``_integration_bid`` ist die Vorwaertsrichtung); Hosts und Mediatheken melden
+# ihre Praefixe zur Laufzeit ueber ``register_owner_prefix`` bzw. ``register_library`` an. Ein
+# Button ohne Besitzer gilt als handgemacht („Custom Buttons"); darum darf hier KEIN Generator fehlen.
+_CORE_OWNER_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("wl_mix_", "wavelink"), ("wl_chan_", "wavelink"), ("wl_out_", "wavelink"),
+    ("hw_", "hwinfo"),
+    ("scene_", "obs"), ("obssrc_", "obs"), ("sceneflow_", "obs"),
+    ("df_", "displayfusion"),
+    ("obsbot_c", "obsbot"),
+    ("wa_dev_", "audio"), ("wa_vol_", "audio"), ("app_", "audio"),
+    ("folder_", "folders"), ("desktop_", "folders"),
+    ("np_", "hotkey"),
+)
+# Feste Einzel-ids (kein Praefix-Muster).
+_CORE_OWNER_IDS: dict[str, str] = {
+    "wl_couple_toggle": "wavelink", "obs_stream": "obs", "obs_record": "obs",
+    "pm_fps": "presentmon", "pm_frametime": "presentmon", "wa_master": "audio",
+}
+
 
 def _regen_preserve(existing: dict, fresh: dict) -> dict:
     """Einen per Generator/Sync neu gebauten Button (``fresh``) mit der USER-Kosmetik eines
@@ -475,7 +495,8 @@ def _scene_suggest_def(bid: str, name: str) -> dict:
     aktive Szene = GRÜN (current), wahrscheinlich-nächste = BLAU + blinkt (suggested), die Rücksprung-Szene =
     ROT + blinkt (return, nur wenn aus einer Pausen-Szene gewählt), der Rest ausgegraut — aber IMMER klickbar."""
     ic = _scene_icon(name)   # passendes Glyph je Szene (Gamepad/Chat/Coffee/Cam/…) — Symbol = Szenen-Identität,
-    return {"id": bid, "label": name, "_scene": name,   # die FARBE (grün/blau/rot) trägt den Zustand, kein „Pfeil überall".
+    # Pool-Kategorie wie die importierten Szenen-Buttons — beides sind OBS-Szenen (sonst „Ohne Kategorie").
+    return {"id": bid, "label": name, "_scene": name, "pool_cat": "OBS-Szenen",   # die FARBE (grün/blau/rot) trägt den Zustand, kein „Pfeil überall".
             "action": {"type": "obs", "obs_action": "scene", "scene": name},
             "monitor": {"type": "scene_suggest", "scene": name},
             "states": [
@@ -515,8 +536,11 @@ def _scene_role(name: str) -> str:
 # = Spezifität (erster Treffer gewinnt). Muss zu vorhandenen GLYPHS-Keys passen.
 _SCENE_ICON_KW = (
     (("coffee", "kaffee"), "g:coffee"),
+    (("co-host", "cohost", "co host"), "g:users"),                          # Gastgeber + Co-Host = zwei Personen
+    (("jukebox", "musik", "music", "song", "playlist", " dj"), "g:music"),
     (("recap", "replay", "rückblick", "ruckblick", "highlight", "mp4", "clip"), "g:film"),
     (("vdo", "ninja", "handycam", "webcam", "guest", "gast", "cam"), "g:video"),
+    (("monitor", "bildschirm", "screen", "desktop", "display"), "g:monitor"),   # Bildschirm-/Monitoraufnahme (vor „capture")
     (("game", "gaming", "konsole", "console", "ps5", "ps4", "xbox", "switch", "ingame", "in-game", "spiel", "capture"), "g:gamepad"),
     (("chat", "talk", "irl", "reden", "face"), "g:message-circle"),
     (("mic", "voice", "podcast", "audio", "sound", " ton"), "g:sliders"),
@@ -1473,6 +1497,10 @@ class DeckCoreService:
         # Die Musik-Jukebox registriert sich beim Start selbst; ein Host haengt weitere
         # Mediatheken (z.B. eine Videobox) ueber ``register_library`` an — kein Sondercode.
         self._libraries: dict[str, dict] = {}
+        # Besitzer-Registry (Praefix → Integration, feste id → Integration); Kern-Generatoren vorab,
+        # Hosts/Mediatheken haengen ihre ueber register_owner_prefix()/register_library() an.
+        self._owner_prefixes: dict[str, str] = dict(_CORE_OWNER_PREFIXES)
+        self._owner_ids: dict[str, str] = dict(_CORE_OWNER_IDS)
         self._stop = asyncio.Event()
         self._load()
         self._load_integrations()
@@ -1659,6 +1687,14 @@ class DeckCoreService:
         Integrationen). ``probe`` erzwingt bei den verbindungsbasierten einen frischen Versuch.
         Defensiv: eine fehlende/abgestürzte App ergibt ``off``, crasht nie."""
         try:
+            if iid in self._libraries:
+                lib = self._libraries[iid]["get"]()
+                n = len(lib.library() or [])
+                lib_dir = str((lib.config() or {}).get("library_dir") or "")
+                if not lib_dir:
+                    return {"state": "off", "detail": "Kein Ordner (config.json library_dir)"}
+                return {"state": "ok", "detail": f"{n} Titel im Ordner"} if n \
+                    else {"state": "off", "detail": "Ordner leer oder nicht erreichbar"}
             if iid == "obs":
                 s = self.obs_status(probe=probe) or {}
                 if not s.get("available", True):
@@ -1778,6 +1814,8 @@ class DeckCoreService:
     def _elements_raw(self, iid: str) -> dict:
         """Rohe Element-Auslese (ohne bid/present). Defensiv: fehlende App → available:false + Grund."""
         try:
+            if iid in self._libraries:
+                return self._library_elements(iid)
             if iid == "folders":
                 # Jeder angelegte Ordner (Sub-Deck) als ankreuzbares Element → bid folder_<slug>.
                 items = [{"id": d["id"], "label": d.get("label") or d["id"]}
@@ -1908,9 +1946,11 @@ class DeckCoreService:
             self._pool_categories.append(pool_cat)
         return created
 
-    def _pool_remove(self, bid: str) -> bool:
+    def _pool_remove(self, bid: str, remember: bool = True) -> bool:
         """Einen generierten Button aus Pool + ALLEN Deck-Items entfernen (wie delete_button, aber
-        ohne save — der Aufrufer bündelt). Rückgabe True, wenn etwas entfernt wurde."""
+        ohne save — der Aufrufer bündelt). Rückgabe True, wenn etwas entfernt wurde.
+        ``remember=False`` = die Quelle ist verschwunden (Track/Sensor weg), KEINE bewusste
+        Abwahl → der Button darf wiederkommen, sobald die Quelle wieder da ist."""
         bid = str(bid or "")
         n0 = len(self._buttons)
         self._buttons = [b for b in self._buttons if b.get("id") != bid]
@@ -1919,7 +1959,8 @@ class DeckCoreService:
         self._resolved.pop(bid, None)
         self._poll_cache.pop(bid, None)
         if len(self._buttons) < n0:
-            self._removed.add(bid)   # kein Re-Seed
+            if remember:
+                self._removed.add(bid)   # kein Re-Seed
             return True
         return False
 
@@ -1954,30 +1995,37 @@ class DeckCoreService:
         """Welche Integration „besitzt" diesen Button (eigene vs. generierte Buttons trennen)?
         "" = keiner → eigener/freier Button (lebt im „Eigene Buttons"-Verwalter). Rein anhand der
         deterministischen Generator-IDs (keine Live-App-Abfrage). Hüllen erweitern für ihre
-        Host-Integrationen (Prozesse/Bots …) via super() + eigener Logik."""
+        Host-Integrationen (Prozesse/Bots …) via super() + eigener Logik. Quelle ist die
+        Besitzer-Registry (``_CORE_OWNER_PREFIXES``/``_CORE_OWNER_IDS`` + zur Laufzeit angemeldete
+        Praefixe der Mediatheken und Host-Generatoren) — keine Praefix-Liste im Code-Zweig."""
         s = str(bid or "")
-        if s.startswith(("wl_mix_", "wl_chan_", "wl_out_")) or s == "wl_couple_toggle":
-            return "wavelink"
-        if s.startswith("hw_"):
-            return "hwinfo"
-        if s.startswith(("scene_", "obssrc_")) or s in ("obs_stream", "obs_record"):
-            return "obs"
-        if s in ("pm_fps", "pm_frametime"):
-            return "presentmon"
-        if s.startswith("df_"):
-            return "displayfusion"
-        if s.startswith("obsbot_c"):
-            return "obsbot"
-        if s == "wa_master" or s.startswith(("wa_dev_", "app_")):
-            return "audio"
-        if s.startswith("folder_"):
-            return "folders"
-        return ""
+        if not s:
+            return ""
+        own = self._owner_ids.get(s)
+        if own:
+            return own
+        # Laengster passender Praefix gewinnt (z.B. „wl_mix_" vor einem hypothetischen „wl_").
+        best = ""
+        for pref, owner in self._owner_prefixes.items():
+            if pref and s.startswith(pref) and len(pref) > len(best):
+                best, own = pref, owner
+        return own or ""
+
+    def register_owner_prefix(self, prefix: str, owner: str) -> None:
+        """Einen Generator-Praefix (oder eine feste Button-id ohne Praefix-Charakter) einer
+        Integration als Besitzer zuordnen. Mediatheken melden sich ueber ``register_library``
+        automatisch; Host-Generatoren rufen das direkt. Gleicher Praefix ueberschreibt."""
+        p, o = str(prefix or ""), str(owner or "")
+        if p and o:
+            self._owner_prefixes[p] = o
 
     def _integration_bid(self, iid: str, gk: str, item_id) -> str:
         """Deterministische Pool-Button-id eines generierbaren Elements — für present-Markierung +
         Sync-Remove. Gibt "" zurück, wenn das Element NICHT 1:1-synchronisierbar ist (obsbot/base =
         additiv: ein Häkchen ⇒ mehrere/nicht-deterministische Buttons)."""
+        if iid in self._libraries:
+            # Mediathek: Track-ids sind bereits Slugs (Jukebox.library()); Gruppen = Stile.
+            return str(self._libraries[iid].get("prefix") or "") + str(item_id)
         s = _slug(str(item_id))
         if iid == "wavelink":
             pref = {"mixes": "wl_mix_", "channels": "wl_chan_", "outputs": "wl_out_"}.get(gk)
@@ -2016,6 +2064,8 @@ class DeckCoreService:
         options = sel.get("options") or {}
         toggles = sel.get("toggles") or {}
         created = updated = removed = hidden = 0
+        if iid in self._libraries:
+            return self._library_generate_selected(iid, groups)
 
         def _u(fn, cat):
             nonlocal created, updated
@@ -4753,7 +4803,25 @@ class DeckCoreService:
         """Musik-Jukebox: siehe ``populate_library`` (Prefix ``jb_``, Aktion ``jukebox``)."""
         return self.populate_library(self.jukebox(), deck_id, group=group)
 
-    def populate_library(self, lib, deck_id: str = "", *, group: str = "Jukebox",
+    @staticmethod
+    def library_category(lib, fallback: str = "Jukebox") -> str:
+        """Pool-Kategorie (Deck-Palette) einer Mediathek — aus IHRER ``config.json``:
+        ``deck_category`` (explizit) sonst ``"<icon> <label>"`` (dieselben Felder, die auch das
+        Programm fuer die Lane nutzt), sonst ``fallback``. Kein Kategoriename im Code."""
+        try:
+            cfg = lib.config() or {}
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        explicit = str(cfg.get("deck_category") or "").strip()
+        if explicit:
+            return explicit
+        label = str(cfg.get("label") or "").strip()
+        icon = str(cfg.get("icon") or "").strip()
+        if label:
+            return (icon + " " + label).strip()
+        return str(fallback or "Jukebox")
+
+    def populate_library(self, lib, deck_id: str = "", *, group: Optional[str] = None,
                          prefix: str = "jb_", action_type: str = "jukebox",
                          monitor_type: str = "jukebox_state", meta_prefix: str = "_jukebox",
                          track_icon: str = "🎵") -> dict:
@@ -4764,8 +4832,16 @@ class DeckCoreService:
         Neuester + Tracks nach mtime. Idempotent (``_regen_preserve`` haelt User-Kosmetik).
         ``deck_id`` wird in der Config der Mediathek gemerkt, damit ihr Ordnerwaechter dasselbe
         Deck nachzieht. ``action_type``/``monitor_type`` sind die beim Host registrierten
-        Handler der Instanz (Musik: ``jukebox``/``jukebox_state``)."""
+        Handler der Instanz (Musik: ``jukebox``/``jukebox_state``).
+        ``group`` (Pool-Kategorie + Stop-Abschnitt) kommt aus der Mediathek-Config
+        (``library_category``); der Parameter ist nur noch der Rueckfall, wenn die Config
+        weder ``deck_category`` noch ``label`` traegt. Die Kategorie ist Generator-Wahrheit
+        und wird bei jedem Lauf gesetzt (kein Kleben alter Namen ueber ``_regen_preserve``).
+        Tracks, die der Nutzer in der Kategorie-Liste abgewaehlt hat (``_removed``), werden
+        NICHT erzeugt — verschwundene Tracks dagegen ohne Merken entfernt, damit sie beim
+        Wiederauftauchen zurueckkommen."""
         jb = lib
+        group = self.library_category(jb, group or "Jukebox")
         tracks = jb.library()
         styles = jb.styles()
         category_pick = "random" if jb.config().get("category_pick") == "random" else "newest"
@@ -4780,7 +4856,7 @@ class DeckCoreService:
         if not tracks:
             removed = [b["id"] for b in list(self._buttons) if str(b.get("id") or "").startswith(prefix)]
             for bid in removed:
-                self._pool_remove(bid)
+                self._pool_remove(bid, remember=False)
             if removed:
                 self._save(); self._schedule_recompute(); self._publish_cfg()
             return {"ok": False, "reason": "library_empty_or_missing (config.json library_dir der Mediathek)",
@@ -4804,6 +4880,7 @@ class DeckCoreService:
                 self._buttons[self._buttons.index(original)] = fn
             else:
                 self._buttons.append(fn)
+            fn["pool_cat"] = group   # Kategorie = Generator-Wahrheit (Config), nie geklebt
             pool_by_id[fn["id"]] = fn
             self._removed.discard(fn["id"])
 
@@ -4851,6 +4928,8 @@ class DeckCoreService:
             wanted.append((prefix + "random_" + _slug(sid), cat))
             n += 1
             for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: (-x.get("mtime", 0), x["rel"])):
+                if prefix + tr["id"] in self._removed:
+                    continue   # in der Kategorie-Liste abgewaehlt → keine Taste (Ordner bleibt Wahrheit)
                 title = tr["title"][:28]
                 previous_image = (pool_by_id.get(prefix + tr["id"]) or {}).get(meta_prefix + "_cover", "")
                 upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
@@ -4868,12 +4947,13 @@ class DeckCoreService:
                 button[meta_prefix + "_cover"] = cover_image
                 wanted.append((prefix + tr["id"], cat))
                 n += 1
-        # Aufraeumen: Tasten, die die Bibliothek nicht mehr hergibt
+        # Aufraeumen: Tasten, die die Bibliothek nicht mehr hergibt (ohne Merken — kommt der
+        # Track zurueck, kommt die Taste zurueck; bewusste Abwahl steht schon in _removed).
         keep = {bid for bid, _ in wanted}
         removed = [b["id"] for b in list(self._buttons)
                    if str(b.get("id") or "").startswith(prefix) and b["id"] not in keep]
         for bid in removed:
-            self._pool_remove(bid)
+            self._pool_remove(bid, remember=False)
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
         if deck is not None:
             cats = [group] + [style_label(s) for s in order]
@@ -4899,18 +4979,123 @@ class DeckCoreService:
         return {"ok": True, "buttons": n, "removed": len(removed), "styles": order, "deck": deck_id or None}
 
     def register_library(self, key: str, get_instance, populate, *, prefix: str = "jb_",
-                         meta_prefix: str = "_jukebox") -> None:
+                         meta_prefix: str = "_jukebox", action_type: str = "",
+                         monitor_type: str = "", fallback_label: str = "",
+                         fallback_icon: str = "🎵", description: str = "") -> None:
         """Mediathek beim Ordnerwaechter anmelden. ``get_instance()`` liefert die Instanz
         (``deckcore.jukebox.Jukebox`` oder kompatibel), ``populate(deck_id)`` leitet die
         Tasten ab (typisch ein ``functools.partial`` auf ``populate_library``); ``prefix``/
         ``meta_prefix`` muessen zu diesem populate passen (Abgleich Pool <-> Ordner). Erneute
-        Anmeldung ersetzt; laeuft der Service schon, startet der Waechter sofort."""
+        Anmeldung ersetzt; laeuft der Service schon, startet der Waechter sofort.
+
+        Die Anmeldung macht die Mediathek zugleich zum BESITZER ihrer Tasten (``prefix`` →
+        Besitzer-Registry; sie liegen damit in ihrer eigenen Pool-Kategorie statt unter
+        „Custom Buttons") und — sobald ``action_type`` gegeben ist — zu einer eigenen
+        Integration im Kategorien-Tab (Liste der Titel je Stil, abwaehlbar; Label/Emoji aus der
+        ``config.json`` der Mediathek, ``fallback_*`` nur ohne Config-Werte)."""
         entry = self._libraries.get(key) or {}
         task = entry.get("task")
         self._libraries[key] = {"get": get_instance, "populate": populate, "sig": None, "task": task,
-                                "prefix": str(prefix), "meta_prefix": str(meta_prefix)}
+                                "prefix": str(prefix), "meta_prefix": str(meta_prefix),
+                                "action_type": str(action_type or ""), "monitor_type": str(monitor_type or ""),
+                                "fallback_label": str(fallback_label or key), "fallback_icon": str(fallback_icon or "🎵"),
+                                "description": str(description or "")}
+        self.register_owner_prefix(str(prefix), key)
+        if action_type:
+            self._register_library_integration(key)
         if self._loop is not None and (task is None or task.done()):
             self._libraries[key]["task"] = asyncio.create_task(self._library_watch_loop(key))
+
+    def libraries(self) -> dict[str, dict]:
+        """Registrierte Mediatheken ``{key: entry}`` (Registry-Sicht fuer Hosts, read-only)."""
+        return dict(self._libraries)
+
+    def _library_meta(self, key: str) -> dict:
+        """Label/Emoji/Kategorie einer Mediathek — live aus ihrer config.json (label/icon), sonst
+        die bei der Anmeldung genannten Rueckfaelle."""
+        entry = self._libraries.get(key) or {}
+        cfg: dict = {}
+        try:
+            cfg = entry["get"]().config() or {}
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        label = str(cfg.get("label") or "").strip() or str(entry.get("fallback_label") or key)
+        icon = str(cfg.get("icon") or "").strip() or str(entry.get("fallback_icon") or "🎵")
+        cat = str(cfg.get("deck_category") or "").strip() or (icon + " " + label).strip()
+        return {"label": label, "icon": icon, "category": cat, "deck_id": str(cfg.get("deck_id") or "")}
+
+    def _register_library_integration(self, key: str) -> None:
+        """Die Mediathek als Integration im Kategorien-Tab eintragen (idempotent, Label live aus
+        der Config) + neu erscheinende Integration einmalig korrekt seeden (dieselbe Regel wie
+        ``_load_integrations``: seed_all-Host → an, sonst an wenn ihre Tasten schon in Gebrauch)."""
+        entry = self._libraries.get(key) or {}
+        meta = self._library_meta(key)
+        self.register_integration({
+            "id": key, "emoji": meta["icon"], "label": meta["label"], "library": True,
+            "description": entry.get("description") or (
+                "Mediathek " + meta["label"] + " — der Ordner ist die Wahrheit: je Titel eine Taste, "
+                "je Stil ein Wuerfel, plus Stop. Abwaehlen entfernt die Taste, bis sie wieder angehakt wird."),
+            "actions": [entry["action_type"]] if entry.get("action_type") else [],
+            "monitors": [entry["monitor_type"]] if entry.get("monitor_type") else [],
+        })
+        if key not in self._integrations_seen:
+            self._integrations_seen.add(key)
+            self._integrations_enabled |= self._seed_default_enabled({key})
+            self._save_integrations()
+
+    def _library_elements(self, key: str) -> dict:
+        """Kategorien-Tab-Liste einer Mediathek: je Stil eine Gruppe, je Titel ein Element
+        (bid = ``<prefix><track-id>``, ``present`` = Taste existiert). Stop/Wuerfel sind keine
+        Elemente — die erzeugt der Generator immer."""
+        entry = self._libraries.get(key) or {}
+        lib = entry["get"]()
+        tracks = lib.library() or []
+        if not tracks:
+            lib_dir = str((lib.config() or {}).get("library_dir") or "")
+            return {"available": False,
+                    "reason": ("Kein Ordner konfiguriert (config.json library_dir)" if not lib_dir
+                               else f"Ordner leer oder nicht erreichbar: {lib_dir}")}
+        styles = lib.styles() or {}
+        present = {t["style"] for t in tracks}
+        order = [s for s in styles.keys() if s in present] + sorted(s for s in present if s not in styles)
+        groups = []
+        for sid in order:
+            label = str((styles.get(sid) or {}).get("label") or sid)
+            items = [{"id": tr["id"], "label": tr.get("title") or tr["id"]}
+                     for tr in sorted((x for x in tracks if x["style"] == sid),
+                                      key=lambda x: (-x.get("mtime", 0), x["rel"]))]
+            groups.append({"key": "style:" + sid, "label": f"{label} — Titel als Tasten", "items": items})
+        meta = self._library_meta(key)
+        return {"available": True, "groups": groups,
+                "note": ("Pool-Kategorie " + meta["category"] + " · Deck " + (meta["deck_id"] or "—")
+                         + " · Ordner ist die Wahrheit; Stop + Wuerfel je Stil entstehen immer.")}
+
+    def _library_generate_selected(self, key: str, groups: dict) -> dict:
+        """Auswahl der Kategorien-Liste anwenden: angehakt = Taste (wieder) erlaubt, abgewaehlt =
+        Taste weg + in ``_removed`` gemerkt (der Ordnerwaechter legt sie nicht neu an). Danach
+        einmal ableiten — genau der Weg, den auch der Waechter geht."""
+        entry = self._libraries.get(key) or {}
+        prefix = str(entry.get("prefix") or "")
+        lib = entry["get"]()
+        selected = {prefix + str(i) for ids in (groups or {}).values() for i in (ids or [])}
+        all_ids = {prefix + str(t["id"]) for t in (lib.library() or [])}
+        removed = 0
+        for bid in all_ids:
+            if bid in selected:
+                self._removed.discard(bid)
+            else:
+                if self._pool_remove(bid, remember=True):
+                    removed += 1
+                else:
+                    self._removed.add(bid)   # war schon weg → Abwahl trotzdem merken
+        before = {b.get("id") for b in self._buttons}
+        res = entry["populate"](self._library_meta(key)["deck_id"]) or {}
+        after = {b.get("id") for b in self._buttons}
+        created = len([b for b in after - before if b.startswith(prefix)])
+        updated = max(0, int(res.get("buttons") or 0) - created)
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": bool(res.get("ok", True)), "created": created, "updated": updated, "removed": removed,
+                "reason": res.get("reason")}
 
     async def _library_watch_loop(self, key: str) -> None:
         """Ordnerwaechter: alle paar Sekunden den Bibliotheks-Fingerabdruck pruefen; bei Aenderung
@@ -4945,14 +5130,19 @@ class DeckCoreService:
         await self._library_watch_loop("jukebox")
 
     def _library_needs_sync(self, lib, entry: dict) -> bool:
-        """True, wenn Pool und Bibliothek auseinanderliegen (Track ohne Taste / Taste ohne Track)."""
+        """True, wenn Pool und Bibliothek auseinanderliegen (Track ohne Taste / Taste ohne Track /
+        Taste in veralteter Pool-Kategorie). Bewusst abgewaehlte Tracks (``_removed``) zaehlen nicht
+        als fehlend."""
         prefix = str(entry.get("prefix") or "jb_")
         meta = str(entry.get("meta_prefix") or "_jukebox")
         try:
-            have = {str(b.get(meta + "_track") or "") for b in self._buttons
-                    if str(b.get("id") or "").startswith(prefix) and b.get(meta + "_track")}
-            want = {t["id"] for t in lib.library()}
-            return have != want or any(meta + "_cover" not in b for b in self._buttons if b.get(meta + "_track"))
+            mine = [b for b in self._buttons if str(b.get("id") or "").startswith(prefix)]
+            have = {str(b.get(meta + "_track") or "") for b in mine if b.get(meta + "_track")}
+            want = {t["id"] for t in lib.library() if prefix + t["id"] not in self._removed}
+            if have != want or any(meta + "_cover" not in b for b in mine if b.get(meta + "_track")):
+                return True
+            cat = self.library_category(lib, str(entry.get("fallback_label") or ""))
+            return any(b.get("pool_cat") != cat for b in mine)
         except Exception:  # noqa: BLE001
             return False
 
@@ -6027,7 +6217,9 @@ class DeckCoreService:
         self._coupling_task = asyncio.create_task(self._coupling_loop())
         self._audio_task = asyncio.create_task(self._audio_loop())
         if "jukebox" not in self._libraries:
-            self.register_library("jukebox", self.jukebox, self.populate_jukebox)
+            self.register_library("jukebox", self.jukebox, self.populate_jukebox,
+                                  action_type="jukebox", monitor_type="jukebox_state",
+                                  fallback_label="Jukebox", fallback_icon="🎵")
         for key, entry in self._libraries.items():
             if entry.get("task") is None or entry["task"].done():
                 entry["task"] = asyncio.create_task(self._library_watch_loop(key))
