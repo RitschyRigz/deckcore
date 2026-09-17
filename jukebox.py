@@ -55,6 +55,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+try:
+    from .mpvflags import media_control_flags
+except ImportError:  # Tests laden das Modul flach (sys.path = deckcore/)
+    from mpvflags import media_control_flags  # type: ignore[no-redef]
+
 log = logging.getLogger("deckcore.jukebox")
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac"}
@@ -137,6 +142,9 @@ class _MpvAudio:
                 "--idle=no", "--keep-open=no", "--loop-file=no",
                 "--input-ipc-server=" + self._pipe, "--no-input-default-bindings",
                 "--msg-level=all=no"]
+        # Kein Gehoer fuer Windows-Medientasten/SMTC: dieser Player wird NUR ueber die Pipe
+        # bedient (Kopfhoerer-Play/Pause pausierte am 17.09.2026 das Bett ohne jede Spur).
+        args += media_control_flags(self._mpv)
         if audio_device:
             args.append("--audio-device=" + audio_device)
         if volume is not None:
@@ -478,11 +486,31 @@ class Jukebox:
         return None
 
     def _write_json(self, name: str, data: dict) -> None:
-        """Atomar: erst Nachbardatei, dann umbenennen — ein Leser sieht nie eine halbe Datei."""
+        """Atomar: erst Nachbardatei, dann umbenennen — ein Leser sieht nie eine halbe Datei.
+
+        Unter Windows schlaegt ``os.replace`` fehl, solange ein Leser die Zieldatei gerade
+        offen hat (der Regie-Takt liest config/state jede Sekunde; Stream 17.09.2026 19:04:51:
+        Lautstaerke nicht gespeichert, ``PermissionError [WinError 5]``). Deshalb kurz warten
+        und erneut versuchen; bleibt es dabei, faellt der Fehler sichtbar an den Aufrufer
+        zurueck — nichts wird still verworfen, nichts halb geschrieben.
+        """
         p = self._dir / name
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
-        os.replace(tmp, p)
+        last: Optional[BaseException] = None
+        for attempt in range(6):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError as e:
+                last = e
+                time.sleep(0.03 * (attempt + 1))
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        log.warning("%s/%s nicht ersetzbar (Datei belegt): %s", self._dir.name, name, last)
+        raise last  # type: ignore[misc]
 
     def config(self) -> dict:
         return self._json("config.json")

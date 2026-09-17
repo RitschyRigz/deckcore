@@ -20,6 +20,11 @@ import subprocess
 import threading
 from ctypes import wintypes
 
+try:
+    from .mpvflags import media_control_flags
+except ImportError:  # Tests laden das Modul flach (sys.path = deckcore/)
+    from mpvflags import media_control_flags  # type: ignore[no-redef]
+
 _PROCS: dict = {}        # slot -> subprocess.Popen (eine persistente mpv-Fensterinstanz je Slot)
 _LOCK = threading.Lock()
 
@@ -219,6 +224,8 @@ def play(file: str, *, slot: str = "media", loop: bool = False,
             "--keep-open=no" if close_on_end else "--keep-open=yes",
             "--idle=no" if close_on_end else "--idle=yes",
             "--no-osc", "--ontop=no", "--no-input-default-bindings",
+            # Keine Windows-Medientasten/SMTC: dieses Fenster wird ueber die Pipe gesteuert.
+            *media_control_flags(mpv),
             "--input-ipc-server=" + _pipe_name(slot),
             "--title=RigzDeck Media: " + slot,
             "--loop-file=inf" if loop else "--loop-file=no",
