@@ -66,7 +66,7 @@ AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac"}
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".m4v"}
 STATES = ("idle", "queued", "preparing", "starting", "playing", "paused", "ended", "stopped", "error")
 _ACTIVE = {"preparing", "starting", "playing", "paused"}
-PICKS = ("random", "newest")
+PICKS = ("random", "newest", "latest_origin")
 PREPARE_TIMEOUT_S = 8.0     # Frist fuer on_prepare, ueberschreibbar je Stil (prepare_timeout_s)
 DUCK_LEVEL_DEFAULT = 0.25   # Anteil der konfigurierten Lautstaerke waehrend des Duckens
 DUCK_FADE_MS = 250          # weiche Rampe (linear, in Schritten ueber mpv-IPC)
@@ -570,15 +570,38 @@ class Jukebox:
             m = meta.get(tid) if isinstance(meta.get(tid), dict) else {}
             folder_style = rel.parts[0] if len(rel.parts) > 1 else ""
             cover = self._cover_sidecar(p, root)
+            title = str(m.get("title") or p.stem)
+            try:
+                st = p.stat()
+                added_at = float(getattr(st, "st_birthtime", 0) or st.st_ctime)
+            except OSError:
+                added_at = mtime
             out.append({
                 "id": tid, "file": str(p), "rel": str(rel).replace("\\", "/"),
-                "title": str(m.get("title") or p.stem),
+                "title": title,
                 "style": str(m.get("style") or folder_style or ""),
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
                 "mtime": mtime,
+                # Herkunft getrennt von der Aufnahme in die Bibliothek: ``source_date`` = Quell-
+                # stream (Metadaten oder Titel), ``source_session`` = Session-Prefix (Metadaten),
+                # ``added_at`` = wann die Datei hier angelegt wurde (Neuzugang), nie „produziert".
+                "source_date": self._origin_date(m, title),
+                "source_session": str(m.get("source_session") or ""),
+                "added_at": added_at,
                 "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
             })
         return out
+
+    @staticmethod
+    def _origin_date(meta: dict, title: str) -> str:
+        """Herkunft eines Tracks als ISO-Datum: ``library.json``-Feld ``source_date`` (von der
+        Auslieferung gesetzt) oder das fuehrende Datum im Titel (Lieferkonvention
+        ``YYYY-MM-DD - Titel`` = Quellstream). Keine Dateizeit — die sagt nur, wann kopiert wurde."""
+        val = str(meta.get("source_date") or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):
+            return val
+        m = re.match(r"\s*(\d{4}-\d{2}-\d{2})(?!\d)", str(title or ""))
+        return m.group(1) if m else ""
 
     @staticmethod
     def _cover_sidecar(audio: Path, root: Path) -> Optional[Path]:
@@ -854,6 +877,12 @@ class Jukebox:
             return {"ok": False, "reason": f"keine Tracks fuer Stil {pool_style or '(alle)'}"}
         if pick == "newest":
             chosen = sorted(pool, key=lambda t: (-float(t.get("mtime") or 0), t["rel"]))[0]
+        elif pick == "latest_origin":
+            # Juengste HERKUNFT (Quellstream-Datum aus Metadaten/Titel), nicht juengste Datei —
+            # eine nachgelieferte Kopie eines alten Songs ist kein aktueller Recap (17.09.2026).
+            # Ohne Herkunft zaehlt die Datei als aeltest; Gleichstand nach mtime, dann Pfad.
+            chosen = sorted(pool, key=lambda t: (str(t.get("source_date") or ""),
+                                                 float(t.get("mtime") or 0)), reverse=True)[0]
         else:
             snap = self.status()
             chosen = random.choice([t for t in pool if t["id"] != snap.get("track")] or pool)
