@@ -4821,6 +4821,15 @@ class DeckCoreService:
             return (icon + " " + label).strip()
         return str(fallback or "Jukebox")
 
+    # Anzeige je Auswahlart des Kategorie-Wuerfels (Label, Icon). Welche Arten eine Mediathek
+    # KANN, entscheidet ihre Aktion (deckcore-Jukebox: random/newest; ein Host darf weitere
+    # anbieten, z.B. ``rotate`` = am laengsten nicht gespielt). Neue Art = ein Eintrag hier.
+    PICK_PRESENTATION: dict[str, tuple[str, str]] = {
+        "newest": ("Neuester", "✦"),
+        "random": ("Zufall", "🎲"),
+        "rotate": ("Reihum", "🔁"),
+    }
+
     def populate_library(self, lib, deck_id: str = "", *, group: Optional[str] = None,
                          prefix: str = "jb_", action_type: str = "jukebox",
                          monitor_type: str = "jukebox_state", meta_prefix: str = "_jukebox",
@@ -4844,8 +4853,14 @@ class DeckCoreService:
         group = self.library_category(jb, group or "Jukebox")
         tracks = jb.library()
         styles = jb.styles()
-        category_pick = "random" if jb.config().get("category_pick") == "random" else "newest"
-        pick_label, pick_icon = ("Zufall", "🎲") if category_pick == "random" else ("Neuester", "✦")
+        # Auswahlart des Kategorie-Wuerfels = Mediathek-Config (``category_pick``); die Taste
+        # reicht sie als ``pick`` an die Aktion der Mediathek durch. Die Anzeige kommt aus
+        # PICK_PRESENTATION — eine unbekannte Art bleibt lesbar (Name, Wuerfel-Icon) statt
+        # still auf „Neuester" zu fallen (Befund 19.09.2026: ``rotate`` erzeugte Neuester-Tasten).
+        category_pick = str(jb.config().get("category_pick") or "newest").strip().lower() or "newest"
+        pick_label, pick_icon = self.PICK_PRESENTATION.get(
+            category_pick, (category_pick.capitalize(), "🎲"))
+        other_picks = [v for k, v in self.PICK_PRESENTATION.items() if k != category_pick]
         if deck_id:
             try:
                 if str(jb.config().get("deck_id") or "") != str(deck_id):
@@ -4866,15 +4881,18 @@ class DeckCoreService:
         def style_label(sid: str) -> str:
             return str((styles.get(sid) or {}).get("label") or sid or "Musik")
 
-        def upsert(fn: dict, old_generated: Optional[dict] = None) -> None:
+        def upsert(fn: dict, old_generated: "Optional[dict | list]" = None) -> None:
             existing = pool_by_id.get(fn["id"])
             if existing is not None:
                 # Upgrade only unchanged generator cosmetics; keep actual user edits.
-                if old_generated:
+                # ``old_generated``: one or several earlier generator variants of this button.
+                olds = old_generated if isinstance(old_generated, list) else ([old_generated] if old_generated else [])
+                if olds:
                     existing = dict(existing)
-                    for field, old in old_generated.items():
-                        if existing.get(field) == old:
-                            existing.pop(field, None)
+                    for old in olds:
+                        for field, oldv in (old or {}).items():
+                            if existing.get(field) == oldv:
+                                existing.pop(field, None)
                 original = pool_by_id[fn["id"]]
                 fn = _regen_preserve(existing, fn)
                 self._buttons[self._buttons.index(original)] = fn
@@ -4938,15 +4956,14 @@ class DeckCoreService:
         for sid in order:
             label = style_label(sid)
             cat = label
-            old_pick = "Neuester" if category_pick == "random" else "Zufall"
-            old_icon = "✦" if category_pick == "random" else "🎲"
             upsert({"id": prefix + "random_" + _slug(sid), "label": f"{pick_label}: {label}", "pool_cat": group, meta_prefix + "_style": sid,
                     "action": {"type": action_type, "mode": "random", "style": sid, "pick": category_pick},
                     "monitor": {"type": monitor_type, "style": sid},
                     "states": states(sid, f"{pick_label}\n{label}", pick_icon),
                     "default": {"icon": pick_icon, "title": f"{pick_label}\n{label}", "color": "off"}},
-                   {"label": f"{old_pick}: {label}", "states": states(sid, f"{old_pick}\n{label}", old_icon),
-                    "default": {"icon": old_icon, "title": f"{old_pick}\n{label}", "color": "off"}})
+                   [{"label": f"{old_pick}: {label}", "states": states(sid, f"{old_pick}\n{label}", old_icon),
+                     "default": {"icon": old_icon, "title": f"{old_pick}\n{label}", "color": "off"}}
+                    for old_pick, old_icon in other_picks])
             wanted.append((prefix + "random_" + _slug(sid), cat))
             n += 1
             # Neuzugang zuerst (Minutenraster der Aufnahme), innerhalb derselben Minute wie
