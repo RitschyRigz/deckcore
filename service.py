@@ -4827,6 +4827,7 @@ class DeckCoreService:
     PICK_PRESENTATION: dict[str, tuple[str, str]] = {
         "newest": ("Neuester", "✦"),
         "random": ("Zufall", "🎲"),
+        "latest_origin": ("Jüngster Stream", "🗓"),   # Jukebox.play_random seit 17.09.2026
         "rotate": ("Reihum", "🔁"),
     }
 
