@@ -4913,6 +4913,28 @@ class DeckCoreService:
                 "default": {"icon": "⏹", "title": f"{group}\nStop", "color": "off"}})
         wanted.append((prefix + "stop", group))
         n = 1
+        # Neuzugaenge kennzeichnen (17.09.2026, Punkt 12): Tasten nach ``added_at`` (Aufnahme in
+        # die Bibliothek = Dateigeburt, nie „produziert") sortiert; juengere als
+        # ``new_badge_days`` tragen das Abzeichen im Titel, die Herkunft (``source_date`` =
+        # Quellstream aus Metadaten/Titel) steht als eigene Zeile im Ruhetitel. Dateinamen und
+        # Track-IDs bleiben unveraendert; das Abzeichen wandert mit der Zeit von selbst weg.
+        try:
+            badge_days = float(jb.config().get("new_badge_days", 3) or 0)
+        except (TypeError, ValueError):
+            badge_days = 3.0
+        badge_icon = str(jb.config().get("new_badge_icon") or "🆕")
+        now_ts = time.time()
+
+        def track_titles(tr: dict) -> tuple[str, str]:
+            """(Titel fuer alle Zustaende, Ruhetitel mit Herkunftszeile)."""
+            added = float(tr.get("added_at") or 0)
+            is_new = badge_days > 0 and added > 0 and (now_ts - added) <= badge_days * 86400
+            base = tr["title"][:26] if is_new else tr["title"][:28]
+            title = f"{badge_icon} {base}" if is_new else base
+            src = str(tr.get("source_date") or "")
+            idle = title + (f"\nStream {src[8:10]}.{src[5:7]}." if len(src) >= 10 else "")
+            return title, idle
+
         for sid in order:
             label = style_label(sid)
             cat = label
@@ -4927,19 +4949,36 @@ class DeckCoreService:
                     "default": {"icon": old_icon, "title": f"{old_pick}\n{label}", "color": "off"}})
             wanted.append((prefix + "random_" + _slug(sid), cat))
             n += 1
-            for tr in sorted((x for x in tracks if x["style"] == sid), key=lambda x: (-x.get("mtime", 0), x["rel"])):
+            # Neuzugang zuerst (Minutenraster der Aufnahme), innerhalb derselben Minute wie
+            # bisher nach Dateizeit — so bleibt „Neuester" auch bei gleichzeitig kopierten
+            # Dateien nachvollziehbar.
+            for tr in sorted((x for x in tracks if x["style"] == sid),
+                             key=lambda x: (-int(float(x.get("added_at") or x.get("mtime") or 0) // 60),
+                                            -float(x.get("mtime") or 0), x["rel"])):
                 if prefix + tr["id"] in self._removed:
                     continue   # in der Kategorie-Liste abgewaehlt → keine Taste (Ordner bleibt Wahrheit)
-                title = tr["title"][:28]
-                previous_image = (pool_by_id.get(prefix + tr["id"]) or {}).get(meta_prefix + "_cover", "")
+                title, idle_title = track_titles(tr)
+                previous = pool_by_id.get(prefix + tr["id"]) or {}
+                previous_image = previous.get(meta_prefix + "_cover", "")
+                # Der vom Generator ZULETZT gesetzte Titel: aendert er sich (Abzeichen kommt/geht),
+                # darf die Auffrischung greifen — vom Nutzer geaenderte Titel bleiben erhalten.
+                prev_gen = previous.get(meta_prefix + "_gen_title") or {}
+                old_generated = None
+                if prev_gen and (prev_gen.get("title"), prev_gen.get("idle")) != (title, idle_title):
+                    old_generated = {"states": states(tr["id"], str(prev_gen.get("title") or ""), track_icon),
+                                     # exakt die Form, die der Generator zuletzt schrieb (inkl. Artwork-Feld)
+                                     "default": {"icon": track_icon, "title": str(prev_gen.get("idle") or ""),
+                                                 "color": "off", "image": previous_image}}
                 upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
                         "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
                         "monitor": {"type": monitor_type, "track": tr["id"]},
                         "states": states(tr["id"], title, track_icon),
-                        "default": {"icon": track_icon, "title": title, "color": "off"}})
+                        "default": {"icon": track_icon, "title": idle_title, "color": "off"}},
+                       old_generated)
                 # Artwork belongs to the shared button visual, consumed by every client.
                 # Refresh our previous source image only; retain manually chosen imagery.
                 button = next(b for b in self._buttons if b["id"] == prefix + tr["id"])
+                button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title}
                 cover_image = tr.get("cover_url") or ""
                 default = button.setdefault("default", {})
                 if not default.get("image") or default.get("image") == previous_image:
