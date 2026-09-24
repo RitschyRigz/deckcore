@@ -15,6 +15,8 @@ ihr erkannt und verworfen.
 Dateien (alle unter ``<runtime>/jukebox/``):
   config.json   {"library_dir": "...", "audio_device": "Name-Teil", "mpv_path": "..."}
   library.json  {"tracks": {"<track_id>": {"style": "dance", "title": "...", "max_seconds": 0}}}
+                weitere Felder gehoeren dem Host (library()[i].meta); Aenderung nur ueber
+                update_track_meta (atomar, gesperrt)
   styles.json   {"styles": {"dance": {"label": "Tanz", "on_start": [..], "on_end": [..], "on_stop": [..]}}}
   state.json    zuletzt veroeffentlichter Zustand (fuer file_field-Monitore und Hosts)
 
@@ -72,6 +74,9 @@ DUCK_LEVEL_DEFAULT = 0.25   # Anteil der konfigurierten Lautstaerke waehrend des
 DUCK_FADE_MS = 250          # weiche Rampe (linear, in Schritten ueber mpv-IPC)
 DUCK_FADE_STEPS = 6
 _UNPUBLISHED_PREFIX = "_"
+# library.json-Felder, die die Jukebox selbst auswertet; alles andere reicht library() als ``meta`` durch.
+_CORE_META = frozenset({"style", "title", "max_seconds", "source_date", "source_session",
+                        "lyrics", "lyrics_offset"})
 
 
 def _published(path: Path, exts: Optional[set] = None) -> bool:
@@ -433,6 +438,7 @@ class Jukebox:
         # fremde Instanzen (RigzDeck auf derselben Maschine) in Ruhe.
         self._pipe_tag = hashlib.sha1(str(self._dir.resolve()).lower().encode("utf-8")).hexdigest()[:8]
         self._config_lock = threading.Lock()
+        self._meta_lock = threading.Lock()      # library.json: Lesen-Aendern-Schreiben
         self._lock = threading.RLock()
         # Start-Sperre: Abloesung, Uebernahme (preparing -> starting) und Player-Start bilden
         # EINE kritische Sektion gegenueber stop()/_cap(). Sonst ueberschreibt ein Start im
@@ -535,16 +541,38 @@ class Jukebox:
         return raw if isinstance(raw, dict) else {}
 
     def set_track_style(self, track_id: str, style: str, **fields) -> dict:
-        lib = self._json("library.json")
-        tracks = lib.setdefault("tracks", {})
-        entry = tracks.get(track_id) if isinstance(tracks.get(track_id), dict) else {}
-        entry["style"] = str(style or "")
-        for k, v in fields.items():
-            if v is not None:
-                entry[k] = v
-        tracks[track_id] = entry
-        (self._dir / "library.json").write_text(json.dumps(lib, indent=2, ensure_ascii=False), "utf-8")
-        return entry
+        patch = {k: v for k, v in fields.items() if v is not None}
+        patch["style"] = str(style or "")
+        return self.update_track_meta(track_id, patch)
+
+    def update_track_meta(self, track_id: str, patch: dict) -> dict:
+        """Metadaten eines Tracks in ``library.json`` aendern — atomar und unter Sperre.
+
+        ``patch`` = {Feld: Wert}; ``None`` oder ``""`` entfernt das Feld. Welche Felder es gibt,
+        entscheidet der Host (die Jukebox reicht unbekannte Felder in ``library()`` unter
+        ``meta`` durch). Ist ``library.json`` vorhanden, aber unlesbar, wird NICHT geschrieben
+        (sonst ersetzte ein leerer Stand alle Metadaten) — der Fehler faellt an den Aufrufer."""
+        track_id = str(track_id or "").strip()
+        if not track_id:
+            raise ValueError("track_id fehlt")
+        with self._meta_lock:
+            lib = self._json_strict("library.json")
+            if lib is None:
+                raise RuntimeError("library.json unlesbar — nichts geschrieben")
+            tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
+            lib["tracks"] = tracks
+            entry = dict(tracks.get(track_id)) if isinstance(tracks.get(track_id), dict) else {}
+            for k, v in (patch or {}).items():
+                if v is None or v == "":
+                    entry.pop(str(k), None)
+                else:
+                    entry[str(k)] = v
+            if entry:
+                tracks[track_id] = entry
+            else:
+                tracks.pop(track_id, None)
+            self._write_json("library.json", lib)
+            return entry
 
     def library(self) -> list[dict]:
         """Ordner scannen; Stil aus library.json, sonst aus dem Unterordnernamen; sonst leer."""
@@ -589,6 +617,9 @@ class Jukebox:
                 "source_session": str(m.get("source_session") or ""),
                 "added_at": added_at,
                 "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
+                # Freie Host-Felder aus library.json (z. B. Spiel/Anlass einer Musikseite) —
+                # die Jukebox deutet sie nicht, sie reicht sie nur durch.
+                "meta": {k: v for k, v in m.items() if k not in _CORE_META},
             })
         return out
 
