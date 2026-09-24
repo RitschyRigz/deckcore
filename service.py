@@ -5058,6 +5058,71 @@ class DeckCoreService:
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "buttons": n, "removed": len(removed), "styles": order, "deck": deck_id or None}
 
+    def replace_generated_page(self, deck_id: str, prefix: str, entries: list, *,
+                               pool_cat: str = "", categories: Optional[list] = None) -> dict:
+        """Generierte Tasten EINER Seite als zusammenhaengenden Stand austauschen.
+
+        Fuer Hosts, die eine Seite aus Live-Daten statt aus einem Ordner erzeugen. Der Kern
+        kennt den Inhalt nicht: ``entries`` = ``[{button, category, placement?}]`` in
+        Zielreihenfolge; jede ``button.id`` muss mit ``prefix`` beginnen und darf nur einmal
+        vorkommen. Pool-Tasten mit ``prefix``, die nicht mehr vorkommen, verschwinden ohne
+        Merken (sie duerfen wiederkommen). Auf ``deck_id`` stehen danach zuerst die fremden
+        Items unveraendert, dann die generierten in der gegebenen Reihenfolge. Abschnitte:
+        ``categories`` in dieser Reihenfolge, danach noch benutzte fremde Abschnitte.
+        Gespeichert und veroeffentlicht wird EINMAL — keine Zwischenstaende."""
+        deck = self._deck(deck_id)
+        if deck is None:
+            return {"ok": False, "reason": "unknown_deck"}
+        prefix = str(prefix or "")
+        if not prefix:
+            return {"ok": False, "reason": "prefix_required"}
+        clean: list[tuple[dict, str, str]] = []
+        seen: set[str] = set()
+        for e in entries or []:
+            btn = (e or {}).get("button") or {}
+            bid = str(btn.get("id") or "")
+            if not bid.startswith(prefix) or bid in seen:
+                return {"ok": False, "reason": f"invalid_or_duplicate_id:{bid}"}
+            seen.add(bid)
+            btn = json.loads(json.dumps(btn))
+            for f in ("deck", "group", "style"):
+                btn.pop(f, None)
+            if pool_cat:
+                btn["pool_cat"] = pool_cat
+            placement = str((e or {}).get("placement") or "grid")
+            clean.append((btn, str((e or {}).get("category") or ""), placement))
+        removed = [b["id"] for b in list(self._buttons)
+                   if str(b.get("id") or "").startswith(prefix) and b["id"] not in seen]
+        for bid in removed:
+            self._pool_remove(bid, remember=False)
+        by_id = {b.get("id"): i for i, b in enumerate(self._buttons)}
+        for btn, _, _ in clean:
+            i = by_id.get(btn["id"])
+            if i is None:
+                self._buttons.append(btn)
+            else:
+                self._buttons[i] = btn
+            self._removed.discard(btn["id"])
+            self._resolved.pop(btn["id"], None)
+            self._poll_cache.pop(btn["id"], None)
+            self._last_eval.pop(btn["id"], None)
+        if pool_cat and pool_cat not in self._pool_categories:
+            self._pool_categories.append(pool_cat)
+        others = [it for it in deck["items"] if not str(it.get("button") or "").startswith(prefix)]
+        generated = []
+        for btn, cat, placement in clean:
+            style = {"placement": placement}
+            if placement != "grid":
+                style["label"] = "off"
+            generated.append({"button": btn["id"], "category": cat, "style": style, "hidden": False})
+        deck["items"] = others + generated
+        wanted_cats = [str(c) for c in (categories or []) if str(c or "").strip()]
+        used_by_others = [it.get("category") for it in others if it.get("category")]
+        deck["categories"] = wanted_cats + [c for c in deck.get("categories") or []
+                                            if c not in wanted_cats and c in used_by_others]
+        self._save(); self._schedule_recompute(); self._publish_cfg()
+        return {"ok": True, "buttons": len(clean), "removed": len(removed), "deck": deck_id}
+
     def register_library(self, key: str, get_instance, populate, *, prefix: str = "jb_",
                          meta_prefix: str = "_jukebox", action_type: str = "",
                          monitor_type: str = "", fallback_label: str = "",
