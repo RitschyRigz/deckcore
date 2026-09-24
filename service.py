@@ -351,6 +351,24 @@ def _sanitize_opts(o) -> dict:
     return out
 
 
+def _generated_label(prev_gen: dict, label: str, badge_icon: str) -> str:
+    """Der Tastenname, den ein Mediathek-Generator zuletzt selbst gesetzt hat — oder ``""``.
+
+    Neue Tasten merken ihn in ``_gen_title.label``. Aeltere kennen nur den generierten Tastentext
+    (``title``: Titel, auf 26/28 Zeichen gekuerzt, evtl. mit Neu-Abzeichen); ein Name, der mit
+    genau diesem Text beginnt, stammt vom Generator. Alles andere hat der Nutzer vergeben."""
+    if not prev_gen or not label:
+        return ""
+    if "label" in prev_gen:
+        return label if label == prev_gen.get("label") else ""
+    base = str(prev_gen.get("title") or "")
+    if badge_icon and base.startswith(badge_icon + " "):
+        base = base[len(badge_icon) + 1:]
+    if base and (label == base or (len(base) >= 26 and label.startswith(base))):
+        return label
+    return ""
+
+
 # Kosmetik-Felder, die der NUTZER besitzt — beim Neu-Generieren eines bestehenden Buttons
 # behalten (action/monitor + interne Marker bleiben die Funktions-Wahrheit des Generators).
 _REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v", "pool_cat")
@@ -4981,22 +4999,27 @@ class DeckCoreService:
                 # Der vom Generator ZULETZT gesetzte Titel: aendert er sich (Abzeichen kommt/geht),
                 # darf die Auffrischung greifen — vom Nutzer geaenderte Titel bleiben erhalten.
                 prev_gen = previous.get(meta_prefix + "_gen_title") or {}
-                old_generated = None
+                old_generated: dict = {}
                 if prev_gen and (prev_gen.get("title"), prev_gen.get("idle")) != (title, idle_title):
                     old_generated = {"states": states(tr["id"], str(prev_gen.get("title") or ""), track_icon),
                                      # exakt die Form, die der Generator zuletzt schrieb (inkl. Artwork-Feld)
                                      "default": {"icon": track_icon, "title": str(prev_gen.get("idle") or ""),
                                                  "color": "off", "image": previous_image}}
+                # Der Tastenname (``label``) folgt dem Mediathek-Titel wie der Tastentext: der
+                # zuletzt generierte Name wird ersetzt, ein vom Nutzer vergebener bleibt.
+                prev_label = _generated_label(prev_gen, str(previous.get("label") or ""), badge_icon)
+                if prev_label and prev_label != tr["title"]:
+                    old_generated["label"] = prev_label
                 upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
                         "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
                         "monitor": {"type": monitor_type, "track": tr["id"]},
                         "states": states(tr["id"], title, track_icon),
                         "default": {"icon": track_icon, "title": idle_title, "color": "off"}},
-                       old_generated)
+                       old_generated or None)
                 # Artwork belongs to the shared button visual, consumed by every client.
                 # Refresh our previous source image only; retain manually chosen imagery.
                 button = next(b for b in self._buttons if b["id"] == prefix + tr["id"])
-                button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title}
+                button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title, "label": tr["title"]}
                 cover_image = tr.get("cover_url") or ""
                 default = button.setdefault("default", {})
                 if not default.get("image") or default.get("image") == previous_image:

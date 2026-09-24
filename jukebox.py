@@ -714,6 +714,14 @@ class Jukebox:
                 parts.append(f"{name}|?")
         return "\n".join(parts)
 
+    def meta_signature(self) -> str:
+        """Billiger Fingerabdruck NUR der Metadaten (``library.json``-Zeitstempel) — fuer Hosts,
+        die Anzeige-Titel je Abruf aufloesen, ohne jedes Mal die Bibliothek zu scannen."""
+        try:
+            return str((self._dir / "library.json").stat().st_mtime_ns)
+        except OSError:
+            return "-"
+
     def track(self, track_id: str) -> Optional[dict]:
         for t in self.library():
             if t["id"] == track_id:
