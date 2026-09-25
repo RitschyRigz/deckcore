@@ -75,3 +75,12 @@ def test_set_track_style_bleibt_kompatibel(tmp_path):
     entry = lib.set_track_style(tid, "dj", title="Neu", max_seconds=None)
     assert entry == {"title": "Neu", "style": "dj"}
     assert lib.library()[0]["style"] == "dj"
+
+
+def test_herkunft_bleibt_nach_umbenennung(tmp_path):
+    """Die Herkunft kommt aus dem Dateinamen, nicht aus dem Anzeigetitel — sonst verliert ein
+    umbenannter Song seine Stream-Zeile und ``latest_origin`` waehlt falsch (25.09.2026)."""
+    lib = _lib(tmp_path)
+    tid = _tid(lib)
+    lib.update_track_meta(tid, {"title": "Wir schnetzeln durch den Dienstag"})
+    assert lib.library()[0]["source_date"] == "2026-09-22"

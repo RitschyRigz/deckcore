@@ -613,7 +613,10 @@ class Jukebox:
                 # Herkunft getrennt von der Aufnahme in die Bibliothek: ``source_date`` = Quell-
                 # stream (Metadaten oder Titel), ``source_session`` = Session-Prefix (Metadaten),
                 # ``added_at`` = wann die Datei hier angelegt wurde (Neuzugang), nie „produziert".
-                "source_date": self._origin_date(m, title),
+                # Herkunft aus Metadaten oder dem DATEINAMEN — nie aus dem Anzeigetitel: ein
+                # gesetzter Titel („Der Himmel faltet sich") traegt kein Datum mehr, und
+                # ``pick=latest_origin`` saehe sonst keine Herkunft (Musikseite M1, 25.09.2026).
+                "source_date": self._origin_date(m, p.stem),
                 "source_session": str(m.get("source_session") or ""),
                 "added_at": added_at,
                 "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
