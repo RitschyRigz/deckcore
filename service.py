@@ -369,6 +369,20 @@ def _generated_label(prev_gen: dict, label: str, badge_icon: str) -> str:
     return ""
 
 
+def _generated_stem_default(default, stem: str, icon: str, image: str, badge_icon: str) -> bool:
+    """Ruhe-Beschriftung (``default``) einer Mediathek-Taste, die der Generator frueher aus dem
+    Dateinamen gebaut hat: nur Symbol/Text/Farbe/Bild, Generator-Symbol, Farbe ``off``, eigenes
+    Artwork, und die erste Textzeile ist der (evtl. auf 26/28 Zeichen gekuerzte) Dateiname."""
+    if not isinstance(default, dict) or not stem or set(default) - {"icon", "title", "color", "image"}:
+        return False
+    if default.get("icon") != icon or default.get("color") != "off" or default.get("image", "") not in ("", image):
+        return False
+    first = str(default.get("title") or "").split("\n", 1)[0]
+    if badge_icon and first.startswith(badge_icon + " "):
+        first = first[len(badge_icon) + 1:]
+    return bool(first) and (first == stem or (len(first) >= 26 and stem.startswith(first)))
+
+
 # Kosmetik-Felder, die der NUTZER besitzt — beim Neu-Generieren eines bestehenden Buttons
 # behalten (action/monitor + interne Marker bleiben die Funktions-Wahrheit des Generators).
 _REGEN_PRESERVE_KEYS = ("label", "default", "states", "opts", "render", "color", "refresh_seconds", "_v", "pool_cat")
@@ -5010,12 +5024,21 @@ class DeckCoreService:
                 prev_label = _generated_label(prev_gen, str(previous.get("label") or ""), badge_icon)
                 if prev_label and prev_label != tr["title"]:
                     old_generated["label"] = prev_label
+                # Altbestand (Tasten vor der Herkunftszeile, 17.09.2026): ein Ruhetext, der
+                # erkennbar aus dem DATEINAMEN gebaut ist, stammt vom Generator — er folgt dem
+                # Mediathek-Titel wie alle anderen (Musikseite M1, 25.09.2026).
+                olds: list = [old_generated] if old_generated else []
+                prev_default = previous.get("default")
+                if _generated_stem_default(prev_default, Path(str(tr.get("file") or "")).stem,
+                                           track_icon, previous_image, badge_icon)                         and prev_default != {"icon": track_icon, "title": idle_title, "color": "off",
+                                             "image": previous_image}:
+                    olds.append({"default": dict(prev_default)})
                 upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
                         "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
                         "monitor": {"type": monitor_type, "track": tr["id"]},
                         "states": states(tr["id"], title, track_icon),
                         "default": {"icon": track_icon, "title": idle_title, "color": "off"}},
-                       old_generated or None)
+                       olds or None)
                 # Artwork belongs to the shared button visual, consumed by every client.
                 # Refresh our previous source image only; retain manually chosen imagery.
                 button = next(b for b in self._buttons if b["id"] == prefix + tr["id"])
