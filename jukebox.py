@@ -725,6 +725,211 @@ class Jukebox:
         except OSError:
             return "-"
 
+    # -- Ordner = Kategorie: Umzug, Papierkorb, Kennungs-Aliasse ---------------------------
+    # Die track_id ist der Pfad-Slug. Ein Umzug in einen anderen Unterordner aendert sie; wer
+    # alte Kennungen gespeichert hat (Verlauf, Protokolle), loest sie ueber ``aliases()`` auf.
+    # Die Jukebox kennt dabei keine Hosts: Deck-Tasten, Programme, Kataloge ziehen die Hosts nach.
+
+    SIDECAR_EXTS = (".srt", ".png", ".jpg", ".jpeg", ".webp", ".lrc")
+
+    def aliases(self) -> dict:
+        """{alte_id: aktuelle_id} aller Umzuege (Ketten verdichtet)."""
+        raw = self._json("aliases.json").get("aliases")
+        return {str(k): str(v) for k, v in (raw or {}).items()} if isinstance(raw, dict) else {}
+
+    def resolve_id(self, track_id: str) -> str:
+        return self.aliases().get(str(track_id), str(track_id))
+
+    def _playing_track(self) -> str:
+        snap = self.status()
+        return str(snap.get("track") or "") if snap.get("state") in (_ACTIVE | {"queued"}) else ""
+
+    def _track_files(self, audio: Path) -> list:
+        """Audio + alle Begleitdateien gleichen Stamms (Songtext, Cover)."""
+        files = [audio]
+        for ext in self.SIDECAR_EXTS:
+            side = audio.with_suffix(ext)
+            if side.is_file() and side != audio:
+                files.append(side)
+        return files
+
+    def trash_dir(self) -> Path:
+        """Papierkorb NEBEN der Bibliothek (nie darin: ``_`` blendet nur Dateinamen aus, keine
+        Ordner). Config ``trash_dir``, sonst ``<library_dir>_papierkorb``."""
+        cfg = self.config()
+        explicit = str(cfg.get("trash_dir") or "").strip()
+        if explicit:
+            return Path(explicit)
+        lib = Path(str(cfg.get("library_dir") or ""))
+        return lib.with_name(lib.name + "_papierkorb")
+
+    @staticmethod
+    def _move_files(pairs: list) -> None:
+        """Alle oder keine: bei einem Fehler werden die schon bewegten Dateien zurueckgelegt."""
+        done = []
+        try:
+            for src, dst in pairs:
+                Path(dst).parent.mkdir(parents=True, exist_ok=True)
+                if Path(dst).exists():
+                    raise FileExistsError(str(dst))
+                os.replace(src, dst)
+                done.append((src, dst))
+        except Exception:
+            for src, dst in reversed(done):
+                try:
+                    os.replace(dst, src)
+                except OSError as e:
+                    log.error("Rueckstellung %s -> %s gescheitert: %s", dst, src, e)
+            raise
+
+    def move_track(self, track_id: str, folder: str) -> dict:
+        """Track samt Begleitdateien in einen anderen Unterordner der Bibliothek verschieben.
+        Metadaten ziehen mit, die alte Kennung wird als Alias gemerkt. Abgelehnt, wenn der
+        Track gerade laeuft, der Zielordner kein Unterordner ist oder ein Ziel schon existiert."""
+        t = self.track(track_id)
+        if not t:
+            return {"ok": False, "reason": "Track unbekannt"}
+        root = Path(str(self.config().get("library_dir") or ""))
+        folder = str(folder or "").strip().strip("/\\")
+        target_dir = root / folder
+        if (not folder or "/" in folder or "\\" in folder or folder.startswith(("_", "."))
+                or not target_dir.is_dir()):
+            return {"ok": False, "reason": f"Zielordner unbekannt: {folder}"}
+        audio = Path(t["file"])
+        if audio.parent.resolve() == target_dir.resolve():
+            return {"ok": False, "reason": "Song liegt schon in diesem Ordner"}
+        if self._playing_track() == track_id:
+            return {"ok": False, "reason": "Song laeuft gerade"}
+        pairs = [(f, target_dir / f.name) for f in self._track_files(audio)]
+        clash = [d.name for _, d in pairs if d.exists()]
+        if clash:
+            return {"ok": False, "reason": "Im Zielordner gibt es schon: " + ", ".join(clash)}
+        new_rel = (target_dir / audio.name).relative_to(root)
+        new_id = _slug(str(new_rel.with_suffix("")))
+        with self._meta_lock:
+            lib = self._json_strict("library.json")
+            aliases = self._json_strict("aliases.json")
+            if lib is None or aliases is None:
+                return {"ok": False, "reason": "library.json/aliases.json unlesbar - nichts verschoben"}
+            try:
+                self._move_files(pairs)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "reason": f"Verschieben gescheitert: {e}"[:200]}
+            tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
+            entry = tracks.pop(track_id, None)
+            if isinstance(entry, dict):
+                entry.pop("style", None)              # der Ordner ist die Stil-Wahrheit
+                if entry:
+                    tracks[new_id] = entry
+            lib["tracks"] = tracks
+            amap = aliases.get("aliases") if isinstance(aliases.get("aliases"), dict) else {}
+            amap = {k: (new_id if v == track_id else v) for k, v in amap.items()}
+            amap[track_id] = new_id
+            amap.pop(new_id, None)                    # Rueckumzug: aktuelle Kennung ist kein Alias
+            try:
+                self._write_json("library.json", lib)
+                self._write_json("aliases.json", {"aliases": amap})
+            except Exception as e:  # noqa: BLE001
+                self._move_files([(d, s) for s, d in pairs])
+                return {"ok": False, "reason": f"Metadaten nicht schreibbar, zurueckgestellt: {e}"[:200]}
+        log.info("Jukebox: %s -> %s (%d Dateien)", track_id, new_id, len(pairs))
+        return {"ok": True, "old_id": track_id, "new_id": new_id, "rel": str(new_rel).replace("\\", "/")}
+
+    def trash_track(self, track_id: str, *, note: Optional[dict] = None) -> dict:
+        """Track samt Begleitdateien in den Papierkorb (neben der Bibliothek). Metadaten und
+        ``note`` (Host-Angaben, z. B. Veroeffentlichungsstatus) liegen im Eintrag, damit
+        ``restore_track`` alles zurueckstellen kann. Endgueltig geloescht wird nie."""
+        t = self.track(track_id)
+        if not t:
+            return {"ok": False, "reason": "Track unbekannt"}
+        if self._playing_track() == track_id:
+            return {"ok": False, "reason": "Song laeuft gerade"}
+        root = Path(str(self.config().get("library_dir") or ""))
+        audio = Path(t["file"])
+        entry_id = time.strftime("%Y%m%d-%H%M%S") + "-" + track_id[:40]
+        entry_dir = self.trash_dir() / entry_id
+        rel_dir = audio.parent.relative_to(root)
+        pairs = [(f, entry_dir / "files" / rel_dir / f.name) for f in self._track_files(audio)]
+        with self._meta_lock:
+            lib = self._json_strict("library.json")
+            if lib is None:
+                return {"ok": False, "reason": "library.json unlesbar - nichts verschoben"}
+            try:
+                self._move_files(pairs)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "reason": f"Papierkorb gescheitert: {e}"[:200]}
+            tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
+            meta = tracks.pop(track_id, None)
+            lib["tracks"] = tracks
+            record = {"track_id": track_id, "rel": t["rel"], "title": t["title"],
+                      "trashed_at": time.time(), "meta": meta if isinstance(meta, dict) else {},
+                      "files": [str(d.relative_to(entry_dir)).replace("\\", "/") for _, d in pairs],
+                      "note": note or {}}
+            try:
+                (entry_dir / "entry.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), "utf-8")
+                self._write_json("library.json", lib)
+            except Exception as e:  # noqa: BLE001
+                self._move_files([(d, s) for s, d in pairs])
+                return {"ok": False, "reason": f"Papierkorb nicht beschreibbar, zurueckgestellt: {e}"[:200]}
+        log.info("Jukebox: %s in den Papierkorb (%s)", track_id, entry_id)
+        return {"ok": True, "entry": entry_id, "track_id": track_id}
+
+    def trash_list(self) -> list:
+        """Eintraege im Papierkorb, neueste zuerst (zurueckgestellte ausgenommen)."""
+        out = []
+        base = self.trash_dir()
+        if not base.is_dir():
+            return out
+        for d in sorted(base.iterdir(), reverse=True):
+            try:
+                rec = json.loads((d / "entry.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            out.append({"entry": d.name, **{k: rec.get(k) for k in ("track_id", "rel", "title", "trashed_at", "note")}})
+        return out
+
+    def restore_track(self, entry_id: str) -> dict:
+        """Eintrag aus dem Papierkorb an seinen alten Platz zurueck (Metadaten inklusive)."""
+        entry_id = str(entry_id or "")
+        if not entry_id or "/" in entry_id or "\\" in entry_id or entry_id.startswith("."):
+            return {"ok": False, "reason": "Eintrag unbekannt"}
+        entry_dir = self.trash_dir() / entry_id
+        try:
+            rec = json.loads((entry_dir / "entry.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"ok": False, "reason": "Eintrag unbekannt"}
+        root = Path(str(self.config().get("library_dir") or ""))
+        pairs = []
+        for rel in rec.get("files") or []:
+            parts = Path(rel).parts
+            if not parts or parts[0] != "files" or ".." in parts:
+                return {"ok": False, "reason": "Eintrag unvollstaendig"}
+            src, dst = entry_dir / rel, root.joinpath(*parts[1:])
+            if not src.is_file():
+                return {"ok": False, "reason": "Eintrag unvollstaendig"}
+            if dst.exists():
+                return {"ok": False, "reason": f"Platz belegt: {dst.name}"}
+            pairs.append((src, dst))
+        with self._meta_lock:
+            lib = self._json_strict("library.json")
+            if lib is None:
+                return {"ok": False, "reason": "library.json unlesbar - nichts zurueckgestellt"}
+            try:
+                self._move_files(pairs)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "reason": f"Zurueckstellen gescheitert: {e}"[:200]}
+            tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
+            if rec.get("meta"):
+                tracks[str(rec["track_id"])] = rec["meta"]
+            lib["tracks"] = tracks
+            self._write_json("library.json", lib)
+            try:
+                (entry_dir / "entry.json").rename(entry_dir / "entry.restored.json")
+            except OSError:
+                pass
+        log.info("Jukebox: %s aus dem Papierkorb zurueck", rec.get("track_id"))
+        return {"ok": True, "track_id": rec.get("track_id"), "note": rec.get("note") or {}}
+
     def track(self, track_id: str) -> Optional[dict]:
         for t in self.library():
             if t["id"] == track_id:

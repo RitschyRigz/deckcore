@@ -4943,7 +4943,13 @@ class DeckCoreService:
         "rotate": ("Reihum", "🔁"),
     }
 
-    def populate_library(self, lib, deck_id: str = "", *, group: Optional[str] = None,
+    def populate_library(self, lib, deck_id: str = "", **kw) -> dict:
+        """Siehe ``_populate_library_locked`` — unter der Mediathek-Sperre, damit ein laufender
+        Umzug (``rename_library_track``) und der Ordnerwaechter sich nie ueberholen."""
+        with self._library_mutation_lock:
+            return self._populate_library_locked(lib, deck_id, **kw)
+
+    def _populate_library_locked(self, lib, deck_id: str = "", *, group: Optional[str] = None,
                          prefix: str = "jb_", action_type: str = "jukebox",
                          monitor_type: str = "jukebox_state", meta_prefix: str = "_jukebox",
                          track_icon: str = "🎵") -> dict:
@@ -5257,6 +5263,53 @@ class DeckCoreService:
     def libraries(self) -> dict[str, dict]:
         """Registrierte Mediatheken ``{key: entry}`` (Registry-Sicht fuer Hosts, read-only)."""
         return dict(self._libraries)
+
+    @property
+    def _library_mutation_lock(self) -> threading.RLock:
+        lock = self.__dict__.get("_lib_mut_lock")
+        if lock is None:
+            lock = self.__dict__.setdefault("_lib_mut_lock", threading.RLock())
+        return lock
+
+    def rename_library_track(self, key: str, old_tid: str, new_tid: str, *, mutate=None) -> dict:
+        """Kennung eines Mediathek-Tracks hat sich geaendert (Umzug in einen anderen Ordner):
+        die Taste ``<prefix><alt>`` wird zu ``<prefix><neu>`` — Kosmetik, Pool-Platz und JEDE
+        Deck-Platzierung bleiben. ``mutate()`` (optional) ist der Umzug selbst; er laeuft unter
+        derselben Sperre wie der Ordnerwaechter, damit dieser nie den halben Zustand sieht
+        (Taste weg, weil der Track „fehlt"). Liefert das Ergebnis von ``mutate`` bzw. ok."""
+        entry = self._libraries.get(key)
+        if not entry:
+            return {"ok": False, "reason": f"Mediathek unbekannt: {key}"}
+        prefix, meta = str(entry.get("prefix") or ""), str(entry.get("meta_prefix") or "")
+        with self._library_mutation_lock:
+            res = mutate() if mutate else {"ok": True, "old_id": old_tid, "new_id": new_tid}
+            if not isinstance(res, dict) or not res.get("ok"):
+                return res
+            old_tid, new_tid = str(res.get("old_id") or old_tid), str(res.get("new_id") or new_tid)
+            old_bid, new_bid = prefix + old_tid, prefix + new_tid
+            moved = 0
+            if not any(b.get("id") == new_bid for b in self._buttons):
+                for b in self._buttons:
+                    if b.get("id") != old_bid:
+                        continue
+                    b["id"] = new_bid
+                    if meta:
+                        b[meta + "_track"] = new_tid
+                    for part in ("action", "monitor"):
+                        if isinstance(b.get(part), dict) and b[part].get("track") == old_tid:
+                            b[part]["track"] = new_tid
+                    moved += 1
+                for deck in self._decks:
+                    for it in deck.get("items") or []:
+                        if it.get("button") == old_bid:
+                            it["button"] = new_bid
+                if old_bid in self._removed:
+                    self._removed.discard(old_bid)
+                    self._removed.add(new_bid)
+                self._last_eval.pop(old_bid, None)
+                self._save()
+            res = dict(res, buttons_renamed=moved)
+        return res
 
     def _library_meta(self, key: str) -> dict:
         """Label/Emoji/Kategorie einer Mediathek — live aus ihrer config.json (label/icon), sonst
