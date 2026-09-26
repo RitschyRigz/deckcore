@@ -120,3 +120,17 @@ def test_state_map_button_keeps_its_short_dispatch_and_button_context(tmp_path):
     assert seen == [("state_map", "hold_toggle", "file_field")] and calls == []
     assert svc.press("hold_toggle", "long")["success"] is True
     assert seen == [("state_map", "hold_toggle", "file_field")] and calls == ["lang"]
+
+
+def test_faders_are_excluded_from_long_press(tmp_path):
+    """Richard 26.09.: Fader haben Tippen = Mute und Halten+Ziehen = Pegel — kein langer Druck.
+    Eine gespeicherte long_action bleibt erhalten (Editor zeigt den Konflikt), wirkt aber nicht."""
+    svc, calls = _svc(tmp_path)
+    svc._buttons.append({"id": "fad", "render": "fader", "action": {"type": "probe", "tag": "kurz"},
+                         "long_action": {"type": "probe", "tag": "lang"}, "long_press_ms": 800})
+    fad = svc._buttons[-1]
+    assert "has_long" not in svc._resolve(fad, None)            # Panel und Elgato halten gar nicht erst
+    res = svc.press("fad", "long")
+    assert res["success"] is False and "Fader" in res["message"] and calls == []
+    assert fad["long_action"] == {"type": "probe", "tag": "lang"}   # nicht still verloren
+    assert svc.press("fad")["success"] is True and calls == ["kurz"]

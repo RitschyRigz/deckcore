@@ -481,7 +481,7 @@ function holdHandlers(id, v, onTap, { stop = false, setHolding = null } = {}) {
 const holdStyle = (v) => (v && v.has_long) ? `;--hold-ms:${Math.max(250, Number(v.long_press_ms) || 600)}ms;` : ''
 const LongBadge = () => <><span class="t-long-badge" aria-hidden="true">⏱</span><span class="t-long-bar" aria-hidden="true" /></>
 
-function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, iconOnly, skin, opts }) {
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly, skin, opts }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
   const ttype = mon.target_type || 'mix'
@@ -499,7 +499,6 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, 
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
   const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
-  const downAtRef = useRef(0)                   // Zeitpunkt des Griffs — Halten ohne Bewegung = langer Druck
 
   const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
@@ -590,7 +589,6 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, 
   const onDown = (e) => {
     e.stopPropagation()
     movedRef.current = false
-    downAtRef.current = Date.now()
     downYRef.current = e.clientY
     downXRef.current = e.clientX
     lockRef.current = null
@@ -630,9 +628,6 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, 
       setOptLevel(fin)                                // Position halten, bis der Live-Wert nachgezogen ist
       if (holdT.current) clearTimeout(holdT.current)
       holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
-    } else if (v && v.has_long && onLong
-               && Date.now() - downAtRef.current >= Math.max(250, Number(v.long_press_ms) || 600)) {
-      onLong()                                        // gehalten ohne Bewegung ≥ Schwelle = langer Druck (kein Mute)
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
       setOptMute(!muted)
       if (isApp) postJSON('/api/winaudio/app_mute', { proc: proc || '' }).catch(() => {})
@@ -1170,8 +1165,7 @@ export function TouchDeck() {
           <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} skin={skin} opts={o}
                  dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
                  proc={(actionById[id] || {}).app_proc || ''} app={appSnap[(actionById[id] || {}).app_proc || ''] || {}}
-                 onMute={() => onTap(id)} onLong={() => onTap(id, null, 'long')} />
-          {v.has_long && <LongBadge />}
+                 onMute={() => onTap(id)} />
         </div>
       )
     }

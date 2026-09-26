@@ -1828,7 +1828,14 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
             label: b.label || info.name,
             default: { ...b.default, image: info.icon_url || (b.default || {}).image, title: (b.default || {}).title || info.name },
           })} />
-        {b.long_action ? (
+        {b.render === 'fader' ? (b.long_action ? (
+          <div class="reward-row" style="margin:6px 0 2px;align-items:center">
+            <span class="msg err" style="font-size:12px">⏱ Diese Taste hat noch eine Aktion für langen Druck — Fader haben keinen
+              langen Druck (Tippen = Mute, Halten und Ziehen = Pegel). Sie bleibt gespeichert, wirkt aber nicht.</span>
+            <button class="btn ghost small" type="button" onClick={removeLong}
+                    title="Die gespeicherte Aktion für langen Druck entfernen.">✕ entfernen</button>
+          </div>
+        ) : null) : b.long_action ? (
           <>
             <ActionEditor action={b.long_action} options={options} onChange={setLongAction}
               replace={(a) => set({ long_action: a })} onPicked={() => {}}

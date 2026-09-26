@@ -465,7 +465,16 @@ def _button_action_types(btn) -> set:
     return set(_action_types(btn.get("action"))) | set(_action_types(btn.get("long_action")))
 
 
+def _is_fader(btn) -> bool:
+    return isinstance(btn, dict) and btn.get("render") == "fader"
+
+
 def _has_long_action(btn) -> bool:
+    """Wirksamer langer Druck. Fader sind ausgenommen (Richard 26.09.: Tippen = Mute, Halten und
+    Ziehen = Pegel — eine dritte Funktion wäre zu viel). Eine dort noch gespeicherte long_action
+    bleibt erhalten (der Editor zeigt den Konflikt), wirkt aber nirgends."""
+    if _is_fader(btn):
+        return False
     la = btn.get("long_action") if isinstance(btn, dict) else None
     return isinstance(la, dict) and bool(str(la.get("type") or "").strip()) and la.get("type") != "none"
 
@@ -4693,6 +4702,9 @@ class DeckCoreService:
             return {"id": bid, "variant": variant, "success": False,
                     "message": f"Unbekannte Druck-Variante: {variant}"}
         if variant == "long":
+            if _is_fader(btn):
+                return {"id": bid, "variant": variant, "success": False,
+                        "message": "Fader haben keinen langen Druck"}
             if not _has_long_action(btn):
                 return {"id": bid, "variant": variant, "success": False,
                         "message": "Keine Aktion für langen Druck belegt"}
