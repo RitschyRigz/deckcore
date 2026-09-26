@@ -1568,7 +1568,7 @@ function PoolCard({ b, vis, options, allIds, onChanged }) {
         <div class="card-body">
           <div class="card-foot row" style="margin-bottom:6px">
             <button class="btn ghost small" onClick={() => press()}>▶ Test-Druck</button>
-            {b.long_action && <button class="btn ghost small" onClick={() => press('long')}>⏱ Test lang</button>}
+            {b.long_action && b.render !== 'fader' && <button class="btn ghost small" onClick={() => press('long')}>⏱ Test lang</button>}
             <button class="btn ghost small" onClick={clone} title="1:1-Kopie dieser Funktion">⎘ Klonen</button>
             {msg && <span class={'msg ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
           </div>
