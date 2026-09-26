@@ -133,3 +133,38 @@ def test_papierkorb_schreibfehler_hinterlaesst_keinen_geist(tmp_path, monkeypatc
     assert not lib.trash_track(OLD)["ok"]
     monkeypatch.setattr(lib, "_write_json", real)
     assert lib.track(OLD) is not None and lib.trash_list() == []
+
+
+def test_gescheiterte_rueckstellung_meldet_das_ehrlich(tmp_path, monkeypatch):
+    """Codex R10 F19: scheitert auch die Rueckstellung, heisst es nie „zurueckgestellt"."""
+    lib = _lib(tmp_path)
+    real = lib._write_json
+    calls = {"library.json": 0}
+
+    def failing(name, data):
+        if name == "aliases.json":
+            raise PermissionError("belegt")
+        calls[name] = calls.get(name, 0) + 1
+        if name == "library.json" and calls[name] > 1:          # die Rueckstellung selbst
+            raise PermissionError("auch belegt")
+        return real(name, data)
+    monkeypatch.setattr(lib, "_write_json", failing)
+    res = lib.move_track(OLD, "metal")
+    assert res["ok"] is False and res["rollback_failed"] is True and "zurueckgestellt" not in res["reason"]
+
+
+def test_plan_und_fortsetzung_nach_abbruch(tmp_path):
+    """Absturz nach dem Bewegen, vor den Metadaten: complete_move fuehrt nach dem echten
+    Dateistand zu Ende (idempotent); liegt eine Datei an beiden Orten, entscheidet es nicht."""
+    lib = _lib(tmp_path)
+    plan = lib.plan_move(OLD, "metal")
+    assert plan["ok"] and plan["new_id"] == NEW and len(plan["pairs"]) == 3
+    src, dst = plan["pairs"][0]
+    Path(dst).parent.mkdir(exist_ok=True)
+    Path(src).replace(dst)                                      # nur die Audiodatei ist schon drueben
+    res = lib.complete_move(OLD, NEW, plan["pairs"])
+    assert res == {"ok": True, "old_id": OLD, "new_id": NEW, "moved": 2}
+    assert lib.track(NEW) and lib.lyrics(NEW) and lib.aliases() == {OLD: NEW}
+    assert lib.complete_move(OLD, NEW, plan["pairs"])["moved"] == 0
+    Path(plan["pairs"][1][0]).write_text("x", encoding="utf-8")   # Datei an beiden Orten
+    assert not lib.complete_move(OLD, NEW, plan["pairs"])["ok"]

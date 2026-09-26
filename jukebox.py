@@ -782,23 +782,29 @@ class Jukebox:
                     log.error("Rueckstellung %s -> %s gescheitert: %s", dst, src, e)
             raise
 
-    def _rollback(self, pairs: list, meta_before: dict) -> None:
+    def _rollback(self, pairs: list, meta_before: dict) -> bool:
         """Teilfehler: Dateien zurueck und die genannten Metadaten-Dateien auf ihren Vorstand.
-        Scheitert auch das, bleibt es laut (Log) — nie still halb."""
+        Liefert False, wenn die Rueckstellung selbst scheitert — dann darf niemand
+        „zurueckgestellt" melden (Codex R10 F19); es bleibt laut (Log)."""
+        ok = True
         try:
-            self._move_files([(d, s) for s, d in pairs])
+            self._move_files([(d, s) for s, d in pairs if Path(d).exists() and not Path(s).exists()])
         except Exception as e:  # noqa: BLE001
             log.error("Rueckstellung der Dateien gescheitert: %s", e)
+            ok = False
         for name, before in meta_before.items():
+            if self._json_strict(name) == before:
+                continue                              # nie geschrieben / schon zurueck: nichts zu tun
             try:
                 self._write_json(name, before)
             except Exception as e:  # noqa: BLE001
                 log.error("Rueckstellung %s gescheitert: %s", name, e)
+                ok = False
+        return ok
 
-    def move_track(self, track_id: str, folder: str) -> dict:
-        """Track samt Begleitdateien in einen anderen Unterordner der Bibliothek verschieben.
-        Metadaten ziehen mit, die alte Kennung wird als Alias gemerkt. Abgelehnt, wenn der
-        Track gerade laeuft, der Zielordner kein Unterordner ist oder ein Ziel schon existiert."""
+    def plan_move(self, track_id: str, folder: str) -> dict:
+        """Umzug planen, ohne etwas anzufassen: Zielkennung, neuer Pfad und JEDE Datei (Quelle,
+        Ziel). Hosts schreiben damit ihr Protokoll VOR dem ersten Schritt (Codex R10 F19)."""
         t = self.track(track_id)
         if not t:
             return {"ok": False, "reason": "Track unbekannt"}
@@ -818,7 +824,33 @@ class Jukebox:
         if clash:
             return {"ok": False, "reason": "Im Zielordner gibt es schon: " + ", ".join(clash)}
         new_rel = (target_dir / audio.name).relative_to(root)
-        new_id = _slug(str(new_rel.with_suffix("")))
+        return {"ok": True, "old_id": track_id, "new_id": _slug(str(new_rel.with_suffix(""))),
+                "rel": str(new_rel).replace("\\", "/"), "pairs": [[str(s), str(d)] for s, d in pairs]}
+
+    def _record_move_locked(self, lib: dict, aliases: dict, old_id: str, new_id: str) -> tuple:
+        tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
+        if old_id in tracks and new_id not in tracks:
+            entry = tracks.pop(old_id)
+            if isinstance(entry, dict):
+                entry.pop("style", None)              # der Ordner ist die Stil-Wahrheit
+                if entry:
+                    tracks[new_id] = entry
+        lib["tracks"] = tracks
+        amap = aliases.get("aliases") if isinstance(aliases.get("aliases"), dict) else {}
+        amap = {k: (new_id if v == old_id else v) for k, v in amap.items()}
+        amap[old_id] = new_id
+        amap.pop(new_id, None)                        # Rueckumzug: aktuelle Kennung ist kein Alias
+        return lib, {"aliases": amap}
+
+    def move_track(self, track_id: str, folder: str) -> dict:
+        """Track samt Begleitdateien in einen anderen Unterordner der Bibliothek verschieben.
+        Metadaten ziehen mit, die alte Kennung wird als Alias gemerkt. Abgelehnt, wenn der
+        Track gerade laeuft, der Zielordner kein Unterordner ist oder ein Ziel schon existiert."""
+        plan = self.plan_move(track_id, folder)
+        if not plan.get("ok"):
+            return plan
+        pairs = [(Path(s), Path(d)) for s, d in plan["pairs"]]
+        new_id = plan["new_id"]
         with self._meta_lock:
             lib = self._json_strict("library.json")
             aliases = self._json_strict("aliases.json")
@@ -829,27 +861,41 @@ class Jukebox:
                 self._move_files(pairs)
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "reason": f"Verschieben gescheitert: {e}"[:200]}
-            tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
-            entry = tracks.pop(track_id, None)
-            if isinstance(entry, dict):
-                entry.pop("style", None)              # der Ordner ist die Stil-Wahrheit
-                if entry:
-                    tracks[new_id] = entry
-            lib["tracks"] = tracks
-            amap = aliases.get("aliases") if isinstance(aliases.get("aliases"), dict) else {}
-            amap = {k: (new_id if v == track_id else v) for k, v in amap.items()}
-            amap[track_id] = new_id
-            amap.pop(new_id, None)                    # Rueckumzug: aktuelle Kennung ist kein Alias
+            lib, aliases = self._record_move_locked(lib, aliases, track_id, new_id)
             try:
                 self._write_json("library.json", lib)
-                self._write_json("aliases.json", {"aliases": amap})
+                self._write_json("aliases.json", aliases)
             except Exception as e:  # noqa: BLE001
-                # Alles zurueck: Dateien UND beide Metadaten-Dateien (Codex R9 F19 — sonst trug
-                # library.json die neue Kennung, waehrend Datei und Alias-Karte alt waren).
-                self._rollback(pairs, {"library.json": lib_before, "aliases.json": aliases_before})
-                return {"ok": False, "reason": f"Metadaten nicht schreibbar, zurueckgestellt: {e}"[:200]}
+                # Alles zurueck: Dateien UND beide Metadaten-Dateien (Codex R9 F19).
+                if self._rollback(pairs, {"library.json": lib_before, "aliases.json": aliases_before}):
+                    return {"ok": False, "reason": f"Metadaten nicht schreibbar, zurueckgestellt: {e}"[:200]}
+                return {"ok": False, "rollback_failed": True,
+                        "reason": f"Metadaten nicht schreibbar UND Rueckstellung gescheitert: {e}"[:200]}
         log.info("Jukebox: %s -> %s (%d Dateien)", track_id, new_id, len(pairs))
-        return {"ok": True, "old_id": track_id, "new_id": new_id, "rel": str(new_rel).replace("\\", "/")}
+        return {"ok": True, "old_id": track_id, "new_id": new_id, "rel": plan["rel"]}
+
+    def complete_move(self, old_id: str, new_id: str, pairs: list) -> dict:
+        """Einen unterbrochenen Umzug zu Ende fuehren — idempotent, nach dem tatsaechlichen
+        Dateistand: noch nicht bewegte Dateien bewegen, dann Metadaten + Alias nachtragen.
+        Liegt eine Datei an BEIDEN Orten, wird nichts entschieden (Grund zurueck)."""
+        pairs = [(Path(s), Path(d)) for s, d in pairs]
+        both = [s.name for s, d in pairs if s.exists() and d.exists()]
+        if both:
+            return {"ok": False, "reason": "Datei an beiden Orten: " + ", ".join(both)}
+        todo = [(s, d) for s, d in pairs if s.exists() and not d.exists()]
+        with self._meta_lock:
+            lib = self._json_strict("library.json")
+            aliases = self._json_strict("aliases.json")
+            if lib is None or aliases is None:
+                return {"ok": False, "reason": "library.json/aliases.json unlesbar"}
+            try:
+                self._move_files(todo)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "reason": f"Verschieben gescheitert: {e}"[:200]}
+            lib, aliases = self._record_move_locked(lib, aliases, old_id, new_id)
+            self._write_json("library.json", lib)
+            self._write_json("aliases.json", aliases)
+        return {"ok": True, "old_id": old_id, "new_id": new_id, "moved": len(todo)}
 
     def trash_track(self, track_id: str, *, note: Optional[dict] = None) -> dict:
         """Track samt Begleitdateien in den Papierkorb (neben der Bibliothek). Metadaten und
@@ -886,7 +932,9 @@ class Jukebox:
                 (entry_dir / "entry.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), "utf-8")
                 self._write_json("library.json", lib)
             except Exception as e:  # noqa: BLE001
-                self._rollback(pairs, {"library.json": lib_before})
+                if not self._rollback(pairs, {"library.json": lib_before}):
+                    return {"ok": False, "rollback_failed": True,
+                            "reason": f"Papierkorb nicht beschreibbar UND Rueckstellung gescheitert: {e}"[:200]}
                 try:
                     (entry_dir / "entry.json").unlink(missing_ok=True)   # kein Geister-Eintrag
                 except OSError:
