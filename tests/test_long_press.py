@@ -104,3 +104,19 @@ def test_export_import_round_trip_keeps_long_action_and_threshold(tmp_path):
     svc._save()
     raw = json.loads((tmp_path / "rt" / "streamdeck_buttons.json").read_text(encoding="utf-8"))
     assert next(b for b in raw["buttons"] if b["id"] == "both")["long_action"]["tag"] == "lang"
+
+
+def test_state_map_button_keeps_its_short_dispatch_and_button_context(tmp_path):
+    """Bestehende Status-Taste (state_map, Monitor): kurz geht unveraendert an ihren Handler mit
+    derselben Taste; lang erreicht nur die lange Aktion (Codex R2)."""
+    svc, calls = _svc(tmp_path)
+    seen = []
+    svc.register_action("stateful", lambda a, b: (seen.append((a.get("mode"), b.get("id"), (b.get("monitor") or {}).get("type"))),
+                                                   {"success": True})[1])
+    svc._buttons.append({"id": "hold_toggle", "monitor": {"type": "file_field", "field": "phase"},
+                         "action": {"type": "stateful", "mode": "state_map", "map": {"*": "go"}},
+                         "long_action": {"type": "probe", "tag": "lang"}})
+    assert svc.press("hold_toggle")["success"] is True
+    assert seen == [("state_map", "hold_toggle", "file_field")] and calls == []
+    assert svc.press("hold_toggle", "long")["success"] is True
+    assert seen == [("state_map", "hold_toggle", "file_field")] and calls == ["lang"]

@@ -446,6 +446,12 @@ function holdHandlers(id, v, onTap, { stop = false, setHolding = null } = {}) {
   if (!v || !v.has_long) return { onClick: click }
   const ms = Math.max(250, Number(v.long_press_ms) || 600)
   const cancel = () => { if (_hold.id === id) _holdStop() }
+  const abort = () => {                                  // Bewegung/Verlassen/Abbruch: Geste verworfen, auch kein Klick
+    if (_hold.id !== id) return
+    _holdStop()
+    _hold.fired = id
+    setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)
+  }
   return {
     onClick: click,
     onContextMenu: (e) => e.preventDefault(),          // Android: Langdruck öffnet sonst das Kontextmenü
@@ -466,16 +472,13 @@ function holdHandlers(id, v, onTap, { stop = false, setHolding = null } = {}) {
       }, ms)
     },
     onPointerMove: (e) => {
-      if (_hold.id === id && (Math.abs(e.clientX - _hold.x) > 8 || Math.abs(e.clientY - _hold.y) > 8)) {
-        _holdStop()
-        _hold.fired = id                                 // abgebrochene Geste: auch der folgende Klick löst nichts aus
-        setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)
-      }
+      if (_hold.id === id && (Math.abs(e.clientX - _hold.x) > 8 || Math.abs(e.clientY - _hold.y) > 8)) abort()
     },
-    onPointerUp: cancel, onPointerCancel: cancel, onPointerLeave: cancel,
+    onPointerUp: cancel,                                 // normales Loslassen vor der Schwelle → Klick = kurzer Druck
+    onPointerCancel: abort, onPointerLeave: abort,       // abgebrochene Geste: auch der Klick löst nichts aus
   }
 }
-const holdStyle = (v) => (v && v.has_long) ? `--hold-ms:${Math.max(250, Number(v.long_press_ms) || 600)}ms;` : ''
+const holdStyle = (v) => (v && v.has_long) ? `;--hold-ms:${Math.max(250, Number(v.long_press_ms) || 600)}ms;` : ''
 const LongBadge = () => <><span class="t-long-badge" aria-hidden="true">⏱</span><span class="t-long-bar" aria-hidden="true" /></>
 
 function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, iconOnly, skin, opts }) {
@@ -609,6 +612,12 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, 
     setDrag(l)
     push(l, false)
   }
+  const onCancel = (e) => {                         // System hat die Geste abgebrochen → nichts auslösen
+    if (downYRef.current == null) return
+    e.stopPropagation()
+    downYRef.current = null; downXRef.current = null; lockRef.current = null
+    setDrag(null)
+  }
   const onUp = (e) => {
     if (downYRef.current == null) return
     e.stopPropagation()
@@ -639,7 +648,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, 
   const fbVariant = _fo.variant || ''
   return (
     <div class={'t-fader s-' + (skin || 'brackets') + (fbVariant ? ' v-' + fbVariant : '') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
-         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
+         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel}>
       <div class="t-fader-name" title={name}>
         {iconOnly
           ? (showImg ? <img class="t-fader-name-img" src={imgSrc} alt={name} onError={() => setImgErr(true)} />
