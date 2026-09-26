@@ -782,6 +782,19 @@ class Jukebox:
                     log.error("Rueckstellung %s -> %s gescheitert: %s", dst, src, e)
             raise
 
+    def _rollback(self, pairs: list, meta_before: dict) -> None:
+        """Teilfehler: Dateien zurueck und die genannten Metadaten-Dateien auf ihren Vorstand.
+        Scheitert auch das, bleibt es laut (Log) — nie still halb."""
+        try:
+            self._move_files([(d, s) for s, d in pairs])
+        except Exception as e:  # noqa: BLE001
+            log.error("Rueckstellung der Dateien gescheitert: %s", e)
+        for name, before in meta_before.items():
+            try:
+                self._write_json(name, before)
+            except Exception as e:  # noqa: BLE001
+                log.error("Rueckstellung %s gescheitert: %s", name, e)
+
     def move_track(self, track_id: str, folder: str) -> dict:
         """Track samt Begleitdateien in einen anderen Unterordner der Bibliothek verschieben.
         Metadaten ziehen mit, die alte Kennung wird als Alias gemerkt. Abgelehnt, wenn der
@@ -811,6 +824,7 @@ class Jukebox:
             aliases = self._json_strict("aliases.json")
             if lib is None or aliases is None:
                 return {"ok": False, "reason": "library.json/aliases.json unlesbar - nichts verschoben"}
+            lib_before, aliases_before = json.loads(json.dumps(lib)), json.loads(json.dumps(aliases))
             try:
                 self._move_files(pairs)
             except Exception as e:  # noqa: BLE001
@@ -830,7 +844,9 @@ class Jukebox:
                 self._write_json("library.json", lib)
                 self._write_json("aliases.json", {"aliases": amap})
             except Exception as e:  # noqa: BLE001
-                self._move_files([(d, s) for s, d in pairs])
+                # Alles zurueck: Dateien UND beide Metadaten-Dateien (Codex R9 F19 — sonst trug
+                # library.json die neue Kennung, waehrend Datei und Alias-Karte alt waren).
+                self._rollback(pairs, {"library.json": lib_before, "aliases.json": aliases_before})
                 return {"ok": False, "reason": f"Metadaten nicht schreibbar, zurueckgestellt: {e}"[:200]}
         log.info("Jukebox: %s -> %s (%d Dateien)", track_id, new_id, len(pairs))
         return {"ok": True, "old_id": track_id, "new_id": new_id, "rel": str(new_rel).replace("\\", "/")}
@@ -854,6 +870,7 @@ class Jukebox:
             lib = self._json_strict("library.json")
             if lib is None:
                 return {"ok": False, "reason": "library.json unlesbar - nichts verschoben"}
+            lib_before = json.loads(json.dumps(lib))
             try:
                 self._move_files(pairs)
             except Exception as e:  # noqa: BLE001
@@ -869,7 +886,11 @@ class Jukebox:
                 (entry_dir / "entry.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), "utf-8")
                 self._write_json("library.json", lib)
             except Exception as e:  # noqa: BLE001
-                self._move_files([(d, s) for s, d in pairs])
+                self._rollback(pairs, {"library.json": lib_before})
+                try:
+                    (entry_dir / "entry.json").unlink(missing_ok=True)   # kein Geister-Eintrag
+                except OSError:
+                    pass
                 return {"ok": False, "reason": f"Papierkorb nicht beschreibbar, zurueckgestellt: {e}"[:200]}
         log.info("Jukebox: %s in den Papierkorb (%s)", track_id, entry_id)
         return {"ok": True, "entry": entry_id, "track_id": track_id}
@@ -922,7 +943,11 @@ class Jukebox:
             if rec.get("meta"):
                 tracks[str(rec["track_id"])] = rec["meta"]
             lib["tracks"] = tracks
-            self._write_json("library.json", lib)
+            try:
+                self._write_json("library.json", lib)
+            except Exception as e:  # noqa: BLE001
+                self._move_files([(d, s) for s, d in pairs])   # zurueck in den Papierkorb
+                return {"ok": False, "reason": f"Metadaten nicht schreibbar, im Papierkorb gelassen: {e}"[:200]}
             try:
                 (entry_dir / "entry.json").rename(entry_dir / "entry.restored.json")
             except OSError:

@@ -99,3 +99,37 @@ def test_wiederherstellen_ueberschreibt_nie(tmp_path):
     assert not res["ok"] and "belegt" in res["reason"]
     assert (tmp_path / "music" / "bruno_song" / "2026-09-12 - Kaffee im Bierglas.wav").read_bytes() == b"NEU"
     assert not lib.restore_track("../x")["ok"]
+
+
+def test_schreibfehler_stellt_dateien_und_metadaten_zurueck(tmp_path, monkeypatch):
+    """Codex R9 F19: scheitert aliases.json, bleiben Datei, library.json und Alias-Karte alt."""
+    lib = _lib(tmp_path)
+    lib.update_track_meta(OLD, {"title": "Kaffee im Bierglas"})
+    real = lib._write_json
+
+    def failing(name, data):
+        if name == "aliases.json":
+            raise PermissionError("belegt")
+        return real(name, data)
+    monkeypatch.setattr(lib, "_write_json", failing)
+    res = lib.move_track(OLD, "metal")
+    assert not res["ok"] and "zurueckgestellt" in res["reason"]
+    monkeypatch.setattr(lib, "_write_json", real)
+    assert lib.track(OLD)["title"] == "Kaffee im Bierglas" and lib.track(NEW) is None
+    meta = json.loads((tmp_path / "rt" / "jukebox" / "library.json").read_text(encoding="utf-8"))["tracks"]
+    assert OLD in meta and NEW not in meta
+    assert lib.aliases() == {}
+
+
+def test_papierkorb_schreibfehler_hinterlaesst_keinen_geist(tmp_path, monkeypatch):
+    lib = _lib(tmp_path)
+    real = lib._write_json
+
+    def failing(name, data):
+        if name == "library.json":
+            raise PermissionError("belegt")
+        return real(name, data)
+    monkeypatch.setattr(lib, "_write_json", failing)
+    assert not lib.trash_track(OLD)["ok"]
+    monkeypatch.setattr(lib, "_write_json", real)
+    assert lib.track(OLD) is not None and lib.trash_list() == []

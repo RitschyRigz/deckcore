@@ -2760,7 +2760,9 @@ class DeckCoreService:
         self._look = _sanitize_look(data.get("look"))
         self._scene_flow = _sanitize_scene_flow(data.get("scene_flow"))
         self._tick = _clamp_tick(data.get("tick_seconds", self._tick), self._tick)
-        self._save()
+        with self._library_mutation_lock:
+            self._apply_library_aliases()     # umgezogene Tracks: Tasten auf die aktuelle Kennung
+            self._save()
         self._load()          # normalisieren: Default-Deck garantieren, Decks sanitizen, Defaults additiv seeden
         return {"ok": True, "buttons": len(self._buttons), "decks": len(self._decks)}
 
@@ -5286,30 +5288,58 @@ class DeckCoreService:
             if not isinstance(res, dict) or not res.get("ok"):
                 return res
             old_tid, new_tid = str(res.get("old_id") or old_tid), str(res.get("new_id") or new_tid)
-            old_bid, new_bid = prefix + old_tid, prefix + new_tid
-            moved = 0
-            if not any(b.get("id") == new_bid for b in self._buttons):
-                for b in self._buttons:
-                    if b.get("id") != old_bid:
-                        continue
-                    b["id"] = new_bid
-                    if meta:
-                        b[meta + "_track"] = new_tid
-                    for part in ("action", "monitor"):
-                        if isinstance(b.get(part), dict) and b[part].get("track") == old_tid:
-                            b[part]["track"] = new_tid
-                    moved += 1
-                for deck in self._decks:
-                    for it in deck.get("items") or []:
-                        if it.get("button") == old_bid:
-                            it["button"] = new_bid
-                if old_bid in self._removed:
-                    self._removed.discard(old_bid)
-                    self._removed.add(new_bid)
-                self._last_eval.pop(old_bid, None)
+            moved = self._rename_library_button(prefix, meta, old_tid, new_tid)
+            if moved:
                 self._save()
             res = dict(res, buttons_renamed=moved)
         return res
+
+    def _rename_library_button(self, prefix: str, meta: str, old_tid: str, new_tid: str) -> int:
+        """Taste ``<prefix><alt>`` wird ``<prefix><neu>`` (Id, Track-Marker, Action/Monitor, alle
+        Deck-Items, Abwahl). Idempotent: gibt es die neue Taste schon oder die alte nicht, passiert
+        nichts. Rueckgabe = umbenannte Tasten. Der Aufrufer speichert."""
+        old_bid, new_bid = prefix + old_tid, prefix + new_tid
+        if old_tid == new_tid or any(b.get("id") == new_bid for b in self._buttons):
+            return 0
+        moved = 0
+        for b in self._buttons:
+            if b.get("id") != old_bid:
+                continue
+            b["id"] = new_bid
+            if meta:
+                b[meta + "_track"] = new_tid
+            for part in ("action", "monitor"):
+                if isinstance(b.get(part), dict) and b[part].get("track") == old_tid:
+                    b[part]["track"] = new_tid
+            moved += 1
+        if not moved:
+            return 0
+        for deck in self._decks:
+            for it in deck.get("items") or []:
+                if it.get("button") == old_bid:
+                    it["button"] = new_bid
+        if old_bid in self._removed:
+            self._removed.discard(old_bid)
+            self._removed.add(new_bid)
+        self._last_eval.pop(old_bid, None)
+        return moved
+
+    def _apply_library_aliases(self) -> int:
+        """Nach dem Zurueckspielen einer Sicherung: Tasten von Tracks, die inzwischen umgezogen
+        sind (Alias-Karte der Mediathek), auf die aktuelle Kennung umhaengen — sonst raeumte der
+        naechste Abgleich sie als „Track weg" ab und Platz/Ausblenden/Kosmetik gingen verloren
+        (Codex R9 F18)."""
+        n = 0
+        for entry in list(self._libraries.values()):
+            try:
+                lib = entry["get"]()
+                aliases = lib.aliases() if hasattr(lib, "aliases") else {}
+            except Exception:  # noqa: BLE001 - eine Mediathek ohne Aliasse aendert nichts
+                continue
+            prefix, meta = str(entry.get("prefix") or ""), str(entry.get("meta_prefix") or "")
+            for old_tid, new_tid in (aliases or {}).items():
+                n += self._rename_library_button(prefix, meta, str(old_tid), str(new_tid))
+        return n
 
     def _library_meta(self, key: str) -> dict:
         """Label/Emoji/Kategorie einer Mediathek — live aus ihrer config.json (label/icon), sonst
