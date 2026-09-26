@@ -674,6 +674,15 @@ function GlobalLookEditor({ look, onReload }) {
             <span class="muted" style="font-weight:400">Sek.</span>
           </span>
         </label>
+        <label style={fld}>Langer Druck ab
+          <span style="display:flex;gap:5px;align-items:center;color:var(--fg);font-weight:500">
+            <input class="so-delay" style="width:74px" type="number" min="250" max="3000" step="50"
+                   title="Wie lange eine Taste mit „Aktion für langen Druck“ gehalten werden muss (gilt für alle Decks und das Elgato-Plugin). Einzelne Tasten können eine eigene Schwelle tragen."
+                   value={lk.longPressMs ?? 600}
+                   onChange={(e) => save({ longPressMs: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted" style="font-weight:400">ms</span>
+          </span>
+        </label>
       </div>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
         können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
@@ -1522,10 +1531,10 @@ function PoolList({ buttons, resolved, options, onReload, title, hint, seedActio
 function PoolCard({ b, vis, options, allIds, onChanged }) {
   const [open, setOpen] = useState(false)
   const [msg, setMsg] = useState(null)
-  const press = async () => {
+  const press = async (variant) => {
     setMsg(null)
     try {
-      const r = await postJSON(`/api/streamdeck/press/${b.id}`, {})
+      const r = await postJSON(`/api/streamdeck/press/${b.id}` + (variant === 'long' ? '?variant=long' : ''), {})
       setMsg({ ok: r.success, t: r.message || (r.success ? 'gefeuert' : 'fehlgeschlagen') })
     } catch (e) { setMsg({ ok: false, t: String(e) }) }
   }
@@ -1558,7 +1567,8 @@ function PoolCard({ b, vis, options, allIds, onChanged }) {
       {open && (
         <div class="card-body">
           <div class="card-foot row" style="margin-bottom:6px">
-            <button class="btn ghost small" onClick={press}>▶ Test-Druck</button>
+            <button class="btn ghost small" onClick={() => press()}>▶ Test-Druck</button>
+            {b.long_action && <button class="btn ghost small" onClick={() => press('long')}>⏱ Test lang</button>}
             <button class="btn ghost small" onClick={clone} title="1:1-Kopie dieser Funktion">⎘ Klonen</button>
             {msg && <span class={'msg ' + (msg.ok ? 'ok' : 'err')}>{msg.t}</span>}
           </div>
@@ -1740,6 +1750,10 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
   const stopPreset = () => setPresetOn(false)
   const set = (patch) => setB({ ...b, ...patch })
   const setAction = (patch) => setB({ ...b, action: { ...b.action, ...patch } })
+  // Langer Druck (optional): eigene Aktion + optionale eigene Schwelle. Ohne long_action verhält sich die
+  // Taste exakt wie bisher (kein Timer). Schwelle leer = globaler Wert aus dem Deck-Look.
+  const setLongAction = (patch) => setB({ ...b, long_action: { ...(b.long_action || {}), ...patch } })
+  const removeLong = () => { const n = { ...b }; delete n.long_action; delete n.long_press_ms; setB(n) }
   const setMonitor = (patch) => { stopPreset(); setB({ ...b, monitor: { ...b.monitor, ...patch } }) }
   const setDefault = (patch) => { stopPreset(); setB({ ...b, default: { ...b.default, ...patch } }) }
   const applyPresetData = (p) => {
@@ -1814,6 +1828,29 @@ function FunctionEditor({ button, options, isNew, onSaved, onCancel }) {
             label: b.label || info.name,
             default: { ...b.default, image: info.icon_url || (b.default || {}).image, title: (b.default || {}).title || info.name },
           })} />
+        {b.long_action ? (
+          <>
+            <ActionEditor action={b.long_action} options={options} onChange={setLongAction}
+              replace={(a) => set({ long_action: a })} onPicked={() => {}}
+              title="⏱ Langer Druck" hint="— was beim Halten passiert (kurzes Tippen = Aktion oben)" />
+            <div class="reward-row" style="margin:4px 0 2px;align-items:center">
+              <span class="muted conn-label">Halten ab</span>
+              <input class="so-delay" style="width:84px" type="number" min="250" max="3000" step="50"
+                     placeholder="global"
+                     title="Eigene Halteschwelle in Millisekunden. Leer = globaler Wert (Deck-Look → Langer Druck)."
+                     value={b.long_press_ms ?? ''}
+                     onInput={(e) => { const v = e.currentTarget.value; const n = { ...b }; if (v === '') delete n.long_press_ms; else n.long_press_ms = Number(v); setB(n) }} />
+              <span class="muted" style="font-size:12px">ms</span>
+              <button class="btn ghost small" type="button" onClick={removeLong}
+                      title="Aktion für langen Druck entfernen — die Taste reagiert dann wieder nur aufs Tippen.">✕ langen Druck entfernen</button>
+            </div>
+          </>
+        ) : (
+          <div class="reward-row" style="margin:6px 0 2px">
+            <button class="btn ghost small" type="button" onClick={() => set({ long_action: { type: 'none' } })}
+                    title="Zweite Aktion für langes Halten der Taste. Kurzes Tippen bleibt die Aktion oben.">⏱ Aktion für langen Druck hinzufügen</button>
+          </div>
+        )}
         <div class="reward-row" style="margin:6px 0 2px">
           <button class="btn ghost small" type="button" onClick={applyPresetNow}
                   title="Füllt Überwachung, Zustands-Logik und ein passendes Symbol zur gewählten Aktion vor — danach kannst du alles anpassen.">✨ Vorlage anwenden</button>
@@ -2189,7 +2226,8 @@ function IntegrationPanel({ it, status, busy, onToggle, onReload, ownedTypes, bu
   const [msg, setMsg] = useState(null)
   // Hand-gemachte (owner-lose) Buttons, deren Aktionstyp DIESE Integration besitzt → ihre eigene Liste.
   const ownActs = it.actions || []
-  const ownButtons = (buttons || []).filter((b) => !b.owner && ownActs.includes(((b.action || {}).type)))
+  const ownButtons = (buttons || []).filter((b) => !b.owner && (ownActs.includes(((b.action || {}).type))
+    || ownActs.includes(((b.long_action || {}).type))))
   const ownsButtons = !it.base && ownActs.length > 0
   useEffect(() => {
     setEl(null); setMsg(null); setObsOpen(false)
@@ -2919,7 +2957,7 @@ function StateMapEditor({ map, eaActions, onChange }) {
   )
 }
 
-function ActionEditor({ action, options, onChange, replace, onPicked }) {
+function ActionEditor({ action, options, onChange, replace, onPicked, title = '⚡ Aktion', hint = '— was beim Tastendruck passiert' }) {
   const t = action.type || 'none'
   const proc = (options.processes || []).find((p) => p.key === action.process)
   const [obsScenes, setObsScenes] = useState([])
@@ -2989,7 +3027,7 @@ function ActionEditor({ action, options, onChange, replace, onPicked }) {
   }
   return (
     <div class="sd-block">
-      <p class="sd-block-h">⚡ Aktion <span class="muted">— was beim Tastendruck passiert</span></p>
+      <p class="sd-block-h">{title} <span class="muted">{hint}</span></p>
       <div class="reward-row">
         <span class="muted conn-label">Typ</span>
         <select class="reward-input" value={t} onChange={(e) => replace({ type: e.currentTarget.value })}>

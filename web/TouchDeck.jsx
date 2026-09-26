@@ -426,7 +426,59 @@ function KeyImg({ image, icon }) {
   return <span class="t-key-icon">{(isGlyph(icon) ? glyphName(icon) : icon) || '•'}</span>
 }
 
-function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly, skin, opts }) {
+// ── Langer Druck (generisch, docs/deck_long_press/DESIGN.md im Haupt-Repo) ──────────────
+// Nur Tasten, deren resolved-Eintrag ``has_long`` meldet, bekommen Halte-Handler — alle anderen
+// behalten exakt den bisherigen Klickpfad (kein Timer, keine Verzögerung). Halten ≥ Schwelle löst
+// GENAU den langen Druck aus; der danach folgende Klick wird verworfen. Bewegung > 8 px, Verlassen,
+// Abbruch oder ein Deck-Wisch brechen ab, ohne etwas auszulösen. Tastatur-Klick = kurzer Druck.
+const _hold = { id: '', timer: null, x: 0, y: 0, fired: '', setHolding: null }
+function _holdStop() {
+  if (_hold.timer) { clearTimeout(_hold.timer); _hold.timer = null }
+  if (_hold.id && _hold.setHolding) _hold.setHolding('')
+  _hold.id = ''
+}
+function holdHandlers(id, v, onTap, { stop = false, setHolding = null } = {}) {
+  const click = (e) => {
+    if (stop) e.stopPropagation()
+    if (_hold.fired === id) { _hold.fired = ''; e.preventDefault(); return }   // Klick nach Langdruck verwerfen
+    onTap(id, e)
+  }
+  if (!v || !v.has_long) return { onClick: click }
+  const ms = Math.max(250, Number(v.long_press_ms) || 600)
+  const cancel = () => { if (_hold.id === id) _holdStop() }
+  return {
+    onClick: click,
+    onContextMenu: (e) => e.preventDefault(),          // Android: Langdruck öffnet sonst das Kontextmenü
+    onPointerDown: (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      _holdStop()
+      _hold.fired = ''
+      _hold.id = id; _hold.x = e.clientX; _hold.y = e.clientY
+      const el = e.currentTarget
+      _hold.setHolding = setHolding
+      if (setHolding) setHolding(id)               // Fortschritt als Render-Zustand (überlebt Live-Updates)
+      _hold.timer = setTimeout(() => {
+        _hold.timer = null
+        _holdStop()
+        _hold.fired = id
+        setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)   // kein Klick kam (außerhalb losgelassen)
+        onTap(id, { currentTarget: el }, 'long')
+      }, ms)
+    },
+    onPointerMove: (e) => {
+      if (_hold.id === id && (Math.abs(e.clientX - _hold.x) > 8 || Math.abs(e.clientY - _hold.y) > 8)) {
+        _holdStop()
+        _hold.fired = id                                 // abgebrochene Geste: auch der folgende Klick löst nichts aus
+        setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)
+      }
+    },
+    onPointerUp: cancel, onPointerCancel: cancel, onPointerLeave: cancel,
+  }
+}
+const holdStyle = (v) => (v && v.has_long) ? `--hold-ms:${Math.max(250, Number(v.long_press_ms) || 600)}ms;` : ''
+const LongBadge = () => <><span class="t-long-badge" aria-hidden="true">⏱</span><span class="t-long-bar" aria-hidden="true" /></>
+
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onLong, iconOnly, skin, opts }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
   const ttype = mon.target_type || 'mix'
@@ -444,6 +496,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
   const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
+  const downAtRef = useRef(0)                   // Zeitpunkt des Griffs — Halten ohne Bewegung = langer Druck
 
   const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
@@ -534,6 +587,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const onDown = (e) => {
     e.stopPropagation()
     movedRef.current = false
+    downAtRef.current = Date.now()
     downYRef.current = e.clientY
     downXRef.current = e.clientX
     lockRef.current = null
@@ -567,6 +621,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       setOptLevel(fin)                                // Position halten, bis der Live-Wert nachgezogen ist
       if (holdT.current) clearTimeout(holdT.current)
       holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
+    } else if (v && v.has_long && onLong
+               && Date.now() - downAtRef.current >= Math.max(250, Number(v.long_press_ms) || 600)) {
+      onLong()                                        // gehalten ohne Bewegung ≥ Schwelle = langer Druck (kein Mute)
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
       setOptMute(!muted)
       if (isApp) postJSON('/api/winaudio/app_mute', { proc: proc || '' }).catch(() => {})
@@ -645,7 +702,7 @@ function AudioMixer({ hidden, sessions, waSnap, appSnap, gridStyle, w, h, iconOn
 // Radial-Menü: fächert die (sichtbaren) Buttons eines Ziel-Decks im Kreis um den Anker (den
 // getippten Ordner-Button) auf. Reines Overlay — schließt bei Tap auf den Hintergrund oder nach
 // einer ausgeführten Aktion. Ein Ordner-Button IM Radial öffnet wieder ein Radial (eine Ebene).
-function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, onClose, scale = 1 }) {
+function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, onClose, scale = 1, holding = '', setHolding = null }) {
   const [shown, setShown] = useState(false)
   useEffect(() => { const t = setTimeout(() => setShown(true), 10); return () => clearTimeout(t) }, [])
   const items = (deck && deck.items || []).filter((it) => !it.hidden)
@@ -686,14 +743,15 @@ function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, o
           return (
             <button key={id}
                     class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')
-                           + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '')}
-                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};`
+                           + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '') + (holding === id ? ' holding' : '')}
+                    style={`--rx:${rx}px;--ry:${ry}px;--i:${i};` + holdStyle(v)
                            + (isFlat ? `--acc:${accentVar(v.color)}` : `background:${resolveColor(v.color) || '#222'}`)}
-                    onClick={(e) => { e.stopPropagation(); onTap(id, e) }}>
+                    {...holdHandlers(id, v, onTap, { stop: true, setHolding })}>
               <KeyImg image={v.image} icon={v.icon} />
               {v.title ? <span class="t-key-title">{v.title}</span> : null}
               <span class="t-key-label">{v.label || id}</span>
               {folder && <span class="t-folder-badge">⋯</span>}
+              {v.has_long && <LongBadge />}
             </button>
           )
         })}
@@ -750,9 +808,11 @@ export function TouchDeck() {
   const [deck, setDeck] = useState('')          // Tab-gewähltes Deck (Top-Level)
   const [vis, setVis] = useState({})            // button-id → {label,title,icon,image,color} (live)
   const [pressed, setPressed] = useState('')
+  const [holding, setHolding] = useState('')          // Taste, die gerade für einen langen Druck gehalten wird
   const [pressError, setPressError] = useState('')
   const navigationRef = useRef(0)
   const pendingRef = useRef(new Set())
+  const [longById, setLongById] = useState({})       // button-id → long_action (langer Druck; Ordner navigiert im Client)
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
@@ -798,9 +858,9 @@ export function TouchDeck() {
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    const am = {}, rm = {}, mm = {}, om = {}
-    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {} }
-    setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om)
+    const am = {}, rm = {}, mm = {}, om = {}, lm = {}
+    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {}; if (b.long_action) lm[b.id] = b.long_action }
+    setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om); setLongById(lm)
     setNavStack((s) => s.filter((entry) => dks.some((x) => x.id === entry.deck)))
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
@@ -974,16 +1034,18 @@ export function TouchDeck() {
   // Ref-stabil (useCallback []): liest den aktuellen State über _liveRef → eine memoizte (übersprungene)
   // Kachel tappt NIE mit veralteter Closure (sonst falsches actionById/overlay/navStack nach einem Push).
   const _liveRef = useRef({})
-  _liveRef.current = { actionById, overlay, navStack }
-  const onTap = useCallback(async (id, evt) => {
-    const { actionById, overlay, navStack } = _liveRef.current
+  _liveRef.current = { actionById, longById, overlay, navStack }
+  const onTap = useCallback(async (id, evt, variant = 'short') => {
+    const { actionById, longById, overlay, navStack } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
     buzz()                                               // bestätigter Tap → kurzer Haptik-Puls (falls aktiviert)
-    const a = actionById[id] || {}
+    const isLong = variant === 'long'
+    const a = (isLong ? longById[id] : actionById[id]) || {}
     if (a.type === 'open_deck' && a.deck) {
       navigationRef.current++; setPressError('')
       if ((a.mode || 'replace') === 'radial') {
-        const r = evt.currentTarget.getBoundingClientRect()
+        const el = evt && evt.currentTarget
+        const r = el ? el.getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight / 2, width: 0, height: 0 }
         setOverlay({ deck: a.deck, opener: { ...a }, anchor: { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
       } else {
         setSlideDir(0); setOverlay(null); setNavStack((s) => [...s, { ...a }])
@@ -996,7 +1058,7 @@ export function TouchDeck() {
     setPressed(id); setPressError('')
     let accepted = false
     try {
-      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id))
+      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''))
       accepted = result?.success === true
       if (!accepted && navigation === navigationRef.current) setPressError(result?.message || 'Auftrag nicht angenommen. Bitte erneut versuchen.')
     } catch {
@@ -1099,7 +1161,8 @@ export function TouchDeck() {
           <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} skin={skin} opts={o}
                  dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
                  proc={(actionById[id] || {}).app_proc || ''} app={appSnap[(actionById[id] || {}).app_proc || ''] || {}}
-                 onMute={() => onTap(id)} />
+                 onMute={() => onTap(id)} onLong={() => onTap(id, null, 'long')} />
+          {v.has_long && <LongBadge />}
         </div>
       )
     }
@@ -1107,9 +1170,9 @@ export function TouchDeck() {
       <button key={id}
               data-button-id={id} aria-label={v.label || id} title={v.label || id}
               disabled={pendingRef.current.has(id)}
-              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '')}
-              style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place}
-              onClick={(e) => onTap(id, e)}>
+              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '') + (holding === id ? ' holding' : '')}
+              style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place + holdStyle(v)}
+              {...holdHandlers(id, v, onTap, { setHolding })}>
         {isClock ? <Clock opts={o} skin={skin} />
           : isText ? <span class="t-label-text" style={`font-size:${widgetFontSize(o, 'text')};font-family:${fontStack(o.font)};color:${o.color || 'var(--fg)'}`}>{v.title || v.label || ''}</span>
           : isReadout ? <Readout v={v} opts={o} skin={skin} />
@@ -1138,6 +1201,7 @@ export function TouchDeck() {
           )}
         {!isWidget && (card ? eff.label && <span class="catalog-caption t-key-label"><strong>{caption.title}</strong>{caption.date && <span>{caption.date}</span>}</span> : <span class="t-key-label">{v.label || id}</span>)}
         {folder && <span class="t-folder-badge">⋯</span>}
+        {v.has_long && <LongBadge />}
       </button>
     )
   }
@@ -1152,7 +1216,7 @@ export function TouchDeck() {
     const sig = JSON.stringify([
       id, it.w || 0, it.h || 0, it.x, it.y, it.style || 0, freeMode,
       vis[id] || 0, optsById[id] || 0, (actionById[id] || {}).type || 0,
-      rnd || 0, (monById[id] || {}).type || 0, defSkin, pressed === id, layoutKey,
+      rnd || 0, (monById[id] || {}).type || 0, defSkin, pressed === id, holding === id, layoutKey,
     ])
     return <DeckTile key={id} sig={sig} render={() => tile(it)} />
   }
@@ -1265,7 +1329,8 @@ export function TouchDeck() {
               onClick={(e) => { e.stopPropagation(); setSysMenu((v) => !v) }}>☰</button>
       {overlay && overlayDeck && (
         <RadialMenu deck={overlayDeck} vis={vis} actionById={actionById} optsById={optsById} defSkin={defSkin}
-                    anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} scale={scale} />
+                    anchor={overlay.anchor} onTap={onTap} onClose={closeOverlay} scale={scale}
+                    holding={holding} setHolding={setHolding} />
       )}
     </div>
   )

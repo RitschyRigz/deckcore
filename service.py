@@ -201,7 +201,7 @@ _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
 _LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live", "off")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
                  "folder": True, "folderColor": "#c8a44e", "frame": True, "colorMode": "source",
-                 "graphWindow": 135}
+                 "graphWindow": 135, "longPressMs": 600}
 
 
 def _look_overrides(o) -> dict:
@@ -240,9 +240,26 @@ def _look_overrides(o) -> dict:
     return out
 
 
+def _clamp_long_press_ms(v) -> Optional[int]:
+    """Halteschwelle fuer den langen Druck in ms (250..3000); ungueltig/leer -> None."""
+    try:
+        if v in (None, ""):
+            return None
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return 250 if n < 250 else (3000 if n > 3000 else n)
+
+
 def _sanitize_look(o) -> dict:
-    """Globaler Look = Default + gueltige Overrides (immer alle Felder gefuellt)."""
-    return {**_LOOK_DEFAULT, **_look_overrides(o)}
+    """Globaler Look = Default + gueltige Overrides (immer alle Felder gefuellt).
+    ``longPressMs`` gilt NUR global (plus Override je Taste) — keine Schwelle je Deck, weil das
+    Elgato-Plugin keinen Deck-Kontext hat und ``resolved`` einen Eintrag je Taste liefert."""
+    out = {**_LOOK_DEFAULT, **_look_overrides(o)}
+    lp = _clamp_long_press_ms(o.get("longPressMs") if isinstance(o, dict) else None)
+    if lp is not None:
+        out["longPressMs"] = lp
+    return out
 
 
 def _is_hex_color(c) -> bool:
@@ -429,9 +446,32 @@ def _regen_preserve(existing: dict, fresh: dict) -> dict:
 _EXEC_ACTIONS = {"launch", "open_folder", "http", "hotkey", "process_action", "run_script", "events_action"}
 
 
+def _action_types(action, _depth: int = 0):
+    """Alle Aktionstypen eines Aktionsbaums (inkl. verschachtelter ``multi``-Schritte)."""
+    if not isinstance(action, dict) or _depth > 6:
+        return
+    t = str(action.get("type") or "")
+    if t:
+        yield t
+    if t == "multi":
+        for step in action.get("steps") or []:
+            yield from _action_types(step, _depth + 1)
+
+
+def _button_action_types(btn) -> set:
+    """Aktionstypen von kurzem UND langem Druck einer Taste."""
+    if not isinstance(btn, dict):
+        return set()
+    return set(_action_types(btn.get("action"))) | set(_action_types(btn.get("long_action")))
+
+
+def _has_long_action(btn) -> bool:
+    la = btn.get("long_action") if isinstance(btn, dict) else None
+    return isinstance(la, dict) and bool(str(la.get("type") or "").strip()) and la.get("type") != "none"
+
+
 def _count_executable(buttons) -> int:
-    return sum(1 for b in (buttons or [])
-               if isinstance(b, dict) and str((b.get("action") or {}).get("type") or "") in _EXEC_ACTIONS)
+    return sum(1 for b in (buttons or []) if _button_action_types(b) & _EXEC_ACTIONS)
 
 
 # ── Wave-Link-Button-Factory: EINE Wahrheit fürs Aussehen generierter WL-Buttons ──────
@@ -1634,7 +1674,7 @@ class DeckCoreService:
         owners = _integrations.cap_owners(self.integrations())
         used: set[str] = set()
         for b in self._buttons:
-            for cap in ((b.get("action") or {}).get("type"), (b.get("monitor") or {}).get("type")):
+            for cap in _button_action_types(b) | {(b.get("monitor") or {}).get("type")}:
                 if owners.get(cap) in ids:
                     used.add(owners[cap])
         return used
@@ -3042,6 +3082,13 @@ class DeckCoreService:
                 and str(b["action"].get("deck") or "") not in ids]
         for bid in dead:
             self._pool_remove(bid)
+        # Langer Druck mit totem Ordner-Ziel: NUR den langen Zweig entfernen — die kurze
+        # Aktion der Taste bleibt gueltig und die Taste bleibt erhalten.
+        for b in self._buttons:
+            la = b.get("long_action")
+            if isinstance(la, dict) and la.get("type") == "open_deck" and str(la.get("deck") or "") not in ids:
+                b.pop("long_action", None)
+                self._last_eval.pop(b.get("id"), None)
         return len(dead)
 
     def delete_deck(self, deck_id: str) -> dict:
@@ -4630,25 +4677,46 @@ class DeckCoreService:
         self._publish_cfg()
         return {"deleted": before - len(self._buttons), "items_removed": removed_items}
 
-    def press(self, bid: str) -> dict:
+    PRESS_VARIANTS = ("short", "long")
+
+    def press(self, bid: str, variant: str = "short") -> dict:
         """Aktion eines Buttons ausführen (SYNC — Endpoint wrappt in to_thread).
-        Dispatch über die Capability-Registry: ``action.type`` → registrierter Handler."""
+        Dispatch über die Capability-Registry: ``action.type`` → registrierter Handler.
+        ``variant``: ``short`` (Default) = ``action``; ``long`` = ``long_action`` (langer Druck).
+        Ein ``long`` ohne gültige ``long_action`` wird ABGELEHNT und fällt nie auf die kurze
+        Aktion zurück (veralteter Client oder während des Haltens geänderte Taste)."""
         btn = next((b for b in self._buttons if b.get("id") == bid), None)
         if btn is None:
             raise KeyError(f"Unbekannter Button: {bid}")
-        action = btn.get("action") or {}
+        variant = str(variant or "short").strip().lower()
+        if variant not in self.PRESS_VARIANTS:
+            return {"id": bid, "variant": variant, "success": False,
+                    "message": f"Unbekannte Druck-Variante: {variant}"}
+        if variant == "long":
+            if not _has_long_action(btn):
+                return {"id": bid, "variant": variant, "success": False,
+                        "message": "Keine Aktion für langen Druck belegt"}
+            action = btn["long_action"]
+        else:
+            action = btn.get("action") or {}
+        res = self._run_action(action, btn, bid)
+        res["variant"] = variant
+        return res
+
+    def _run_action(self, action: dict, btn: dict, bid: str) -> dict:
+        """Gemeinsamer Dispatch für kurzen und langen Druck."""
         atype = action.get("type", "none")
         handler = self._action_handlers.get(atype)
         if handler is None:
-            return {"success": False, "message": f"Unbekannter/nicht verfügbarer action.type: {atype}"}
+            return {"id": bid, "success": False, "message": f"Unbekannter/nicht verfügbarer action.type: {atype}"}
         try:
             res = handler(action, btn) or {}
             ok, msg = bool(res.get("success")), res.get("message", "")
         except KeyError as e:
-            return {"success": False, "message": f"Aktion unvollständig konfiguriert: {e}"}
+            return {"id": bid, "success": False, "message": f"Aktion unvollständig konfiguriert: {e}"}
         except Exception as e:  # noqa: BLE001
             log.exception("press(%s) Fehler", bid)
-            return {"success": False, "message": str(e)}
+            return {"id": bid, "success": False, "message": str(e)}
         # Nach jeder Aktion zeitnah neu auswerten (State ändert sich meist).
         self._schedule_recompute()
         return {"id": bid, "success": ok, "message": msg}
@@ -6303,9 +6371,16 @@ class DeckCoreService:
             return c if (c and c != "#222") else fb
         default = btn.get("default") or {}
         has_states = bool(btn.get("states"))
+        # Langer Druck: Clients (Panel, Elgato) brauchen je Taste, OB und AB WANN gehalten wird.
+        lp = {}
+        if _has_long_action(btn):
+            own = _clamp_long_press_ms(btn.get("long_press_ms"))
+            lp = {"has_long": True, "long_press_ms": own if own is not None
+                  else int(self._look.get("longPressMs") or _LOOK_DEFAULT["longPressMs"])}
         for st in btn.get("states") or []:
             if _match(value, st.get("when") or {}):
                 return {
+                    **lp,
                     "label": btn.get("label", btn.get("id")),
                     "title": tpl(st.get("title", "")),
                     "icon": st.get("icon", ""),
@@ -6317,6 +6392,7 @@ class DeckCoreService:
                     **({"blink": True} if st.get("blink") else {}),   # Zustand pulsieren lassen (z.B. scene_suggest)
                 }
         return {
+            **lp,
             "label": btn.get("label", btn.get("id")),
             "title": tpl(default.get("title", "")),
             "icon": default.get("icon", ""),

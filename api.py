@@ -124,11 +124,12 @@ def build_streamdeck_router(
         return JSONResponse(get_service(request).set_tick(body["tick_seconds"]))
 
     @r.post("/api/streamdeck/press/{bid}")
-    async def streamdeck_press(bid: str, request: Request) -> JSONResponse:
-        """Aktion eines Buttons ausführen (Tastendruck)."""
+    async def streamdeck_press(bid: str, request: Request, variant: str = "short") -> JSONResponse:
+        """Aktion eines Buttons ausführen (Tastendruck). ``?variant=long`` = langer Druck
+        (``long_action``); nur ``short``/``long`` sind gültig."""
         svc = get_service(request)
         try:
-            res = await asyncio.to_thread(svc.press, bid)
+            res = await asyncio.to_thread(svc.press, bid, variant)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return JSONResponse(res)
