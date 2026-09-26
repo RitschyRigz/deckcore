@@ -168,3 +168,20 @@ def test_plan_und_fortsetzung_nach_abbruch(tmp_path):
     assert lib.complete_move(OLD, NEW, plan["pairs"])["moved"] == 0
     Path(plan["pairs"][1][0]).write_text("x", encoding="utf-8")   # Datei an beiden Orten
     assert not lib.complete_move(OLD, NEW, plan["pairs"])["ok"]
+
+
+def test_doppelter_dateifehler_meldet_rollback_failed(tmp_path, monkeypatch):
+    """Codex R11 F19: Begleitdatei scheitert UND Zuruecklegen scheitert -> rollback_failed."""
+    lib = _lib(tmp_path)
+    real = jb.os.replace
+
+    def flaky(src, dst):
+        s, d = str(src), str(dst)
+        if s.endswith(".srt") and "metal" in d:
+            raise PermissionError("srt belegt")
+        if s.endswith(".wav") and "metal" in s:
+            raise PermissionError("wav belegt")
+        return real(src, dst)
+    monkeypatch.setattr(jb.os, "replace", flaky)
+    res = lib.move_track(OLD, "metal")
+    assert res["ok"] is False and res["rollback_failed"] is True and "wav" in res["reason"]

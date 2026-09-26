@@ -74,6 +74,11 @@ DUCK_LEVEL_DEFAULT = 0.25   # Anteil der konfigurierten Lautstaerke waehrend des
 DUCK_FADE_MS = 250          # weiche Rampe (linear, in Schritten ueber mpv-IPC)
 DUCK_FADE_STEPS = 6
 _UNPUBLISHED_PREFIX = "_"
+
+
+class RollbackFailed(RuntimeError):
+    """Ein Dateischritt scheiterte UND das Zuruecklegen der schon bewegten Dateien auch —
+    der Stand ist halb; Hosts muessen ihn als offen fuehren (Codex R11 F19)."""
 # library.json-Felder, die die Jukebox selbst auswertet; alles andere reicht library() als ``meta`` durch.
 _CORE_META = frozenset({"style", "title", "max_seconds", "source_date", "source_session",
                         "lyrics", "lyrics_offset"})
@@ -774,12 +779,16 @@ class Jukebox:
                     raise FileExistsError(str(dst))
                 os.replace(src, dst)
                 done.append((src, dst))
-        except Exception:
+        except Exception as first:
+            failed = []
             for src, dst in reversed(done):
                 try:
                     os.replace(dst, src)
                 except OSError as e:
                     log.error("Rueckstellung %s -> %s gescheitert: %s", dst, src, e)
+                    failed.append(Path(dst).name)
+            if failed:
+                raise RollbackFailed(f"{first}; Rueckstellung gescheitert fuer: {', '.join(failed)}") from first
             raise
 
     def _rollback(self, pairs: list, meta_before: dict) -> bool:
@@ -859,6 +868,8 @@ class Jukebox:
             lib_before, aliases_before = json.loads(json.dumps(lib)), json.loads(json.dumps(aliases))
             try:
                 self._move_files(pairs)
+            except RollbackFailed as e:
+                return {"ok": False, "rollback_failed": True, "reason": f"Verschieben gescheitert: {e}"[:200]}
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "reason": f"Verschieben gescheitert: {e}"[:200]}
             lib, aliases = self._record_move_locked(lib, aliases, track_id, new_id)
@@ -890,6 +901,8 @@ class Jukebox:
                 return {"ok": False, "reason": "library.json/aliases.json unlesbar"}
             try:
                 self._move_files(todo)
+            except RollbackFailed as e:
+                return {"ok": False, "rollback_failed": True, "reason": f"Verschieben gescheitert: {e}"[:200]}
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "reason": f"Verschieben gescheitert: {e}"[:200]}
             lib, aliases = self._record_move_locked(lib, aliases, old_id, new_id)
@@ -919,6 +932,8 @@ class Jukebox:
             lib_before = json.loads(json.dumps(lib))
             try:
                 self._move_files(pairs)
+            except RollbackFailed as e:
+                return {"ok": False, "rollback_failed": True, "reason": f"Papierkorb gescheitert: {e}"[:200]}
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "reason": f"Papierkorb gescheitert: {e}"[:200]}
             tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
@@ -985,6 +1000,8 @@ class Jukebox:
                 return {"ok": False, "reason": "library.json unlesbar - nichts zurueckgestellt"}
             try:
                 self._move_files(pairs)
+            except RollbackFailed as e:
+                return {"ok": False, "rollback_failed": True, "reason": f"Zurueckstellen gescheitert: {e}"[:200]}
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "reason": f"Zurueckstellen gescheitert: {e}"[:200]}
             tracks = lib.get("tracks") if isinstance(lib.get("tracks"), dict) else {}
