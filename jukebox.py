@@ -612,6 +612,9 @@ class Jukebox:
             out.append({
                 "id": tid, "file": str(p), "rel": str(rel).replace("\\", "/"),
                 "title": title,
+                # Titel steht ausdruecklich in library.json (auch wenn er dem Dateinamen gleicht) —
+                # Hosts unterscheiden so „kein Titel" von „bewusst so benannt" (Codex R14 F24).
+                "title_set": bool(str(m.get("title") or "").strip()),
                 "style": str(m.get("style") or folder_style or ""),
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
                 "mtime": mtime,

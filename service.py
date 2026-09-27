@@ -5461,14 +5461,18 @@ class DeckCoreService:
                 if hook is not None and entry.get("hook_writes", 0) < _LIBRARY_HOOK_MAX_WRITES:
                     # Host-Haken VOR dem Abgleich (z. B. Titel fuer Neuzugaenge setzen). Aendert er
                     # Metadaten, aendert sich die Signatur — der naechste Takt gleicht dann ab.
-                    # Ein Haken, der nie „fertig" meldet, haelt den Abgleich hoechstens ein paar
+                    # Scheitert er (z. B. library.json kurz gesperrt), bleibt die Signatur offen und
+                    # der naechste Takt versucht es erneut (Codex R14 F23). Ein Haken, der nie
+                    # „fertig" meldet oder immer scheitert, haelt den Abgleich hoechstens ein paar
                     # Takte auf.
                     try:
-                        if await asyncio.to_thread(hook, lib):
-                            entry["hook_writes"] = entry.get("hook_writes", 0) + 1
-                            continue
+                        wrote = await asyncio.to_thread(hook, lib)
                     except Exception as e:  # noqa: BLE001 - ein Haken haelt den Waechter nie an
                         log.warning("library hook %s: %s", key, e)
+                        wrote = True
+                    if wrote:
+                        entry["hook_writes"] = entry.get("hook_writes", 0) + 1
+                        continue
                 entry["hook_writes"] = 0
                 first = entry.get("sig") is None
                 entry["sig"] = sig
