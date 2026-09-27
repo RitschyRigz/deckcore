@@ -683,6 +683,15 @@ function GlobalLookEditor({ look, onReload }) {
             <span class="muted" style="font-weight:400">ms</span>
           </span>
         </label>
+        <label style={fld}>Langer Druck: Wackeln bis
+          <span style="display:flex;gap:5px;align-items:center;color:var(--fg);font-weight:500">
+            <input class="so-delay" style="width:74px" type="number" min="4" max="64" step="1"
+                   title="Wie weit der Finger beim Halten wandern darf, bevor der lange Druck abbricht (Touch-Panel, alle Decks). Mehr Bewegung = Abbruch ohne kurzen Druck."
+                   value={lk.longPressSlopPx ?? 16}
+                   onChange={(e) => save({ longPressSlopPx: e.currentTarget.value === '' ? undefined : Number(e.currentTarget.value) })} />
+            <span class="muted" style="font-weight:400">px</span>
+          </span>
+        </label>
       </div>
       <p class="muted" style="font-size:12px;margin:6px 0 0">Standard-Verzierung für <b>alle Decks</b>. Einzelne Tasten
         können einen eigenen Stil tragen (Button-Editor → „Stil"), einzelne Decks alles überschreiben (unten am Deck → „🎛 Deck-Look").</p>
