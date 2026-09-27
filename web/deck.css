@@ -505,6 +505,12 @@ body[data-frame="off"] .sd-prev-key.is-stat::before, body[data-frame="off"] .sd-
   color: #fff; opacity: .75; text-shadow: 0 1px 2px rgba(0,0,0,.6); pointer-events: none; }
 .t-long-bar { display: none; }
 .t-key { -webkit-touch-callout: none; }
+/* Tasten MIT langem Druck (Klasse t-hold, Fixrunde 26.09. F01): der Browser darf die Halte-Geste weder
+   als Schwenk (touch-action → pointercancel) noch als Text-Auswahl oder Bild-Ziehen übernehmen. Preis:
+   ein Deck lässt sich nicht scrollen, wenn der Finger auf einer solchen Taste startet (Deck-Wisch per
+   Touch-Events bleibt). Tasten ohne langen Druck bleiben bei touch-action: manipulation. */
+.t-key.t-hold { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.t-key.t-hold img { -webkit-user-drag: none; user-drag: none; pointer-events: none; }
 .t-key.holding .t-long-bar { display: block; position: absolute; left: 0; bottom: 0; z-index: 3; height: 4px;
   width: 100%; background: var(--accent2); transform-origin: left center; transform: scaleX(0);
   pointer-events: none; animation: t-long-fill var(--hold-ms, 600ms) linear forwards; }

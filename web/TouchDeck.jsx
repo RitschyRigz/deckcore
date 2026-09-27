@@ -429,56 +429,87 @@ function KeyImg({ image, icon }) {
 // ── Langer Druck (generisch, docs/deck_long_press/DESIGN.md im Haupt-Repo) ──────────────
 // Nur Tasten, deren resolved-Eintrag ``has_long`` meldet, bekommen Halte-Handler — alle anderen
 // behalten exakt den bisherigen Klickpfad (kein Timer, keine Verzögerung). Halten ≥ Schwelle löst
-// GENAU den langen Druck aus; der danach folgende Klick wird verworfen. Bewegung > 8 px, Verlassen,
-// Abbruch oder ein Deck-Wisch brechen ab, ohne etwas auszulösen. Tastatur-Klick = kurzer Druck.
-const _hold = { id: '', timer: null, x: 0, y: 0, fired: '', setHolding: null }
+// GENAU den langen Druck aus; der danach folgende Klick wird verworfen. Bewegung über die Toleranz
+// (resolved.long_press_slop_px, global im Look), Verlassen, Abbruch oder ein Deck-Wisch brechen ab,
+// ohne etwas auszulösen — auch keinen kurzen Druck. Tastatur-Klick = kurzer Druck.
+// Touch (Fixrunde 26.09. F01): Tasten mit langem Druck tragen `t-hold` (touch-action/user-select/
+// callout aus, Bild nicht ziehbar) und fangen den Zeiger ein — der Browser darf die Geste nicht
+// mehr als Schwenk/Bild-Ziehen übernehmen (pointercancel). Jeder Abbruch wird als client_event gemeldet.
+const _hold = { id: '', timer: null, x: 0, y: 0, t0: 0, ptr: '', fired: '', setHolding: null }
 function _holdStop() {
   if (_hold.timer) { clearTimeout(_hold.timer); _hold.timer = null }
   if (_hold.id && _hold.setHolding) _hold.setHolding('')
   _hold.id = ''
 }
+// Gedrosselte Diagnose an den Host (POST /api/streamdeck/client_event): nur feste Felder, keine
+// Personendaten. Der Server drosselt verbindlich; hier nur ein leichter Schutz gegen Dauerfeuer.
+const _gestureReports = []
+function reportGesture(fields) {
+  const now = Date.now()
+  while (_gestureReports.length && now - _gestureReports[0] > 10000) _gestureReports.shift()
+  if (_gestureReports.length >= 10) return
+  _gestureReports.push(now)
+  postJSON('/api/streamdeck/client_event', fields).catch(() => {})
+}
+const holdMs = (v) => Math.max(250, Number(v && v.long_press_ms) || 600)
+const holdSlop = (v) => Math.max(1, Number(v && v.long_press_slop_px) || 16)
 function holdHandlers(id, v, onTap, { stop = false, setHolding = null } = {}) {
   const click = (e) => {
     if (stop) e.stopPropagation()
-    if (_hold.fired === id) { _hold.fired = ''; e.preventDefault(); return }   // Klick nach Langdruck verwerfen
+    if (_hold.fired === id) {                            // Klick nach Langdruck/Abbruch derselben Geste verwerfen
+      _hold.fired = ''
+      if (e.detail !== 0) { e.preventDefault(); return } // Tastatur-Klick (detail 0) bleibt ein kurzer Druck
+    }
     onTap(id, e)
   }
   if (!v || !v.has_long) return { onClick: click }
-  const ms = Math.max(250, Number(v.long_press_ms) || 600)
-  const cancel = () => { if (_hold.id === id) _holdStop() }
-  const abort = () => {                                  // Bewegung/Verlassen/Abbruch: Geste verworfen, auch kein Klick
+  const ms = holdMs(v), slop = holdSlop(v)
+  const report = (event, reason, extra = {}) => reportGesture({ bid: id, event, reason, variant: 'long',
+    pointer: _hold.ptr, held_ms: Date.now() - _hold.t0, threshold_ms: ms, slop, ...extra })
+  const release = () => { if (_hold.id === id) _holdStop() }   // Loslassen vor der Schwelle → Klick = kurzer Druck
+  const abort = (reason, extra) => {                    // Geste verworfen: weder lang noch kurz
     if (_hold.id !== id) return
+    report('abort', reason, extra)
     _holdStop()
-    _hold.fired = id
-    setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)
+    _hold.fired = id                                     // gilt bis zur nächsten Geste (pointerdown), kein Zeitfenster
   }
   return {
     onClick: click,
-    onContextMenu: (e) => e.preventDefault(),          // Android: Langdruck öffnet sonst das Kontextmenü
+    onContextMenu: (e) => {                              // Android: Langdruck öffnet sonst das Kontextmenü
+      e.preventDefault()
+      if (_hold.id === id) report('info', 'contextmenu')
+    },
+    onDragStart: (e) => { e.preventDefault(); if (_hold.id === id) report('info', 'dragstart') },
     onPointerDown: (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return
       _holdStop()
       _hold.fired = ''
-      _hold.id = id; _hold.x = e.clientX; _hold.y = e.clientY
+      _hold.id = id; _hold.x = e.clientX; _hold.y = e.clientY; _hold.t0 = Date.now(); _hold.ptr = e.pointerType || ''
       const el = e.currentTarget
+      try { el.setPointerCapture(e.pointerId) } catch (_) {}   // Zeiger bleibt bei dieser Taste
       _hold.setHolding = setHolding
       if (setHolding) setHolding(id)               // Fortschritt als Render-Zustand (überlebt Live-Updates)
       _hold.timer = setTimeout(() => {
         _hold.timer = null
+        report('fire', 'threshold')
         _holdStop()
-        _hold.fired = id
-        setTimeout(() => { if (_hold.fired === id) _hold.fired = '' }, 1500)   // kein Klick kam (außerhalb losgelassen)
+        _hold.fired = id                           // der folgende Klick dieser Geste löst nichts mehr aus
         onTap(id, { currentTarget: el }, 'long')
       }, ms)
     },
     onPointerMove: (e) => {
-      if (_hold.id === id && (Math.abs(e.clientX - _hold.x) > 8 || Math.abs(e.clientY - _hold.y) > 8)) abort()
+      if (_hold.id !== id) return
+      const dx = Math.round(e.clientX - _hold.x), dy = Math.round(e.clientY - _hold.y)
+      if (Math.abs(dx) > slop || Math.abs(dy) > slop) abort('move', { dx, dy })
     },
-    onPointerUp: cancel,                                 // normales Loslassen vor der Schwelle → Klick = kurzer Druck
-    onPointerCancel: abort, onPointerLeave: abort,       // abgebrochene Geste: auch der Klick löst nichts aus
+    onPointerUp: release,
+    onPointerCancel: () => abort('cancel'),              // abgebrochene Geste: auch der Klick löst nichts aus
+    onPointerLeave: () => abort('leave'),
+    onLostPointerCapture: () => abort('lostcapture'),    // nach pointerup ist die Geste schon beendet → nichts
   }
 }
-const holdStyle = (v) => (v && v.has_long) ? `;--hold-ms:${Math.max(250, Number(v.long_press_ms) || 600)}ms;` : ''
+const holdStyle = (v) => (v && v.has_long) ? `;--hold-ms:${holdMs(v)}ms;` : ''
+const holdClass = (v) => (v && v.has_long) ? ' t-hold' : ''
 const LongBadge = () => <><span class="t-long-badge" aria-hidden="true">⏱</span><span class="t-long-bar" aria-hidden="true" /></>
 
 function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly, skin, opts }) {
@@ -747,7 +778,7 @@ function RadialMenu({ deck, vis, actionById, optsById, defSkin, anchor, onTap, o
           return (
             <button key={id}
                     class={'t-key t-radial-key' + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '')
-                           + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '') + (holding === id ? ' holding' : '')}
+                           + (isFlat ? ' t-flat s-' + skin : '') + (v.blink ? ' blink' : '') + holdClass(v) + (holding === id ? ' holding' : '')}
                     style={`--rx:${rx}px;--ry:${ry}px;--i:${i};` + holdStyle(v)
                            + (isFlat ? `--acc:${accentVar(v.color)}` : `background:${resolveColor(v.color) || '#222'}`)}
                     {...holdHandlers(id, v, onTap, { stop: true, setHolding })}>
@@ -1041,7 +1072,10 @@ export function TouchDeck() {
   _liveRef.current = { actionById, longById, overlay, navStack }
   const onTap = useCallback(async (id, evt, variant = 'short') => {
     const { actionById, longById, overlay, navStack } = _liveRef.current
-    if (Date.now() - swipeAtRef.current < 350) return   // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
+    if (Date.now() - swipeAtRef.current < 350) {        // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
+      reportGesture({ bid: id, event: 'ignored', reason: 'swipe', variant })
+      return
+    }
     buzz()                                               // bestätigter Tap → kurzer Haptik-Puls (falls aktiviert)
     const isLong = variant === 'long'
     const a = (isLong ? longById[id] : actionById[id]) || {}
@@ -1056,13 +1090,16 @@ export function TouchDeck() {
       }
       return
     }
-    if (pendingRef.current.has(id)) return
+    if (pendingRef.current.has(id)) {                    // voriger Druck dieser Taste noch unterwegs → verworfen, aber gemeldet
+      reportGesture({ bid: id, event: 'ignored', reason: 'pending', variant })
+      return
+    }
     pendingRef.current.add(id)
     const navigation = navigationRef.current
     setPressed(id); setPressError('')
     let accepted = false
     try {
-      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''))
+      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''), { src: 'panel' })
       accepted = result?.success === true
       if (!accepted && navigation === navigationRef.current) setPressError(result?.message || 'Auftrag nicht angenommen. Bitte erneut versuchen.')
     } catch {
@@ -1173,7 +1210,7 @@ export function TouchDeck() {
       <button key={id}
               data-button-id={id} aria-label={v.label || id} title={v.label || id}
               disabled={pendingRef.current.has(id)}
-              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + (pressed === id ? ' pressed' : '') + (holding === id ? ' holding' : '')}
+              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + holdClass(v) + (pressed === id ? ' pressed' : '') + (holding === id ? ' holding' : '')}
               style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place + holdStyle(v)}
               {...holdHandlers(id, v, onTap, { setHolding })}>
         {isClock ? <Clock opts={o} skin={skin} />

@@ -30,6 +30,42 @@ from typing import Callable, Optional
 from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+from .service import _CLIENT_EVENT_MAX_BYTES
+
+
+async def read_limited_body(request: Request, limit: int) -> bytes:
+    """Körper höchstens ``limit`` Bytes lesen; mehr → ``limit + 1`` Bytes (der Aufrufer lehnt ab).
+    Liest nie einen beliebig großen Körper in den Speicher."""
+    try:
+        if int(request.headers.get("content-length") or 0) > limit:
+            return b"x" * (limit + 1)
+    except ValueError:
+        pass
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > limit:
+            return bytes(buf[: limit + 1])
+    return bytes(buf)
+
+
+async def read_client_event_body(request: Request) -> bytes:
+    """Körper für ``POST /api/streamdeck/client_event`` (gemeinsam für alle Hüllen)."""
+    return await read_limited_body(request, _CLIENT_EVENT_MAX_BYTES)
+
+
+async def press_source_from_request(request: Request) -> str:
+    """Optionale Herkunft eines Drucks aus dem JSON-Körper (``{"src": "panel"}``). Fehlender,
+    leerer oder kaputter Körper (z. B. Elgato-Plugin ohne Körper) → leer. Säubern übernimmt der Dienst."""
+    try:
+        raw = await read_limited_body(request, 256)
+        if not raw or len(raw) > 256:
+            return ""
+        data = json.loads(raw.decode("utf-8"))
+        return str(data.get("src") or "") if isinstance(data, dict) else ""
+    except Exception:  # noqa: BLE001 — Herkunft ist nur Diagnose, nie ein Grund zum Ablehnen
+        return ""
+
 
 def build_streamdeck_router(
     get_service: Callable[[Request], object],
@@ -126,13 +162,21 @@ def build_streamdeck_router(
     @r.post("/api/streamdeck/press/{bid}")
     async def streamdeck_press(bid: str, request: Request, variant: str = "short") -> JSONResponse:
         """Aktion eines Buttons ausführen (Tastendruck). ``?variant=long`` = langer Druck
-        (``long_action``); nur ``short``/``long`` sind gültig."""
+        (``long_action``); nur ``short``/``long`` sind gültig. Optionaler JSON-Körper ``{"src": …}``
+        kennzeichnet die Herkunft in der Log-Zeile (z. B. ``panel``)."""
         svc = get_service(request)
+        source = await press_source_from_request(request)
         try:
-            res = await asyncio.to_thread(svc.press, bid, variant)
+            res = await asyncio.to_thread(svc.press, bid, variant, source)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return JSONResponse(res)
+
+    @r.post("/api/streamdeck/client_event")
+    async def streamdeck_client_event(request: Request) -> JSONResponse:
+        """Gedrosselte Telemetrie des Touch-Panels: warum eine Tasten-Geste nichts ausgelöst hat
+        (Abbruch/Verwerfen). Größenlimit, feste Felder, nur eine Log-Zeile — nichts wird gespeichert."""
+        return JSONResponse(get_service(request).client_event(await read_client_event_body(request)))
 
     # ── Pool: Button anlegen/ändern/löschen ───────────────────────────────
     @r.post("/api/streamdeck/buttons")

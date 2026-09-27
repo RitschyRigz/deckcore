@@ -90,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 import urllib.request
@@ -202,7 +203,7 @@ _PRESS_MODES = ("ring", "innerglow", "backlight", "pop", "lift")
 _LOOK_COLOR_KW = ("accent", "accent2", "ok", "warn", "err", "live", "off")
 _LOOK_DEFAULT = {"tile": "brackets", "press": "ring", "pressColor": "accent2",
                  "folder": True, "folderColor": "#c8a44e", "frame": True, "colorMode": "source",
-                 "graphWindow": 135, "longPressMs": 600}
+                 "graphWindow": 135, "longPressMs": 600, "longPressSlopPx": 16}
 
 
 def _look_overrides(o) -> dict:
@@ -252,15 +253,62 @@ def _clamp_long_press_ms(v) -> Optional[int]:
     return 250 if n < 250 else (3000 if n > 3000 else n)
 
 
+def _clamp_long_press_slop_px(v) -> Optional[int]:
+    """Bewegungstoleranz beim Halten in CSS-px (4..64); ungueltig/leer -> None.
+    Mehr Fingerbewegung als das bricht einen langen Druck im Touch-Panel ab."""
+    try:
+        if v in (None, ""):
+            return None
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return 4 if n < 4 else (64 if n > 64 else n)
+
+
 def _sanitize_look(o) -> dict:
     """Globaler Look = Default + gueltige Overrides (immer alle Felder gefuellt).
-    ``longPressMs`` gilt NUR global (plus Override je Taste) — keine Schwelle je Deck, weil das
-    Elgato-Plugin keinen Deck-Kontext hat und ``resolved`` einen Eintrag je Taste liefert."""
+    ``longPressMs``/``longPressSlopPx`` gelten NUR global (plus Schwelle je Taste) — keine Werte je
+    Deck, weil das Elgato-Plugin keinen Deck-Kontext hat und ``resolved`` einen Eintrag je Taste liefert."""
     out = {**_LOOK_DEFAULT, **_look_overrides(o)}
     lp = _clamp_long_press_ms(o.get("longPressMs") if isinstance(o, dict) else None)
     if lp is not None:
         out["longPressMs"] = lp
+    slop = _clamp_long_press_slop_px(o.get("longPressSlopPx") if isinstance(o, dict) else None)
+    if slop is not None:
+        out["longPressSlopPx"] = slop
     return out
+
+
+# ── Client-Telemetrie der Tasten-Geste (docs/deck_long_press/DESIGN.md im Haupt-Repo) ──────────
+# Das Touch-Panel meldet, WARUM eine Geste nichts ausgeloest hat (Abbruch/Verwerfen). Nur feste
+# Schluessel und Aufzaehlungen, keine freien Texte, keine Geraete-/Personendaten. Technische
+# Schutzgrenzen (keine Produktschwellen): Groesse je Meldung und Meldungen je Zeitfenster.
+_CLIENT_EVENT_MAX_BYTES = 1024
+_CLIENT_EVENT_WINDOW_S = 10.0
+_CLIENT_EVENT_MAX_PER_WINDOW = 20
+_CLIENT_EVENTS = ("abort", "ignored", "fire", "info")
+_CLIENT_REASONS = ("cancel", "leave", "move", "swipe", "pending", "contextmenu", "lostcapture",
+                   "dragstart", "threshold")
+_CLIENT_POINTERS = ("touch", "mouse", "pen")
+_BID_SAFE = re.compile(r"[^A-Za-z0-9_.:\-]")
+_SRC_SAFE = re.compile(r"[^a-z0-9_\-]")
+
+
+def _clean_bid(v) -> str:
+    return _BID_SAFE.sub("", str(v or ""))[:80]
+
+
+def _clean_int(v, lo: int, hi: int) -> Optional[int]:
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return lo if n < lo else (hi if n > hi else n)
+
+
+def _press_source(v) -> str:
+    """Herkunft eines Drucks fuer die Log-Zeile (z. B. ``panel``); nur [a-z0-9_-], max. 16."""
+    return _SRC_SAFE.sub("", str(v or "").strip().lower())[:16]
 
 
 def _is_hex_color(c) -> bool:
@@ -1556,6 +1604,10 @@ class DeckCoreService:
         # _audio_loop pusht deren Snapshot ~15 Hz über SSE `streamdeck:audio` → KEIN 90-ms-HTTP-Poll mehr.
         self._audio_subs: dict[str, tuple] = {}   # client-token -> (targets:dict, expiry:monotonic)
         self._audio_last: Optional[dict] = None   # letzter gepushter Frame (Change-Diff → kein Push bei Stille)
+        # Client-Telemetrie der Tasten-Geste (client_event): Zeitstempel im Fenster + verworfene Meldungen.
+        self._client_ev_lock = threading.Lock()
+        self._client_ev_times: list[float] = []
+        self._client_ev_dropped = 0
         # ── Capability-Registry (Handler-Naht) ───────────────────────────────
         # action.type / monitor.type → Handler. Der Kern registriert die GENERISCHEN Handler;
         # eine Hülle ergänzt über _register_extra_handlers() ihre eigenen (z.B. Prozess-Steuerung).
@@ -4691,12 +4743,85 @@ class DeckCoreService:
 
     PRESS_VARIANTS = ("short", "long")
 
-    def press(self, bid: str, variant: str = "short") -> dict:
+    def press(self, bid: str, variant: str = "short", source: str = "") -> dict:
         """Aktion eines Buttons ausführen (SYNC — Endpoint wrappt in to_thread).
         Dispatch über die Capability-Registry: ``action.type`` → registrierter Handler.
         ``variant``: ``short`` (Default) = ``action``; ``long`` = ``long_action`` (langer Druck).
         Ein ``long`` ohne gültige ``long_action`` wird ABGELEHNT und fällt nie auf die kurze
-        Aktion zurück (veralteter Client oder während des Haltens geänderte Taste)."""
+        Aktion zurück (veralteter Client oder während des Haltens geänderte Taste).
+        Jeder Druck — auch jede Ablehnung — hinterlässt genau eine Log-Zeile (Fixrunde 26.09. F01:
+        ein verlorener Langdruck war vorher weder im Log noch im Journal zu sehen)."""
+        t0 = time.monotonic()
+        try:
+            res = self._press(bid, variant)
+        except KeyError:
+            self._log_press(bid, variant, source, {"success": False, "message": "Unbekannter Button"}, t0)
+            raise
+        self._log_press(bid, res.get("variant", variant), source, res, t0)
+        return res
+
+    def _log_press(self, bid, variant, source, res: dict, t0: float) -> None:
+        try:
+            msg = str(res.get("message") or "").replace("\n", " ")[:160]
+            log.info("deck press bid=%s variant=%s src=%s success=%s ms=%d msg=%s",
+                     _clean_bid(bid) or "-", _SRC_SAFE.sub("", str(variant or "short").lower())[:8] or "-",
+                     _press_source(source) or "-", bool(res.get("success")),
+                     int((time.monotonic() - t0) * 1000), msg or "-")
+        except Exception:  # noqa: BLE001 — eine Log-Zeile darf nie einen Druck kippen
+            pass
+
+    def client_event(self, raw) -> dict:
+        """Meldung des Touch-Panels, warum eine Tasten-Geste nichts (oder etwas Bestimmtes) ausgelöst
+        hat. Rohdaten (bytes/str/dict) → Größenlimit → feste Felder → Drossel → EINE Log-Zeile.
+        Unbekannte Schlüssel und freie Texte werden verworfen; nichts wird gespeichert."""
+        if isinstance(raw, (bytes, bytearray)):
+            if len(raw) > _CLIENT_EVENT_MAX_BYTES:
+                return {"ok": False, "reason": "zu gross"}
+            try:
+                raw = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, ValueError):
+                return {"ok": False, "reason": "kein JSON"}
+        elif isinstance(raw, str):
+            if len(raw.encode("utf-8")) > _CLIENT_EVENT_MAX_BYTES:
+                return {"ok": False, "reason": "zu gross"}
+            try:
+                raw = json.loads(raw or "{}")
+            except ValueError:
+                return {"ok": False, "reason": "kein JSON"}
+        if not isinstance(raw, dict):
+            return {"ok": False, "reason": "kein Objekt"}
+        ev = str(raw.get("event") or "")
+        if ev not in _CLIENT_EVENTS:
+            return {"ok": False, "reason": "unbekanntes Ereignis"}
+        reason = str(raw.get("reason") or "")
+        fields = {"bid": _clean_bid(raw.get("bid")) or "-",
+                  "event": ev,
+                  "reason": reason if reason in _CLIENT_REASONS else ("other" if reason else "-")}
+        variant = str(raw.get("variant") or "")
+        if variant in self.PRESS_VARIANTS:
+            fields["variant"] = variant
+        ptr = str(raw.get("pointer") or "")
+        if ptr in _CLIENT_POINTERS:
+            fields["pointer"] = ptr
+        for key, lo, hi in (("dx", -10000, 10000), ("dy", -10000, 10000),
+                            ("held_ms", 0, 600000), ("slop", 0, 1000), ("threshold_ms", 0, 60000)):
+            n = _clean_int(raw.get(key), lo, hi) if key in raw else None
+            if n is not None:
+                fields[key] = n
+        now = time.monotonic()
+        with self._client_ev_lock:
+            self._client_ev_times = [t for t in self._client_ev_times if now - t < _CLIENT_EVENT_WINDOW_S]
+            if len(self._client_ev_times) >= _CLIENT_EVENT_MAX_PER_WINDOW:
+                self._client_ev_dropped += 1
+                return {"ok": False, "reason": "gedrosselt"}
+            self._client_ev_times.append(now)
+            dropped, self._client_ev_dropped = self._client_ev_dropped, 0
+        if dropped:
+            fields["dropped_before"] = dropped
+        log.info("deck client_event %s", " ".join(f"{k}={v}" for k, v in fields.items()))
+        return {"ok": True}
+
+    def _press(self, bid: str, variant: str = "short") -> dict:
         btn = next((b for b in self._buttons if b.get("id") == bid), None)
         if btn is None:
             raise KeyError(f"Unbekannter Button: {bid}")
@@ -6539,7 +6664,9 @@ class DeckCoreService:
         if _has_long_action(btn):
             own = _clamp_long_press_ms(btn.get("long_press_ms"))
             lp = {"has_long": True, "long_press_ms": own if own is not None
-                  else int(self._look.get("longPressMs") or _LOOK_DEFAULT["longPressMs"])}
+                  else int(self._look.get("longPressMs") or _LOOK_DEFAULT["longPressMs"]),
+                  # Bewegungstoleranz beim Halten (Touch-Panel); global im Look, kein fester Wert im Client.
+                  "long_press_slop_px": int(self._look.get("longPressSlopPx") or _LOOK_DEFAULT["longPressSlopPx"])}
         for st in btn.get("states") or []:
             if _match(value, st.get("when") or {}):
                 return {
