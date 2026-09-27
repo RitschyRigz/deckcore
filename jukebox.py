@@ -1228,46 +1228,93 @@ class Jukebox:
             chosen = random.choice([t for t in pool if t["id"] != snap.get("track")] or pool)
         return self.play(chosen["id"], style_override=(style if style and pool_style != style else ""))
 
-    def resolve_request(self, text: str) -> dict:
-        """Welche Kategorie meint ein gesprochener Auftrag? (Musikseite M3b, Richard 25.09.2026:
-        „jede Kategorie ist gleichwertig".) Katalog = ``styles.json`` je Stil
-        ``request: {words: [...], play_style?: "<rezept>"}`` plus ``config.json → request_default``.
-        Ein Wort trifft am Wortanfang (``metal`` trifft „Metal-Song", ``tanz`` trifft „tanzen"),
-        ohne Gross/Klein. Mehrere Kategorien im Satz: die ZUERST genannte (Gleichstand: das
-        laengere Wort). Nichts genannt: ``request_default``. Neue Kategorie = Ordner + Stil-Eintrag
-        mit Woertern — kein Code."""
-        low = str(text or "").lower()
+    # -- Gesprochener Auftrag (Musikseite M3b, Richard 27.09.2026) ---------------------------
+    @staticmethod
+    def _first_hit(low: str, words) -> tuple[int, str] | None:
+        """Frueheste Fundstelle eines Wortes am Wortanfang (``metal`` trifft „Metal-Song",
+        ``tanz`` trifft „tanzen"); Gleichstand: das laengere Wort."""
         best = None
-        for style, spec in (self.styles() or {}).items():
-            req = spec.get("request") if isinstance(spec, dict) else None
-            if not isinstance(req, dict):
+        for word in words or []:
+            w = str(word or "").strip().lower()
+            if not w:
                 continue
-            for word in req.get("words") or []:
-                w = str(word or "").strip().lower()
-                if not w:
-                    continue
-                m = re.search(r"(?<!\w)" + re.escape(w), low)
-                if m and (best is None or (m.start(), -len(w)) < (best[0], -len(best[2]))):
-                    best = (m.start(), style, w)
-        if best is not None:
-            style, word, default = best[1], best[2], False
-        else:
-            style, word, default = str(self.config().get("request_default") or ""), "", True
-        if not style:
-            return {"ok": False, "reason": "keine Kategorie genannt und kein request_default"}
-        req = ((self.styles() or {}).get(style) or {}).get("request") or {}
-        play_style = str(req.get("play_style") or style) if isinstance(req, dict) else style
-        return {"ok": True, "style": style, "play_style": play_style, "word": word, "default": default}
+            m = re.search(r"(?<!\w)" + re.escape(w), low)
+            if m and (best is None or (m.start(), -len(w)) < (best[0], -len(best[1]))):
+                best = (m.start(), w)
+        return best
 
-    def play_request(self, text: str, *, pick: str = "latest_origin") -> dict:
-        """Gesprochenen Auftrag aufloesen und den neuesten Song der Kategorie spielen — ueber
-        dasselbe ``play_random`` wie jede andere Kategorie (Rezept ``play_style``, z. B. Musical
-        als Exkursion). Kein Ausweichen auf eine andere Kategorie."""
+    def categories(self) -> dict[str, dict]:
+        """Kategorien fuer Auftraege: Stile mit eigenem Ordner (keine Rezepte, die Musik
+        leihen — ``tracks: …``). Jede gleichwertig."""
+        return {k: v for k, v in (self.styles() or {}).items()
+                if isinstance(v, dict) and not v.get("tracks")}
+
+    @staticmethod
+    def performance(spec: dict | None) -> dict:
+        """Auftrittsart einer Kategorie (``styles.json → <stil>.performance``): ``act`` (z. B.
+        sing | mix | dance | instrument) und ``by`` (wer). Daten, kein Code je Kategorie."""
+        perf = (spec or {}).get("performance") if isinstance(spec, dict) else None
+        return dict(perf) if isinstance(perf, dict) else {}
+
+    def resolve_request(self, text: str) -> dict:
+        """Welche Songs meint ein gesprochener Auftrag? Rezept (Richard 27.09.2026), fuer jede
+        Kategorie gleich — neue Kategorien und Kanal-Reward-Songs brauchen keinen Code:
+
+        1. **Kategorie genannt** (``styles.json → <stil>.request.words``, zuerst genannte gewinnt)
+           → nur diese Kategorie.
+        2. **Auftrittsart genannt** (``config.json → acts.<act>.words``, z. B. „sing" → singen,
+           „leg … auf" → auflegen) → alle Kategorien mit dieser ``performance.act``.
+        3. **Nichts davon** („spiel nen Song") → alle Kategorien.
+
+        Keine Kategorie ist Standard; gespielt wird der neueste Song der Auswahl."""
+        low = str(text or "").lower()
+        cats = self.categories()
+        best = None
+        for style, spec in cats.items():
+            req = spec.get("request") if isinstance(spec.get("request"), dict) else {}
+            hit = self._first_hit(low, req.get("words"))
+            if hit and (best is None or (hit[0], -len(hit[1])) < (best[0], -len(best[2]))):
+                best = (hit[0], style, hit[1])
+        if best is not None:
+            return {"ok": True, "by": "category", "styles": [best[1]], "word": best[2]}
+        acts = (self.config() or {}).get("acts") or {}
+        best_act = None
+        for act, spec in acts.items():
+            hit = self._first_hit(low, (spec or {}).get("words") if isinstance(spec, dict) else None)
+            if hit and (best_act is None or (hit[0], -len(hit[1])) < (best_act[0], -len(best_act[2]))):
+                best_act = (hit[0], act, hit[1])
+        if best_act is not None:
+            styles = [s for s, spec in cats.items() if self.performance(spec).get("act") == best_act[1]]
+            if not styles:
+                return {"ok": False, "reason": f"keine Kategorie mit Auftrittsart {best_act[1]}"}
+            return {"ok": True, "by": "act", "act": best_act[1], "styles": styles, "word": best_act[2]}
+        # Alle = jede Kategorie mit Songs, auch Ordner ohne eigenen Stil-Eintrag.
+        present = sorted({str(t.get("style") or "") for t in self.library()} - set(cats) - {""})
+        return {"ok": True, "by": "all", "styles": list(cats) + present}
+
+    def play_request(self, text: str = "", *, pick: str = "latest_origin") -> dict:
+        """Auftrag aufloesen und den NEUESTEN Song der Auswahl spielen (``pick`` wie
+        ``play_random``: latest_origin = juengste Herkunft, newest = juengste Datei). Das Rezept
+        der Kategorie (``request.play_style``, z. B. Musical als Exkursion) gilt auch hier."""
         r = self.resolve_request(text)
         if not r.get("ok"):
             return r
-        out = self.play_random(r["play_style"], pick=pick)
-        return {**out, "request": r}
+        pick = str(pick or "latest_origin").strip().lower()
+        if pick not in ("latest_origin", "newest"):
+            return {"ok": False, "reason": f"unbekannte Auswahl: {pick}"}
+        pool = [t for t in self.library() if t.get("style") in set(r["styles"])]
+        if not pool:
+            return {"ok": False, "reason": "keine Songs fuer diesen Auftrag", "request": r}
+        if pick == "newest":
+            chosen = sorted(pool, key=lambda t: (-float(t.get("mtime") or 0), t["rel"]))[0]
+        else:
+            chosen = sorted(pool, key=lambda t: (str(t.get("source_date") or ""),
+                                                 float(t.get("mtime") or 0)), reverse=True)[0]
+        spec = self.categories().get(chosen.get("style")) or {}
+        req = spec.get("request") if isinstance(spec.get("request"), dict) else {}
+        play_style = str(req.get("play_style") or "")
+        out = self.play(chosen["id"], style_override=play_style if play_style and play_style != chosen.get("style") else "")
+        return {**out, "request": {**r, "style": chosen.get("style"), "play_style": play_style or chosen.get("style")}}
 
     def pause(self, flag: bool = True) -> dict:
         with self._lock:

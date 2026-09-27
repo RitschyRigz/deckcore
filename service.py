@@ -4903,6 +4903,9 @@ class DeckCoreService:
             res = jb.duck_toggle(level)
         elif mode == "random":
             res = jb.play_random(style, pick=str(action.get("pick") or "random"))
+        elif mode == "request":
+            # Auftrag wie per Sprache (Kategorie -> Auftrittsart -> alle), z. B. „Neuester (alle)"
+            res = jb.play_request(str(action.get("text") or ""), pick=str(action.get("pick") or "latest_origin"))
         elif mode == "play":
             res = jb.play(track, style_override=style)
         else:
@@ -5052,6 +5055,19 @@ class DeckCoreService:
                            {"when": {"op": "any"}, "icon": "⏹", "title": f"{group}\nSTOP", "color": "accent", "blink": False}],
                 "default": {"icon": "⏹", "title": f"{group}\nStop", "color": "off"}})
         wanted.append((prefix + "stop", group))
+        # „Neuester (alle)" (Richard 27.09.2026): neuester Song ueber ALLE Kategorien — dasselbe
+        # Rezept wie der gesprochene Auftrag ohne Kategorie/Auftrittsart (Aktion ``request``).
+        # Opt-in je Mediathek (``config.json → all_button``), weil nicht jede Mediathek-Aktion
+        # ``request`` kennt. Auswahlart wie die Kategorie-Wuerfel.
+        if (jb.config() or {}).get("all_button") and hasattr(jb, "play_request"):
+            all_label = str((jb.config() or {}).get("all_button_label") or f"{pick_label} (alle)")
+            upsert({"id": prefix + "random_all", "label": all_label, "pool_cat": group,
+                    "action": {"type": action_type, "mode": "request", "text": "", "pick": category_pick},
+                    "monitor": {"type": monitor_type},
+                    "default": {"icon": pick_icon, "title": all_label.replace(" (", "\n("), "color": "off"}})
+            wanted.append((prefix + "random_all", group))
+        elif prefix + "random_all" in pool_by_id:
+            self._pool_remove(prefix + "random_all", remember=False)
         n = 1
         # Neuzugaenge kennzeichnen (17.09.2026, Punkt 12): Tasten nach ``added_at`` (Aufnahme in
         # die Bibliothek = Dateigeburt, nie „produziert") sortiert; juengere als
