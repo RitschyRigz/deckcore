@@ -250,6 +250,13 @@ def build_streamdeck_router(
         return JSONResponse(get_service(request).jukebox().play_random(
             str(b.get("style") or ""), pick=str(b.get("pick") or "random")))
 
+    @r.post("/api/jukebox/request")
+    def jukebox_request(request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """{text, pick?} -> Kategorie aus dem gesprochenen Auftrag (Katalog-Woerter), neuester Song."""
+        b = body or {}
+        return JSONResponse(get_service(request).jukebox().play_request(
+            str(b.get("text") or ""), pick=str(b.get("pick") or "latest_origin")))
+
     @r.post("/api/jukebox/config")
     def jukebox_config(request: Request, body: dict = Body(default={})) -> JSONResponse:
         """{library_dir?, audio_device?, mpv_path?, volume?}"""

@@ -1228,6 +1228,47 @@ class Jukebox:
             chosen = random.choice([t for t in pool if t["id"] != snap.get("track")] or pool)
         return self.play(chosen["id"], style_override=(style if style and pool_style != style else ""))
 
+    def resolve_request(self, text: str) -> dict:
+        """Welche Kategorie meint ein gesprochener Auftrag? (Musikseite M3b, Richard 25.09.2026:
+        „jede Kategorie ist gleichwertig".) Katalog = ``styles.json`` je Stil
+        ``request: {words: [...], play_style?: "<rezept>"}`` plus ``config.json → request_default``.
+        Ein Wort trifft am Wortanfang (``metal`` trifft „Metal-Song", ``tanz`` trifft „tanzen"),
+        ohne Gross/Klein. Mehrere Kategorien im Satz: die ZUERST genannte (Gleichstand: das
+        laengere Wort). Nichts genannt: ``request_default``. Neue Kategorie = Ordner + Stil-Eintrag
+        mit Woertern — kein Code."""
+        low = str(text or "").lower()
+        best = None
+        for style, spec in (self.styles() or {}).items():
+            req = spec.get("request") if isinstance(spec, dict) else None
+            if not isinstance(req, dict):
+                continue
+            for word in req.get("words") or []:
+                w = str(word or "").strip().lower()
+                if not w:
+                    continue
+                m = re.search(r"(?<!\w)" + re.escape(w), low)
+                if m and (best is None or (m.start(), -len(w)) < (best[0], -len(best[2]))):
+                    best = (m.start(), style, w)
+        if best is not None:
+            style, word, default = best[1], best[2], False
+        else:
+            style, word, default = str(self.config().get("request_default") or ""), "", True
+        if not style:
+            return {"ok": False, "reason": "keine Kategorie genannt und kein request_default"}
+        req = ((self.styles() or {}).get(style) or {}).get("request") or {}
+        play_style = str(req.get("play_style") or style) if isinstance(req, dict) else style
+        return {"ok": True, "style": style, "play_style": play_style, "word": word, "default": default}
+
+    def play_request(self, text: str, *, pick: str = "latest_origin") -> dict:
+        """Gesprochenen Auftrag aufloesen und den neuesten Song der Kategorie spielen — ueber
+        dasselbe ``play_random`` wie jede andere Kategorie (Rezept ``play_style``, z. B. Musical
+        als Exkursion). Kein Ausweichen auf eine andere Kategorie."""
+        r = self.resolve_request(text)
+        if not r.get("ok"):
+            return r
+        out = self.play_random(r["play_style"], pick=pick)
+        return {**out, "request": r}
+
     def pause(self, flag: bool = True) -> dict:
         with self._lock:
             player = self._player
