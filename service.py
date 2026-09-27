@@ -5455,9 +5455,18 @@ class DeckCoreService:
                 if not str(cfg.get("library_dir") or ""):
                     continue
                 sig = await asyncio.to_thread(lib.library_signature)
-                if sig == entry.get("sig"):
-                    continue
                 hook = entry.get("on_change")
+                if sig == entry.get("sig"):
+                    if hook is not None and entry.get("hook_pending"):
+                        # Ein gescheiterter Haken bleibt offen, auch wenn der Abgleich nach dem
+                        # Deckel schon lief (Codex R15 F23): jeder Takt versucht ihn erneut, bis
+                        # er durchgeht. Schreibt er, aendert sich die Signatur -> normaler Weg.
+                        try:
+                            await asyncio.to_thread(hook, lib)
+                            entry["hook_pending"] = False
+                        except Exception as e:  # noqa: BLE001
+                            log.debug("library hook %s (offen): %s", key, e)
+                    continue
                 if hook is not None and entry.get("hook_writes", 0) < _LIBRARY_HOOK_MAX_WRITES:
                     # Host-Haken VOR dem Abgleich (z. B. Titel fuer Neuzugaenge setzen). Aendert er
                     # Metadaten, aendert sich die Signatur — der naechste Takt gleicht dann ab.
@@ -5467,8 +5476,10 @@ class DeckCoreService:
                     # Takte auf.
                     try:
                         wrote = await asyncio.to_thread(hook, lib)
+                        entry["hook_pending"] = False
                     except Exception as e:  # noqa: BLE001 - ein Haken haelt den Waechter nie an
                         log.warning("library hook %s: %s", key, e)
+                        entry["hook_pending"] = True
                         wrote = True
                     if wrote:
                         entry["hook_writes"] = entry.get("hook_writes", 0) + 1
