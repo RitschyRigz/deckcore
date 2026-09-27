@@ -120,6 +120,7 @@ _AUDIO_SUB_TTL = 12.0     # s — eine Panel-Audio-Subscription gilt so lange oh
 _REFRESH_MIN, _REFRESH_MAX = 0.3, 600.0   # Klemmgrenzen für den Pro-Button-Override
 _HTTP_TIMEOUT = 4.0       # Sekunden für poll/http
 _JUKEBOX_WATCH_SEC = 5.0  # Ordnerwaechter der Jukebox-Bibliothek (Fingerabdruck, kein Dateiwatcher)
+_LIBRARY_HOOK_MAX_WRITES = 3   # Host-Haken-Schreibrunden je Aenderung, dann gleicht der Waechter ab
 _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (Anti-tasklist-Sturm)
 
 # Deck-Layout = PRO DECK (Raster/Stil). Jedes Deck hat sein EIGENES Layout (Spalten/Größe/
@@ -5252,6 +5253,7 @@ class DeckCoreService:
         entry = self._libraries.get(key) or {}
         task = entry.get("task")
         self._libraries[key] = {"get": get_instance, "populate": populate, "sig": None, "task": task,
+                                "on_change": self.__dict__.get("_library_hooks", {}).get(key),
                                 "prefix": str(prefix), "meta_prefix": str(meta_prefix),
                                 "action_type": str(action_type or ""), "monitor_type": str(monitor_type or ""),
                                 "fallback_label": str(fallback_label or key), "fallback_icon": str(fallback_icon or "🎵"),
@@ -5265,6 +5267,16 @@ class DeckCoreService:
     def libraries(self) -> dict[str, dict]:
         """Registrierte Mediatheken ``{key: entry}`` (Registry-Sicht fuer Hosts, read-only)."""
         return dict(self._libraries)
+
+    def set_library_hook(self, key: str, hook) -> bool:
+        """Host-Haken ``hook(lib) -> bool`` fuer eine Mediathek: laeuft im Ordnerwaechter bei jeder
+        Aenderung VOR dem Tasten-Abgleich (auch beim ersten Takt nach dem Start). ``True`` = der
+        Haken hat selbst etwas geaendert; der Abgleich folgt im naechsten Takt."""
+        self.__dict__.setdefault("_library_hooks", {})[key] = hook   # auch vor der Anmeldung
+        entry = self._libraries.get(key)
+        if entry is not None:
+            entry["on_change"] = hook
+        return entry is not None
 
     @property
     def _library_mutation_lock(self) -> threading.RLock:
@@ -5445,6 +5457,19 @@ class DeckCoreService:
                 sig = await asyncio.to_thread(lib.library_signature)
                 if sig == entry.get("sig"):
                     continue
+                hook = entry.get("on_change")
+                if hook is not None and entry.get("hook_writes", 0) < _LIBRARY_HOOK_MAX_WRITES:
+                    # Host-Haken VOR dem Abgleich (z. B. Titel fuer Neuzugaenge setzen). Aendert er
+                    # Metadaten, aendert sich die Signatur — der naechste Takt gleicht dann ab.
+                    # Ein Haken, der nie „fertig" meldet, haelt den Abgleich hoechstens ein paar
+                    # Takte auf.
+                    try:
+                        if await asyncio.to_thread(hook, lib):
+                            entry["hook_writes"] = entry.get("hook_writes", 0) + 1
+                            continue
+                    except Exception as e:  # noqa: BLE001 - ein Haken haelt den Waechter nie an
+                        log.warning("library hook %s: %s", key, e)
+                entry["hook_writes"] = 0
                 first = entry.get("sig") is None
                 entry["sig"] = sig
                 if first and not self._library_needs_sync(lib, entry):
@@ -5469,9 +5494,21 @@ class DeckCoreService:
         try:
             mine = [b for b in self._buttons if str(b.get("id") or "").startswith(prefix)]
             have = {str(b.get(meta + "_track") or "") for b in mine if b.get(meta + "_track")}
-            want = {t["id"] for t in lib.library() if prefix + t["id"] not in self._removed}
+            tracks = {t["id"]: t for t in lib.library()}
+            want = {tid for tid in tracks if prefix + tid not in self._removed}
             if have != want or any(meta + "_cover" not in b for b in mine if b.get(meta + "_track")):
                 return True
+            # Titel oder Cover geaendert, waehrend niemand zusah (z. B. vor dem ersten Takt nach
+            # einem Neustart gesetzt): die Taste traegt noch den alten generierten Stand.
+            for b in mine:
+                tr = tracks.get(str(b.get(meta + "_track") or ""))
+                if tr is None:
+                    continue
+                gen = b.get(meta + "_gen_title") or {}
+                if "label" in gen and gen["label"] != tr.get("title"):
+                    return True
+                if str(b.get(meta + "_cover") or "") != str(tr.get("cover_url") or ""):
+                    return True
             cat = self.library_category(lib, str(entry.get("fallback_label") or ""))
             return any(b.get("pool_cat") != cat for b in mine)
         except Exception:  # noqa: BLE001
