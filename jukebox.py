@@ -35,7 +35,9 @@ Stil-Felder ueber Start/Ende/Stop hinaus (alle optional, alle Daten):
 Ducking (``duck(level)``): die laufende Wiedergabe wird weich auf ``level`` (0..1) der
 konfigurierten Lautstaerke abgesenkt und mit ``duck(None)`` wieder hochgeholt — fuer Brunos
 Antworten ueber der Musik und Richards „Push to Duck" auf dem Deck. Ein neuer Song startet
-immer ungeduckt. Zustand: ``status().ducked`` / ``duck_level``.
+immer ungeduckt, und mit dem Ende eines Tracks (ended/stopped/error) endet auch sein
+Ducking; ``duck(None)`` ohne laufenden Player setzt den Merker zurueck (ok). Zustand:
+``status().ducked`` / ``duck_level``.
 
 Veroeffentlicht ist eine Audiodatei, wenn sie unter ihrem endgueltigen Namen liegt und der
 Name NICHT mit ``_`` beginnt: Kopieren als ``_name.mp3`` und danach umbenennen; Browser-
@@ -1325,10 +1327,23 @@ class Jukebox:
 
     def duck(self, level: Optional[float] = DUCK_LEVEL_DEFAULT, *, fade_ms: int = DUCK_FADE_MS) -> dict:
         """Laufende Wiedergabe weich absenken (``level`` 0..1 der konfigurierten Lautstaerke)
-        oder mit ``None``/``1.0`` wieder hochholen. Ohne laufenden Player: ok:false."""
+        oder mit ``None``/``1.0`` wieder hochholen.
+
+        Ohne laufenden Player: Absenken geht nicht (ok:false). Hochholen/Aus gelingt immer —
+        es setzt den Duck-Merker zurueck (ok:true, ``player: false``). Sonst blieb nach einem
+        Songende ``ducked`` stehen, und eine Push-to-Duck-Taste liess sich nie mehr
+        ausschalten (Stream 28.09.2026: „Duck AN" bis Stream-Ende)."""
         with self._lock:
             player, snap = self._player, dict(self._state)
+        unduck = level is None or float(level) >= 1.0
         if player is None or snap.get("state") not in _ACTIVE:
+            if unduck:
+                with self._lock:
+                    self._duck_generation += 1      # eine noch laufende Rampe endet
+                if snap.get("ducked") or snap.get("duck_level") is not None:
+                    self._set(ducked=False, duck_level=None)
+                return {"ok": True, "ducked": False, "duck_level": None, "player": False,
+                        "state": snap.get("state")}
             return {"ok": False, "reason": "kein laufender Player", "state": snap.get("state")}
         try:
             base = float(self.config().get("volume") if self.config().get("volume") is not None else 100.0)
@@ -1363,6 +1378,8 @@ class Jukebox:
                 "request_id": snap.get("request_id")}
 
     def duck_toggle(self, level: float = DUCK_LEVEL_DEFAULT) -> dict:
+        """Push to Duck: geduckt -> hoch, sonst absenken. Ohne laufenden Player ist ein
+        stehengebliebener Merker immer „aus" (setzt zurueck, ok:true)."""
         return self.duck(None if self.status().get("ducked") else level)
 
     # -- intern ----------------------------------------------------------------------------
@@ -1483,7 +1500,11 @@ class Jukebox:
                 return
             final = {"eof": "ended", "stop": "stopped"}.get(reason, "error")
             self._seq += 1
+            # Mit dem Track endet auch sein Ducking: der Merker gehoert zur Wiedergabe, nicht
+            # zur Taste (Stream 28.09.2026: „Duck AN" blieb nach dem Songende bis Stream-Ende).
+            self._duck_generation += 1
             self._state.update({"state": final, "reason": reason, "detail": detail or None,
+                                "ducked": False, "duck_level": None,
                                 "updated_at": time.time(), "seq": self._seq})
             snap2 = dict(self._state)
         self._publish_snapshot(snap2)
