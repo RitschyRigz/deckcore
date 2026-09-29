@@ -374,6 +374,8 @@ body[data-frame="off"] .t-readout::before, body[data-frame="off"] .t-readout::af
    Pop (Skalieren) ist immer dabei; der visuelle Effekt wechselt je Modus. Default = Ring in --press
    (Fallback Akzent2) → unverändert ggü. früher. Modi: ring · innerglow · backlight · pop · lift. */
 .t-key:active, .t-key.pressed { transform: scale(.93); }
+/* Druck dieser Taste läuft noch (Antwort 3–5 s): sichtbar, aber tippbar — ein weiterer Tap wird gemeldet statt still geschluckt. */
+.t-key.is-pending { opacity: .6; }
 body:not([data-press]) .t-key.pressed, body:not([data-press]) .t-key:active,
 body[data-press="ring"] .t-key.pressed, body[data-press="ring"] .t-key:active {
   box-shadow: 0 0 0 3px var(--press, var(--accent2)); }

@@ -1090,8 +1090,12 @@ export function TouchDeck() {
       }
       return
     }
-    if (pendingRef.current.has(id)) {                    // voriger Druck dieser Taste noch unterwegs → verworfen, aber gemeldet
+    if (pendingRef.current.has(id)) {                    // voriger Druck dieser Taste noch unterwegs → verworfen, aber gemeldet UND sichtbar
+      // Stream 28.09.2026: Push to Duck 4× gedrückt, 1 Druck kam an. Die Taste war während des
+      // laufenden Drucks (3–5 s) `disabled` — der Browser schluckte weitere Taps ohne Meldung.
+      // Jetzt erreicht der Tap diesen Zweig: Server-Log (client_event ignored/pending) + Hinweis.
       reportGesture({ bid: id, event: 'ignored', reason: 'pending', variant })
+      setPressError('Voriger Druck dieser Taste läuft noch – nicht ausgeführt. Nach der Rückmeldung erneut drücken.')
       return
     }
     pendingRef.current.add(id)
@@ -1209,8 +1213,8 @@ export function TouchDeck() {
     return (
       <button key={id}
               data-button-id={id} aria-label={v.label || id} title={v.label || id}
-              disabled={pendingRef.current.has(id)}
-              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + holdClass(v) + (pressed === id ? ' pressed' : '') + (holding === id ? ' holding' : '')}
+              aria-busy={pendingRef.current.has(id) ? 'true' : undefined}
+              class={keyClass(eff, 't-key') + categoryClass + (card ? ' catalog-card' : '') + (v.image ? ' has-img' : '') + (folder ? ' is-folder' : '') + (isGraph ? ' is-graph' : '') + (isGauge ? ' is-gauge' : '') + (isStat ? ' is-stat' : '') + (isBar ? ' is-bar' : '') + (isClock ? ' is-clock' : '') + (isReadout ? ' is-readout' : '') + (isWidget ? ' t-widget' : '') + ((isFlat || isViz) ? ' s-' + skin : '') + (isFlat ? ' t-flat' : '') + ((isWidget || isGauge || isStat || isBar || o.size) ? ' cqsize' : '') + (spanned ? ' spanned' : '') + (v.blink ? ' blink' : '') + holdClass(v) + (pressed === id ? ' pressed' : '') + (pendingRef.current.has(id) ? ' is-pending' : '') + (holding === id ? ' holding' : '')}
               style={((isFlat || isViz) ? `--acc:${accentVar(v.color)};` : '') + (isFlat ? '' : ('background:' + (isWidget ? 'transparent' : (isViz ? (o.bg ? resolveColor(o.bg) : 'var(--bg)') : (resolveColor(v.color) || 'var(--bg3)'))))) + place + holdStyle(v)}
               {...holdHandlers(id, v, onTap, { setHolding })}>
         {isClock ? <Clock opts={o} skin={skin} />
