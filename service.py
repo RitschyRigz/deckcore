@@ -120,6 +120,10 @@ _AUDIO_PUSH_SEC = 1.0 / 15.0   # ~15 Hz: Live-Audio-Push (VU/Pegel) über SSE-To
 _AUDIO_SUB_TTL = 12.0     # s — eine Panel-Audio-Subscription gilt so lange ohne Keepalive-Refresh
 _REFRESH_MIN, _REFRESH_MAX = 0.3, 600.0   # Klemmgrenzen für den Pro-Button-Override
 _HTTP_TIMEOUT = 4.0       # Sekunden für poll/http
+# Stream 30.09. (F10): eine Neuberechnung aller Tasten dauerte im Stream 3-6 s und hing am
+# Druck-Rueckweg. Ab dieser Dauer wird ein periodischer Takt mit Aufschluesselung geloggt
+# (Druck-Laeufe immer) — die Messung entscheidet, welche Monitor-Art korrigiert wird.
+_RECOMPUTE_LOG_MS = 500.0
 _JUKEBOX_WATCH_SEC = 5.0  # Ordnerwaechter der Jukebox-Bibliothek (Fingerabdruck, kein Dateiwatcher)
 _LIBRARY_HOOK_MAX_WRITES = 3   # Host-Haken-Schreibrunden je Aenderung, dann gleicht der Waechter ab
 _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (Anti-tasklist-Sturm)
@@ -1572,6 +1576,11 @@ class DeckCoreService:
         # Tastendruck NIE auf IO wartet. Der async Eval-Loop läuft in EIGENEM Thread → Flag ungesetzt
         # → dort weiterhin voll Live-IO (er ist der eigentliche Auffrischer). threadlocal = race-frei.
         self._tls = threading.local()
+        # F10: Neuberechnung nach Druck/Edit laeuft NICHT mehr im Press-Thread, sondern als
+        # angeforderter Lauf des EINEN Eval-Loops (zusammengefasst, nie zwei Schreiber).
+        self._recompute_requested = threading.Event()
+        self._recompute_wake: "asyncio.Event | None" = None
+        self._last_recompute_stats: dict = {}
         self._obs_scene_cache: tuple = (None, 0.0)  # (aktive Szene, ts) — von einer obs_scene-Hülle genutzt
         self._scene_flow: dict = {"map": {}, "return": []}  # „logischer" Szenen-Ablauf (von→nächste, Rücksprung-Szenen)
         self._scene_hist: list = []                 # zuletzt gesehene aktive Szenen (für scene_suggest „vorherige Szene")
@@ -6710,33 +6719,93 @@ class DeckCoreService:
         prev = self._resolved
         out: dict[str, dict] = {}
         last = dict(self._last_eval)
+        # F10: Dauer je Monitor-Art (Anzahl, ms) — Grundlage fuer die gezielte Korrektur.
+        types: dict[str, list] = {}
+        evaluated = 0
         for btn in self._buttons:
             bid = btn.get("id")
             if not bid:
                 continue
             due = force or bid not in prev or (now - last.get(bid, 0.0)) >= self._eff_interval(btn)
             if due:
+                t0 = time.perf_counter()
                 out[bid] = self._resolve(btn, self._eval_monitor(btn))
+                spent = (time.perf_counter() - t0) * 1000
+                mtype = str((btn.get("monitor") or {}).get("type") or "none")
+                slot = types.setdefault(mtype, [0, 0.0])
+                slot[0] += 1
+                slot[1] += spent
+                evaluated += 1
                 last[bid] = now
             else:
                 out[bid] = prev[bid]
         self._last_eval = last
+        self._last_recompute_stats = {"buttons": evaluated, "types": types,
+                                      "ms": round((time.monotonic() - now) * 1000, 1)}
         return out
+
+    @staticmethod
+    def _recompute_summary(stats: dict, top: int = 6) -> str:
+        """Kurzform fuer das Log: die teuersten Monitor-Arten als typ:anzahl/ms."""
+        ranked = sorted((stats.get("types") or {}).items(), key=lambda kv: kv[1][1], reverse=True)
+        return ",".join(f"{name}:{count}/{ms:.0f}" for name, (count, ms) in ranked[:top]) or "-"
+
+    def _log_recompute(self, kind: str, stats: dict, publish_ms: float) -> None:
+        ms = float(stats.get("ms") or 0.0)
+        if kind == "tick" and ms < _RECOMPUTE_LOG_MS:
+            return
+        try:
+            log.info("deck recompute kind=%s ms=%d publish_ms=%d buttons=%d top=%s",
+                     kind, int(ms), int(publish_ms), int(stats.get("buttons") or 0),
+                     self._recompute_summary(stats))
+        except Exception:  # noqa: BLE001 - Diagnose darf nie stoeren
+            pass
 
     def _publish(self) -> None:
         if self.bus is not None:
             self.bus.publish("streamdeck:buttons", {"buttons": self._resolved})
 
     def _schedule_recompute(self) -> None:
-        # Sofort ALLES neu auflösen + pushen (z.B. nach press/upsert), ohne auf den
-        # Tick zu warten — force, damit auch Buttons mit langem Override gleich umspringen.
-        # cache_only: der In-Process-Wert der gedrückten Kachel (z.B. manual_count) frischt sofort
-        # auf, aber KEIN Monitor darf hier synchron blockierendes IO machen (self-HTTP/OBS-WS) →
-        # der Press-Thread wartet nie auf IO. Fällige Live-Werte holt der async Eval-Loop nach.
+        """ALLES neu aufloesen + pushen (nach press/upsert), ohne auf den Tick zu warten.
+
+        Stream 30.09. (F10): Lief das synchron im Press-Thread, wartete die Druckantwort
+        auf die Auswertung aller Tasten (im Stream 3-6 s). Laeuft der Eval-Loop, wird der
+        Lauf jetzt bei ihm ANGEFORDERT und die Antwort kommt direkt nach der Aktion; schnelle
+        Folge-Druecke fallen in einen Lauf zusammen, und es gibt weiterhin genau einen
+        Schreiber von ``_resolved``. Ohne laufenden Loop (Tests, vor start()) synchron wie bisher.
+        """
+        loop = self._loop
+        wake = self._recompute_wake
+        if loop is not None and wake is not None and not self._stop.is_set():
+            self._recompute_requested.set()
+            try:
+                loop.call_soon_threadsafe(wake.set)
+                return
+            except RuntimeError:          # Loop schon zu -> synchron wie bisher
+                pass
+        self._recompute_now()
+
+    def _recompute_pass(self, forced: bool) -> tuple:
+        """Ein Lauf im Worker-Thread. Angeforderte Laeufe: alles, aber nur Cache-Werte
+        (kein blockierendes IO, wie bisher beim Druck); Takt: faellige Tasten mit Live-IO."""
+        try:
+            self._tls.cache_only = bool(forced)
+            out = self._recompute(force=bool(forced))
+            return out, dict(self._last_recompute_stats)
+        finally:
+            self._tls.cache_only = False
+
+    def _recompute_now(self) -> None:
+        # Sofort ALLES neu aufloesen + pushen — force, damit auch Buttons mit langem Override gleich
+        # umspringen. cache_only: der In-Process-Wert der gedrueckten Kachel (z.B. manual_count)
+        # frischt sofort auf, aber KEIN Monitor darf hier synchron blockierendes IO machen.
         try:
             self._tls.cache_only = True
             self._resolved = self._recompute(force=True)
+            stats = dict(self._last_recompute_stats)
+            t0 = time.perf_counter()
             self._publish()
+            self._log_recompute("sync", stats, (time.perf_counter() - t0) * 1000)
         except Exception as e:  # noqa: BLE001
             log.debug("schedule_recompute Fehler: %s", e)
         finally:
@@ -6746,6 +6815,7 @@ class DeckCoreService:
     async def start(self) -> None:
         self._stop.clear()
         self._loop = asyncio.get_running_loop()
+        self._recompute_wake = asyncio.Event()
         self._eval_task = asyncio.create_task(self._eval_loop())
         self._sse_task = asyncio.create_task(self._sse_loop())
         self._coupling_task = asyncio.create_task(self._coupling_loop())
@@ -6762,6 +6832,8 @@ class DeckCoreService:
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._recompute_wake is not None:
+            self._recompute_wake.set()
         try:
             self._obs.close()
         except Exception:  # noqa: BLE001
@@ -6845,16 +6917,34 @@ class DeckCoreService:
                 # tasklist via processes.status). Das MUSS off-loop laufen — sonst
                 # blockiert der poll-Self-Call (die Host-App ruft sich selbst) den Event-
                 # Loop → Deadlock/Timeout → Monitor liefert None.
-                new = await asyncio.to_thread(self._recompute)
-                if new != self._resolved:
+                # F10: ein angeforderter Lauf (Druck/Edit) und der Takt teilen sich DIESEN
+                # einen Pfad — die Anforderung wird VOR dem Lauf quittiert, ein Druck waehrend
+                # des Laufs fordert also einen weiteren an (kein verlorener Zustand).
+                forced = self._recompute_requested.is_set()
+                if forced:
+                    self._recompute_requested.clear()
+                new, stats = await asyncio.to_thread(self._recompute_pass, forced)
+                publish_ms = 0.0
+                if forced or new != self._resolved:
                     self._resolved = new
+                    t0 = time.perf_counter()
                     self._publish()
+                    publish_ms = (time.perf_counter() - t0) * 1000
+                self._log_recompute("press" if forced else "tick", stats, publish_ms)
             except Exception as e:  # noqa: BLE001
                 log.debug("eval_loop Fehler: %s", e)
+            if self._recompute_requested.is_set() or self._stop.is_set():
+                continue
+            wake = self._recompute_wake
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._loop_granularity())
+                if wake is not None:
+                    await asyncio.wait_for(wake.wait(), timeout=self._loop_granularity())
+                else:
+                    await asyncio.wait_for(self._stop.wait(), timeout=self._loop_granularity())
             except asyncio.TimeoutError:
                 pass
+            if wake is not None:
+                wake.clear()
 
     async def _sse_loop(self) -> None:
         """Cached die letzten Payloads der Topics, die sse_field-Monitore brauchen."""
