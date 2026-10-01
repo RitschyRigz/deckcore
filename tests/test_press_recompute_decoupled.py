@@ -134,3 +134,66 @@ def test_press_passes_are_logged_with_the_cost_per_monitor_type(tmp_path, caplog
     asyncio.run(scenario())
     line = [r.getMessage() for r in caplog.records if "kind=press" in r.getMessage()][0]
     assert "top=slowcount:2/" in line and "publish_ms=" in line
+
+
+def _pass_recorder(svc):
+    """Zeichnet jeden Lauf des Eval-Loops auf: (forced, start, ende)."""
+    passes = []
+    original = svc._recompute_pass
+
+    def recorded(forced):
+        start = time.monotonic()
+        try:
+            return original(forced)
+        finally:
+            passes.append((bool(forced), start, time.monotonic()))
+
+    svc._recompute_pass = recorded
+    return passes
+
+
+def test_a_press_during_a_slow_tick_adds_exactly_one_press_pass(tmp_path):
+    """Codex R2: tick -> press -> SOFORT noch ein tick war ein unnoetiger Live-Lauf, weil das
+    Wake-Signal des Drucks liegen blieb. Nach dem Druck-Lauf wartet der Loop wieder normal."""
+    svc, _state = _svc(tmp_path, slow_s=0.3)
+    svc._buttons[0]["monitor"]["interval"] = 0.3           # Takt-Lauf ist langsam (0,3 s)
+    passes = _pass_recorder(svc)
+
+    async def scenario():
+        task = await _run_loop(svc)
+        await _settle(svc, lambda: len(passes) >= 1)
+        # mitten in einen Takt druecken
+        await _settle(svc, lambda: False, timeout=0.1)
+        await asyncio.to_thread(svc.press, "inc", "short", "panel")
+        assert await _settle(svc, lambda: any(f for f, _s, _e in passes))
+        forced_at = next(i for i, (f, _s, _e) in enumerate(passes) if f)
+        await _settle(svc, lambda: len(passes) > forced_at + 1, timeout=3.0)
+        await svc.stop()
+        await task
+        return forced_at
+
+    forced_at = asyncio.run(scenario())
+    assert sum(1 for f, _s, _e in passes if f) == 1, passes
+    if len(passes) > forced_at + 1:
+        gap = passes[forced_at + 1][1] - passes[forced_at][2]
+        assert gap >= 0.2, f"Zusatzlauf direkt nach dem Druck-Lauf ({gap:.3f} s)"
+
+
+def test_a_press_during_a_press_pass_still_triggers_a_follow_up(tmp_path):
+    svc, state = _svc(tmp_path, slow_s=0.3)
+    passes = _pass_recorder(svc)
+
+    async def scenario():
+        task = await _run_loop(svc)
+        await _settle(svc, lambda: len(passes) >= 1)
+        await asyncio.to_thread(svc.press, "inc", "short", "panel")
+        assert await _settle(svc, lambda: any(f for f, _s, _e in passes) or svc._recompute_requested.is_set() is False)
+        await asyncio.sleep(0.1)                              # erster Druck-Lauf laeuft
+        await asyncio.to_thread(svc.press, "inc", "short", "panel")
+        assert await _settle(svc, lambda: svc._resolved.get("inc", {}).get("title") == "2")
+        await svc.stop()
+        await task
+
+    asyncio.run(scenario())
+    assert state["count"] == 2
+    assert sum(1 for f, _s, _e in passes if f) >= 2, passes

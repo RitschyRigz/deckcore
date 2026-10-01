@@ -6936,6 +6936,13 @@ class DeckCoreService:
             if self._recompute_requested.is_set() or self._stop.is_set():
                 continue
             wake = self._recompute_wake
+            if wake is not None:
+                # Codex R2: Ein Druck waehrend eines Laufs hat sein Wake schon gesetzt, die
+                # Anforderung ist aber oben bereits als Lauf erledigt — das verbrauchte Signal
+                # darf keinen sofortigen Zusatzlauf mit Live-Abfragen ausloesen. Eine NEUE
+                # Anforderung setzt das Signal danach erneut (call_soon_threadsafe laeuft erst
+                # nach diesem synchronen Abschnitt im Loop).
+                wake.clear()
             try:
                 if wake is not None:
                     await asyncio.wait_for(wake.wait(), timeout=self._loop_granularity())
@@ -6943,8 +6950,6 @@ class DeckCoreService:
                     await asyncio.wait_for(self._stop.wait(), timeout=self._loop_granularity())
             except asyncio.TimeoutError:
                 pass
-            if wake is not None:
-                wake.clear()
 
     async def _sse_loop(self) -> None:
         """Cached die letzten Payloads der Topics, die sse_field-Monitore brauchen."""
