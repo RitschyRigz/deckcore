@@ -4363,22 +4363,9 @@ class DeckCoreService:
         return self._wl.meters(ids)
 
     def wavelink_icon(self, target_id: str) -> Optional[bytes]:
-        """PNG-Icon eines Wave-Link-CHANNELS (1:1 wie in Wave Link) als Bytes, sonst None. Channels tragen
-        ein echtes Bild (``image.imgData`` base64); Mixes liefern nur einen Icon-Namen → None (Fader bleibt
-        beim Emoji). Liest aus dem gecachten Channel-State (kein zusätzlicher WL-Call pro Fader)."""
-        import base64
-        tid = str(target_id or "")
-        if not tid:
-            return None
-        for c in (self._wl.channels(with_images=True) or []):
-            if str(c.get("id")) == tid:
-                d = (c.get("image") or {}).get("imgData")
-                if isinstance(d, str) and d:
-                    try:
-                        return base64.b64decode(d)
-                    except Exception:  # noqa: BLE001
-                        return None
-                return None
+        """Wave-Link-Channel-Icons werden nicht mehr übernommen (03.10.2026): Wave Link stürzt beim Rendern
+        dieser Icons sporadisch ab, und eigene Symbole am Fader haben ohnehin Vorrang. Immer None → der
+        Fader fällt auf sein Symbol zurück (Frontend ``imgErr``-Pfad), ohne Wave Link zu fragen."""
         return None
 
     def set_wavelink_config(self, host: str = None, port: int = None) -> dict:

@@ -45,7 +45,14 @@ _CONNECT_TIMEOUT = 2.0      # s — WebSocket-Verbindungs-/Validierungs-Timeout
 _REQ_TIMEOUT = 3.0          # s — Antwort-Timeout für getX-Anfragen
 _RECONNECT_COOLDOWN = 8.0   # s — nach Connect-Fehler so lange nicht erneut verbinden
 _IDLE_TIMEOUT = 30.0        # s — ohne Zugriff Verbindung trennen (kein Dauer-Meter-Stream)
-_STATE_TTL = 1.5            # s — Cache für getMixes/getChannels/getOutputDevices
+# Zustands-Abfragen (getMixes/getChannels/getOutputDevices) SPARSAM: Wave Link 3.2.9 rendert für jede
+# getChannels-Antwort alle Kanal-Icons neu und stürzt dabei sporadisch ab (Windows-Ereignis .NET 1026,
+# IconGenerator.CreateFilledRenderTarget aus WebSocketDtoBuilder.GetBase64IconAsync, Befund 03.10.2026).
+# Pegel (VU) kommen per Push und sind davon unberührt. Zustand wird daher nur neu geholt, wenn Wave Link
+# eine Änderung meldet oder wir selbst etwas gesetzt haben (höchstens alle _REFRESH_MIN_GAP s), sonst als
+# Sicherheitsnetz alle _STATE_TTL s — und pro Abfrage-Art läuft nie mehr als EINE Anfrage gleichzeitig.
+_STATE_TTL = 10.0           # s — spätestens dann frisch holen, auch ohne Änderungsmeldung
+_REFRESH_MIN_GAP = 1.0      # s — gemeldete Änderung: frühestens so lange nach der letzten Abfrage neu holen
 _METER_FRESH = 0.6         # s — älter ⇒ Meter gilt als 0 (kein eingefrorener Ausschlag)
 
 
@@ -81,7 +88,9 @@ class WaveLinkDirect:
         self._pending: dict[int, tuple[threading.Event, dict]] = {}
         self._meters: dict[str, dict] = {}        # id -> {l, r, ts}
         self._subscribed: set = set()             # ids bereits fuer levelMeterChanged abonniert
-        self._cache: dict[str, tuple[Any, float]] = {}   # mixes/channels/outputs -> (val, ts)
+        self._cache: dict[str, tuple[Any, float, int]] = {}   # mixes/channels/outputs -> (val, ts, gen)
+        self._state_gen = 0                       # +1 bei jeder Änderungsmeldung/eigenem Befehl
+        self._fetch_gates: dict[str, threading.Lock] = {}   # je Abfrage-Art höchstens EINE Anfrage im Flug
 
     # ── Konfiguration ────────────────────────────────────────────────────
     def configure(self, host: str | None = None, port: int | None = None) -> None:
@@ -328,8 +337,8 @@ class WaveLinkDirect:
         if method == "levelMeterChanged":
             self._update_meters(obj.get("params") or {})
         elif method and method.endswith("Changed"):
-            with self._lock:                               # Zustand evtl. veraltet -> neu holen
-                self._cache.clear()
+            with self._lock:                               # Zustand veraltet -> beim nächsten Lesen neu holen
+                self._state_gen += 1
 
     def _update_meters(self, params: dict) -> None:
         now = time.monotonic()
@@ -404,7 +413,7 @@ class WaveLinkDirect:
             ok = slot.get("error") is None
         with self._lock:
             self._pending.pop(rid, None)
-            self._cache.clear()             # frisch geschriebener Wert ⇒ Cache verwerfen
+            self._state_gen += 1            # frisch geschriebener Wert ⇒ Zustand gilt als veraltet
         return ok
 
     # ── Status / Lesen ───────────────────────────────────────────────────
@@ -424,30 +433,61 @@ class WaveLinkDirect:
     def app_info(self) -> dict:
         return dict(self._app) if self._conn_evt.is_set() else {}
 
-    def _cached(self, kind: str, method: str, extract, ttl: float = _STATE_TTL) -> Any:
-        now = time.monotonic()
+    def _is_current(self, hit, now: float, ttl: float) -> bool:
+        """Cache-Eintrag brauchbar ohne neue Abfrage? Jünger als ``ttl`` UND entweder seit der Abfrage
+        keine Änderung gemeldet, oder die letzte Abfrage ist jünger als ``_REFRESH_MIN_GAP``."""
+        age = now - hit[1]
+        return age < ttl and (hit[2] == self._state_gen or age < _REFRESH_MIN_GAP)
+
+    def _cached(self, kind: str, method: str, extract, ttl: float = _STATE_TTL,
+                fresh: bool = False) -> Any:
+        """Gecachter Zustand je Abfrage-Art. ``fresh=True`` (Umschalt-Befehle, die den aktuellen Wert
+        brauchen) holt neu, wenn seit der Abfrage etwas gemeldet/gesetzt wurde. Läuft für dieselbe Art
+        schon eine Anfrage, bekommt jeder weitere Leser den letzten Stand statt einer zweiten Anfrage."""
+        asked = time.monotonic()
         with self._lock:
             hit = self._cache.get(kind)
-        if hit is not None and (now - hit[1]) < ttl:
-            return hit[0]
-        res = self._request(method)
-        val = extract(res) if res is not None else (hit[0] if hit else None)
-        with self._lock:
-            self._cache[kind] = (val, now)
-        return val
+            if hit is not None:
+                if fresh and hit[2] == self._state_gen:
+                    return hit[0]
+                if not fresh and self._is_current(hit, asked, ttl):
+                    return hit[0]
+            gate = self._fetch_gates.setdefault(kind, threading.Lock())
+        if hit is not None and not fresh:
+            if not gate.acquire(blocking=False):
+                return hit[0]                          # holt schon jemand → letzter Stand
+        elif not gate.acquire(timeout=_REQ_TIMEOUT + _CONNECT_TIMEOUT):
+            return hit[0] if hit else None
+        try:
+            with self._lock:                           # beim Warten evtl. schon frisch geholt
+                cur = self._cache.get(kind)
+                if cur is not None and cur[1] >= asked and cur[2] == self._state_gen:
+                    return cur[0]
+                gen = self._state_gen
+            res = self._request(method)
+            with self._lock:
+                if res is not None:
+                    val = extract(res)
+                    self._cache[kind] = (val, time.monotonic(), gen)
+                else:                                  # Fehler: alten Stand behalten, nicht sofort erneut fragen
+                    val = cur[0] if cur else None
+                    self._cache[kind] = (val, time.monotonic(), self._state_gen)
+            return val
+        finally:
+            gate.release()
 
-    def mixes(self) -> list:
+    def mixes(self, fresh: bool = False) -> list:
         """Liste der Mixes/Busse: [{id,name,level,isMuted,image}]."""
         mx = self._cached("mixes", "getMixes",
-                          lambda r: r.get("mixes", []) or []) or []
+                          lambda r: r.get("mixes", []) or [], fresh=fresh) or []
         self._ensure_subscribed([m.get("id") for m in mx], ("mix",))
         return mx
 
-    def channels(self, with_images: bool = False) -> list:
+    def channels(self, with_images: bool = False, fresh: bool = False) -> list:
         """Liste der Input-Channels inkl. Master-Level + per-Mix-Sends. Das große Base64-
         Icon (``image.imgData``) wird standardmäßig entfernt (klein halten)."""
         ch = self._cached("channels", "getChannels",
-                          lambda r: r.get("channels", []) or []) or []
+                          lambda r: r.get("channels", []) or [], fresh=fresh) or []
         self._ensure_subscribed([c.get("id") for c in ch], ("input", "channel"))
         if with_images:
             return ch
@@ -558,7 +598,7 @@ class WaveLinkDirect:
 
     def set_mix_mute(self, mix_id: str, muted: Optional[bool] = None) -> dict:
         if muted is None:
-            cur = next((m for m in self.mixes() if m.get("id") == mix_id), None)
+            cur = next((m for m in self.mixes(fresh=True) if m.get("id") == mix_id), None)
             muted = not bool(cur.get("isMuted")) if cur else True
         ok = self._command("setMix", self._mix_payload(mix_id, isMuted=bool(muted)))
         return {"success": ok, "muted": bool(muted),
@@ -576,7 +616,7 @@ class WaveLinkDirect:
     def set_channel_mute(self, channel_id: str, muted: Optional[bool] = None,
                          mix_id: str = "") -> dict:
         if muted is None:
-            cur = next((c for c in self.channels() if c.get("id") == channel_id), None)
+            cur = next((c for c in self.channels(fresh=True) if c.get("id") == channel_id), None)
             if mix_id and mix_id != "all" and cur:
                 snd = next((x for x in cur.get("mixes", []) if x.get("id") == mix_id), None)
                 muted = not bool(snd.get("isMuted")) if snd else True

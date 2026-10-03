@@ -712,8 +712,8 @@ if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { '{}'; exit }
 
     @r.get("/api/wavelink/icon")
     def wavelink_icon(request: Request) -> Response:
-        """1:1 Wave-Link-CHANNEL-Icon als PNG (``?id=<channel_id>``). 404 = kein Bild (z.B. Mix) → der
-        Fader fällt aufs Emoji zurück. Browser-gecacht (klein halten, kein SSE-Bloat)."""
+        """Früher das 1:1-Wave-Link-Channel-Icon; seit 03.10.2026 abgeschaltet (Wave-Link-Absturz beim
+        Icon-Rendern) → immer 404, der Fader fällt auf sein Symbol zurück. Route bleibt für alte Bundles."""
         png = get_service(request).wavelink_icon(request.query_params.get("id") or "")
         if not png:
             return Response(status_code=404)
