@@ -439,6 +439,16 @@ def _generated_label(prev_gen: dict, label: str, badge_icon: str) -> str:
     return ""
 
 
+def _artist_title(tr: dict) -> str:
+    """Titel mit vorangestelltem Urheber (Metafeld ``artist``), falls der Titel ihn nicht schon
+    traegt — fuer Sammel-Abschnitte, in denen Tracks verschiedener Stile nebeneinander liegen."""
+    title = str(tr.get("title") or "")
+    artist = str((tr.get("meta") or {}).get("artist") or "").strip()
+    if not artist or title.lower().startswith(artist.lower()):
+        return title
+    return f"{artist}: {title}"
+
+
 def _generated_stem_default(default, stem: str, icon: str, image: str, badge_icon: str) -> bool:
     """Ruhe-Beschriftung (``default``) einer Mediathek-Taste, die der Generator frueher aus dem
     Dateinamen gebaut hat: nur Symbol/Text/Farbe/Bild, Generator-Symbol, Farbe ``off``, eigenes
@@ -5220,12 +5230,22 @@ class DeckCoreService:
         badge_icon = str(jb.config().get("new_badge_icon") or "🆕")
         now_ts = time.time()
 
-        def track_titles(tr: dict) -> tuple[str, str]:
-            """(Titel fuer alle Zustaende, Ruhetitel mit Herkunftszeile)."""
+        # Favoriten-Stern auch an der HAUPTTASTE (Richard 06.10.2026: „sollten auch in ihrem
+        # Grundsatz-Ordner den Stern erhalten") — als Abzeichen im Titel wie der Neu-Stempel.
+        fav_icon = str(jb.config().get("favorite_icon") or "⭐")
+
+        def track_titles(tr: dict, with_artist: bool = False) -> tuple[str, str]:
+            """(Titel fuer alle Zustaende, Ruhetitel mit Herkunftszeile).
+
+            ``with_artist``: Sammel-Abschnitte (Favoriten/Neueste) stellen den Urheber (Metafeld
+            ``artist``, z. B. der Chatter einer TTS-Nachricht) vor den Titel — im eigenen
+            Abschnitt steht er schon in der Ueberschrift und faellt weg."""
             added = float(tr.get("added_at") or 0)
             is_new = badge_days > 0 and added > 0 and (now_ts - added) <= badge_days * 86400
-            base = tr["title"][:26] if is_new else tr["title"][:28]
-            title = f"{badge_icon} {base}" if is_new else base
+            marks = ([badge_icon] if is_new else []) + ([fav_icon] if tr.get("favorite") else [])
+            name = _artist_title(tr) if with_artist else tr["title"]
+            base = name[:28 - 2 * len(marks)]
+            title = " ".join(marks + [base])
             src = str(tr.get("source_date") or "")
             idle = title + (f"\nStream {src[8:10]}.{src[5:7]}." if len(src) >= 10 else "")
             return title, idle
@@ -5246,14 +5266,20 @@ class DeckCoreService:
         favs = [t for t in by_added if t.get("favorite") and prefix + t["id"] not in self._removed]
         if favs:
             extra_sections.append(("fav_", fav_label, favs))
+        # Stile, die in „Neueste" nichts zu suchen haben (``config.json → recent_exclude_styles``,
+        # z. B. Ansagen neben den Nachrichten): bleiben in ihrem Abschnitt, zaehlen hier nicht.
+        recent_skip = {str(x) for x in (jb.config().get("recent_exclude_styles") or [])}
         if recent_n > 0:
-            recents = [t for t in by_added if prefix + t["id"] not in self._removed][:recent_n]
+            recents = [t for t in by_added if prefix + t["id"] not in self._removed
+                       and t.get("style") not in recent_skip][:recent_n]
             if recents:
                 extra_sections.append(("new_", recent_label, recents))
         def upsert_track(bid: str, tr: dict, icon: str, cat: str, extra: dict) -> None:
             """EINE Track-Taste (Haupt- oder Zweittaste) mit derselben Generator-Logik: Titel/
             Abzeichen/Herkunft folgen dem Katalog, vom Nutzer gesetzte Kosmetik bleibt."""
-            title, idle_title = track_titles(tr)
+            secondary = bool(extra)   # Zweittaste eines Sammel-Abschnitts → Urheber vor den Titel
+            title, idle_title = track_titles(tr, with_artist=secondary)
+            name = _artist_title(tr) if secondary else tr["title"]
             previous = pool_by_id.get(bid) or {}
             previous_image = previous.get(meta_prefix + "_cover", "")
             # Der vom Generator ZULETZT gesetzte Titel: aendert er sich (Abzeichen kommt/geht),
@@ -5268,7 +5294,7 @@ class DeckCoreService:
             # Der Tastenname (``label``) folgt dem Mediathek-Titel wie der Tastentext: der
             # zuletzt generierte Name wird ersetzt, ein vom Nutzer vergebener bleibt.
             prev_label = _generated_label(prev_gen, str(previous.get("label") or ""), badge_icon)
-            if prev_label and prev_label != tr["title"]:
+            if prev_label and prev_label != name:
                 old_generated["label"] = prev_label
             # Altbestand (Tasten vor der Herkunftszeile, 17.09.2026): ein Ruhetext, der
             # erkennbar aus dem DATEINAMEN gebaut ist, stammt vom Generator — er folgt dem
@@ -5280,7 +5306,7 @@ class DeckCoreService:
                     and prev_default != {"icon": icon, "title": idle_title, "color": "off",
                                          "image": previous_image}:
                 olds.append({"default": dict(prev_default)})
-            upsert({"id": bid, "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
+            upsert({"id": bid, "label": name, "pool_cat": group, meta_prefix + "_track": tr["id"],
                     **extra,
                     "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
                     # Langdruck = Favoriten-Stern an/aus (Abschnitt „Favoriten" folgt beim naechsten Abgleich)
@@ -5292,7 +5318,7 @@ class DeckCoreService:
             # Artwork belongs to the shared button visual, consumed by every client.
             # Refresh our previous source image only; retain manually chosen imagery.
             button = next(b for b in self._buttons if b["id"] == bid)
-            button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title, "label": tr["title"]}
+            button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title, "label": name}
             cover_image = tr.get("cover_url") or ""
             default = button.setdefault("default", {})
             if not default.get("image") or default.get("image") == previous_image:
@@ -5342,10 +5368,16 @@ class DeckCoreService:
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
         if deck is not None:
             cats = [group] + extra_cats + [style_label(s) for s in order]
-            # Category order belongs to the deck template. A library refresh only
-            # appends new sections; it must not undo the user's arrangement.
             existing_cats = list(deck.get("categories") or [])
-            deck["categories"] = existing_cats + [c for c in cats if c not in existing_cats]
+            if jb.config().get("sections_follow_library"):
+                # Opt-in (Richard 06.10.2026, TTS-Box): die Mediathek bestimmt die Reihenfolge
+                # der Abschnitte — Sammel-Abschnitte zuerst, dann die Stile in Katalogordnung;
+                # fremde Abschnitte des Decks bleiben dahinter, wo sie sind.
+                deck["categories"] = cats + [c for c in existing_cats if c not in cats]
+            else:
+                # Category order belongs to the deck template. A library refresh only
+                # appends new sections; it must not undo the user's arrangement.
+                deck["categories"] = existing_cats + [c for c in cats if c not in existing_cats]
             old_items = {it["button"]: it for it in deck["items"] if it["button"] in keep}
             others = [it for it in deck["items"] if it["button"] not in keep]
             jb_items = []
