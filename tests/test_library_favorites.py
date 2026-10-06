@@ -113,3 +113,51 @@ def test_secondary_buttons_follow_catalogue_title_changes(tmp_path):
     svc.populate_library(lib, "main", group="Jukebox")
     fav = next(b for b in svc._buttons if b["id"] == "jb_fav_" + tid)
     assert fav["default"]["title"] == "MEIN STERN" and fav["label"] == "Gleich Final"
+
+
+def test_star_marks_the_main_button_and_sections_follow_library(tmp_path):
+    """Richard 06.10.2026: der Stern steht auch an der HAUPTTASTE im Stil-Abschnitt; mit
+    ``sections_follow_library`` bestimmt die Mediathek die Abschnittsreihenfolge (Favoriten vor
+    einem schon vorhandenen Stil-Abschnitt), fremde Abschnitte bleiben dahinter."""
+    lib, svc = _lib(tmp_path), _svc(tmp_path)
+    svc._decks[0]["categories"] = ["Fremd", "metal"]
+    lib.set_config(sections_follow_library=True, new_badge_days=0)
+    tid = next(t["id"] for t in lib.library() if "kommt gleich" in t["title"])
+    lib.favorite(tid, True)
+    svc.populate_library(lib, "main", group="Jukebox")
+    main_btn = next(b for b in svc._buttons if b["id"] == "jb_" + tid)
+    assert main_btn["default"]["title"].startswith("⭐ ") and main_btn["default"]["icon"] != "⭐"
+    other = next(b for b in svc._buttons if b["id"] == "jb_" + next(
+        t["id"] for t in lib.library() if "Dritter" in t["title"]))
+    assert not other["default"]["title"].startswith("⭐")
+    assert svc._decks[0]["categories"] == ["Jukebox", "⭐ Favoriten", "🆕 Neueste", "metal", "Fremd"]
+    # Stern weg → Abzeichen weg (Generator-Titel folgt dem Katalog)
+    lib.favorite(tid, False)
+    svc.populate_library(lib, "main", group="Jukebox")
+    main_btn = next(b for b in svc._buttons if b["id"] == "jb_" + tid)
+    assert not main_btn["default"]["title"].startswith("⭐")
+
+
+def test_recent_excludes_styles_and_secondary_buttons_carry_the_artist(tmp_path):
+    """``recent_exclude_styles`` haelt einen Stil aus „Neueste" heraus (er bleibt in seinem
+    Abschnitt); Metafeld ``artist`` steht in Favoriten/Neueste vor dem Titel, in der Haupttaste nicht."""
+    lib, svc = _lib(tmp_path), _svc(tmp_path)
+    ans = tmp_path / "music" / "ansagen"
+    ans.mkdir()
+    (ans / "2026-10-06 - Ansage.wav").write_bytes(b"RIFF")
+    lib.set_config(recent_exclude_styles=["ansagen"], new_badge_days=0)
+    tid = next(t["id"] for t in lib.library() if "kommt gleich" in t["title"])
+    lib.update_track_meta(tid, {"artist": "Sentavius"})
+    lib.favorite(tid, True)
+    svc.populate_library(lib, "main", group="Jukebox")
+    ids = {b["id"] for b in svc._buttons}
+    ans_id = next(t["id"] for t in lib.library() if t["style"] == "ansagen")
+    assert "jb_" + ans_id in ids and "jb_new_" + ans_id not in ids
+    assert sum(1 for b in svc._buttons if b["id"].startswith("jb_new_")) == 3
+    main_btn = next(b for b in svc._buttons if b["id"] == "jb_" + tid)
+    fav_btn = next(b for b in svc._buttons if b["id"] == "jb_fav_" + tid)
+    new_btn = next(b for b in svc._buttons if b["id"] == "jb_new_" + tid)
+    assert main_btn["label"] == "2026-09-25 - Ritschy kommt gleich" and "Sentavius" not in main_btn["default"]["title"]
+    assert fav_btn["label"] == "Sentavius: 2026-09-25 - Ritschy kommt gleich"
+    assert fav_btn["default"]["title"].startswith("⭐ Sentavius: ")
+    assert new_btn["default"]["title"].startswith("⭐ Sentavius: ")
