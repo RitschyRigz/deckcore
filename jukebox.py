@@ -630,6 +630,8 @@ class Jukebox:
             rel = p.relative_to(root)
             tid = _slug(str(rel.with_suffix("")))
             m = meta.get(tid) if isinstance(meta.get(tid), dict) else {}
+            if m.get("hidden"):
+                continue   # Host-Entscheid: Datei bleibt im Ordner, bekommt aber keine Taste/Auswahl
             folder_style = rel.parts[0] if len(rel.parts) > 1 else ""
             cover = self._cover_sidecar(p, root)
             title = str(m.get("title") or p.stem)

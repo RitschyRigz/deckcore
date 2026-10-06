@@ -77,3 +77,39 @@ def test_library_favorite_repopulates_registered_library(tmp_path):
     tid = lib.library()[0]["id"]
     res = svc.library_favorite("jukebox", lib, tid)
     assert res["success"] and res["favorite"] is True and calls == ["main"]
+
+
+def test_deleted_secondary_buttons_stay_deleted(tmp_path):
+    """Codex R1 F03: eine per delete_button entfernte Favoriten-/Neueste-Taste kommt beim
+    naechsten Abgleich nicht zurueck; Haupttaste und Abschnitt bleiben."""
+    lib, svc = _lib(tmp_path), _svc(tmp_path)
+    tid = next(t["id"] for t in lib.library() if "kommt gleich" in t["title"])
+    lib.favorite(tid, True)
+    svc.populate_library(lib, "main", group="Jukebox")
+    svc.delete_button("jb_fav_" + tid)
+    svc.delete_button("jb_new_" + tid)
+    svc.populate_library(lib, "main", group="Jukebox")
+    ids = {b["id"] for b in svc._buttons}
+    assert "jb_fav_" + tid not in ids and "jb_new_" + tid not in ids and "jb_" + tid in ids
+
+
+def test_secondary_buttons_follow_catalogue_title_changes(tmp_path):
+    """Codex R1 F04: Katalogtitel aendert sich -> Haupt-, Favoriten- und Neueste-Taste zeigen den
+    neuen Titel; eine vom Nutzer gesetzte Beschriftung bleibt."""
+    lib, svc = _lib(tmp_path), _svc(tmp_path)
+    tid = next(t["id"] for t in lib.library() if "kommt gleich" in t["title"])
+    lib.favorite(tid, True)
+    svc.populate_library(lib, "main", group="Jukebox")
+    lib.update_track_meta(tid, {"title": "Gleich Remix"})
+    svc.populate_library(lib, "main", group="Jukebox")
+    for bid in ("jb_" + tid, "jb_fav_" + tid, "jb_new_" + tid):
+        b = next(b for b in svc._buttons if b["id"] == bid)
+        assert b["label"] == "Gleich Remix", bid
+        assert "Gleich Remix" in b["default"]["title"], bid
+    # Nutzerkosmetik bleibt: eigener Ruhetitel an der Favoritentaste
+    fav = next(b for b in svc._buttons if b["id"] == "jb_fav_" + tid)
+    fav["default"] = {**fav["default"], "title": "MEIN STERN"}
+    lib.update_track_meta(tid, {"title": "Gleich Final"})
+    svc.populate_library(lib, "main", group="Jukebox")
+    fav = next(b for b in svc._buttons if b["id"] == "jb_fav_" + tid)
+    assert fav["default"]["title"] == "MEIN STERN" and fav["label"] == "Gleich Final"
