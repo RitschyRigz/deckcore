@@ -26,7 +26,7 @@ def _lib(tmp_path: Path) -> jb.Jukebox:
                  "2026-10-01 - Dritter.wav"):
         (music / name).write_bytes(b"RIFF")
     lib = jb.Jukebox(tmp_path / "rt", mpv_resolver=lambda p: "", run_actions=lambda a, v: {}, publish=None)
-    lib.set_config(library_dir=str(tmp_path / "music"), recent_section=2)
+    lib.set_config(library_dir=str(tmp_path / "music"), recent_section=3)
     return lib
 
 
@@ -53,7 +53,7 @@ def test_populate_adds_favorites_and_recent_sections_with_long_press(tmp_path):
     assert res["ok"]
     ids = {b["id"] for b in svc._buttons}
     assert "jb_fav_" + tid in ids, "Favorit bekommt eine Zweittaste im Abschnitt Favoriten"
-    assert sum(1 for b in svc._buttons if b["id"].startswith("jb_new_")) == 2, "recent_section=2"
+    assert sum(1 for b in svc._buttons if b["id"].startswith("jb_new_")) == 3, "recent_section=3"
     track_btn = next(b for b in svc._buttons if b["id"] == "jb_" + tid)
     assert track_btn["long_action"] == {"type": "jukebox", "mode": "favorite", "track": tid}
     fav_btn = next(b for b in svc._buttons if b["id"] == "jb_fav_" + tid)
