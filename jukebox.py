@@ -547,6 +547,18 @@ class Jukebox:
         raw = self._json("styles.json").get("styles")
         return raw if isinstance(raw, dict) else {}
 
+    def set_styles(self, styles: dict) -> dict:
+        """Stil-Katalog (``styles.json``) als Ganzes setzen — fuer Hosts, deren Abschnitte aus
+        Daten entstehen (z. B. je Chatter ein Abschnitt der TTS-Box). Atomar unter der Meta-Sperre;
+        andere Dateien bleiben unberuehrt."""
+        if not isinstance(styles, dict):
+            raise ValueError("styles muss ein Objekt sein")
+        with self._meta_lock:
+            doc = self._json("styles.json")
+            doc["styles"] = {str(k): (dict(v) if isinstance(v, dict) else {}) for k, v in styles.items()}
+            self._write_json("styles.json", doc)
+        return doc["styles"]
+
     def set_track_style(self, track_id: str, style: str, **fields) -> dict:
         patch = {k: v for k, v in fields.items() if v is not None}
         patch["style"] = str(style or "")
@@ -580,6 +592,21 @@ class Jukebox:
                 tracks.pop(track_id, None)
             self._write_json("library.json", lib)
             return entry
+
+    def favorite(self, track_id: str, on: Optional[bool] = None) -> dict:
+        """Favoriten-Stern eines Tracks setzen/loeschen (``on`` None = umschalten). Der Stern ist
+        ein Host-neutrales Metafeld ``favorite`` in library.json; Hosts (Musik, Videos, TTS)
+        zeigen daraus denselben Abschnitt „Favoriten" auf dem Deck (Richard 06.10.2026)."""
+        t = self.track(track_id)
+        if not t:
+            return {"ok": False, "reason": f"unbekannter Track: {track_id}"}
+        now_on = bool(t.get("favorite"))
+        want = (not now_on) if on is None else bool(on)
+        try:
+            self.update_track_meta(t["id"], {"favorite": True if want else None})
+        except (RuntimeError, ValueError, OSError) as e:
+            return {"ok": False, "reason": str(e)}
+        return {"ok": True, "track": t["id"], "title": t["title"], "favorite": want}
 
     def library(self) -> list[dict]:
         """Ordner scannen; Stil aus library.json, sonst aus dem Unterordnernamen; sonst leer."""
@@ -629,6 +656,8 @@ class Jukebox:
                 "source_date": self._origin_date(m, p.stem),
                 "source_session": str(m.get("source_session") or ""),
                 "added_at": added_at,
+                # Favoriten-Stern (Metafeld ``favorite``), von Hosts/Deck gemeinsam genutzt.
+                "favorite": bool(m.get("favorite")),
                 "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
                 # Freie Host-Felder aus library.json (z. B. Spiel/Anlass einer Musikseite) —
                 # die Jukebox deutet sie nicht, sie reicht sie nur durch.

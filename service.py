@@ -5029,11 +5029,29 @@ class DeckCoreService:
             res = jb.play_request(str(action.get("text") or ""), pick=str(action.get("pick") or "latest_origin"))
         elif mode == "play":
             res = jb.play(track, style_override=style)
+        elif mode == "favorite":
+            return self.library_favorite("jukebox", jb, track)
         else:
             res = jb.toggle(track, style_override=style)
         ok = bool(res.get("ok"))
         msg = res.get("reason") or res.get("message") or (f"Spielt: {res.get('title')}" if ok and res.get("title") else "ok")
         return {"success": ok, "message": str(msg)}
+
+    def library_favorite(self, key: str, lib, track_id: str, on: Optional[bool] = None) -> dict:
+        """Favoriten-Stern eines Mediathek-Tracks umschalten und die Tasten der Mediathek sofort
+        nachziehen (Abschnitt „Favoriten"). Gemeinsam fuer Musik, Videos, TTS — der Host ruft
+        das aus seiner Aktion (``mode: favorite``) oder per API."""
+        res = lib.favorite(track_id, on)
+        if not res.get("ok"):
+            return {"success": False, "message": str(res.get("reason") or "Favorit nicht gesetzt")}
+        entry = self._libraries.get(key)
+        if entry is not None:
+            try:
+                entry["populate"](str((lib.config() or {}).get("deck_id") or ""))
+            except Exception as e:  # noqa: BLE001 — der Stern ist gesetzt, nur die Tasten hinken
+                log.warning("Favoriten-Abgleich %s: %s", key, e)
+        star = "⭐ Favorit" if res.get("favorite") else "Stern entfernt"
+        return {"success": True, "message": f"{star}: {res.get('title')}", "favorite": bool(res.get("favorite"))}
 
     def _mon_jukebox_state(self, mon: dict, btn: dict) -> Any:
         return self.jukebox().deck_state(str(mon.get("track") or ""), str(mon.get("style") or ""))
@@ -5212,6 +5230,42 @@ class DeckCoreService:
             idle = title + (f"\nStream {src[8:10]}.{src[5:7]}." if len(src) >= 10 else "")
             return title, idle
 
+        # Sammel-Abschnitte VOR den Stilen (Richard 06.10.2026, ein Baustein fuer alle Mediatheken):
+        # „Favoriten" = Tracks mit Stern (Langdruck auf der Taste oder Cockpit), „Neueste" =
+        # die juengsten N (``config.json → recent_section``, 0 = aus). Beides sind ZWEITTASTEN
+        # (eigene Kennung ``<prefix>fav_<id>`` / ``<prefix>new_<id>``) auf dieselbe Aktion —
+        # der Track bleibt zusaetzlich in seinem Stil-Abschnitt. Kein Stern, keine Taste.
+        fav_label = str(jb.config().get("favorites_label") or "⭐ Favoriten")
+        try:
+            recent_n = int(jb.config().get("recent_section") or 0)
+        except (TypeError, ValueError):
+            recent_n = 0
+        recent_label = str(jb.config().get("recent_label") or "🆕 Neueste")
+        by_added = sorted(tracks, key=lambda x: (-float(x.get("added_at") or x.get("mtime") or 0), x["rel"]))
+        extra_sections: list[tuple[str, str, list]] = []   # (tasten-praefix, kategorie, tracks)
+        favs = [t for t in by_added if t.get("favorite") and prefix + t["id"] not in self._removed]
+        if favs:
+            extra_sections.append(("fav_", fav_label, favs))
+        if recent_n > 0:
+            recents = [t for t in by_added if prefix + t["id"] not in self._removed][:recent_n]
+            if recents:
+                extra_sections.append(("new_", recent_label, recents))
+        extra_cats: list[str] = []
+        for sub, cat_label, rows in extra_sections:
+            extra_cats.append(cat_label)
+            for tr in rows:
+                title, idle_title = track_titles(tr)
+                bid = prefix + sub + tr["id"]
+                upsert({"id": bid, "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
+                        meta_prefix + "_section": sub.rstrip("_"),
+                        "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
+                        "long_action": {"type": action_type, "mode": "favorite", "track": tr["id"]},
+                        "monitor": {"type": monitor_type, "track": tr["id"]},
+                        "states": states(tr["id"], title, "⭐" if sub == "fav_" else track_icon),
+                        "default": {"icon": "⭐" if sub == "fav_" else track_icon, "title": idle_title,
+                                    "color": "off", "image": tr.get("cover_url") or ""}})
+                wanted.append((bid, cat_label))
+                n += 1
         for sid in order:
             label = style_label(sid)
             cat = label
@@ -5261,6 +5315,8 @@ class DeckCoreService:
                     olds.append({"default": dict(prev_default)})
                 upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
                         "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
+                        # Langdruck = Favoriten-Stern an/aus (Abschnitt „Favoriten" folgt beim naechsten Abgleich)
+                        "long_action": {"type": action_type, "mode": "favorite", "track": tr["id"]},
                         "monitor": {"type": monitor_type, "track": tr["id"]},
                         "states": states(tr["id"], title, track_icon),
                         "default": {"icon": track_icon, "title": idle_title, "color": "off"}},
@@ -5285,7 +5341,7 @@ class DeckCoreService:
             self._pool_remove(bid, remember=False)
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
         if deck is not None:
-            cats = [group] + [style_label(s) for s in order]
+            cats = [group] + extra_cats + [style_label(s) for s in order]
             # Category order belongs to the deck template. A library refresh only
             # appends new sections; it must not undo the user's arrangement.
             existing_cats = list(deck.get("categories") or [])
