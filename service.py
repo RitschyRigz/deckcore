@@ -5029,11 +5029,29 @@ class DeckCoreService:
             res = jb.play_request(str(action.get("text") or ""), pick=str(action.get("pick") or "latest_origin"))
         elif mode == "play":
             res = jb.play(track, style_override=style)
+        elif mode == "favorite":
+            return self.library_favorite("jukebox", jb, track)
         else:
             res = jb.toggle(track, style_override=style)
         ok = bool(res.get("ok"))
         msg = res.get("reason") or res.get("message") or (f"Spielt: {res.get('title')}" if ok and res.get("title") else "ok")
         return {"success": ok, "message": str(msg)}
+
+    def library_favorite(self, key: str, lib, track_id: str, on: Optional[bool] = None) -> dict:
+        """Favoriten-Stern eines Mediathek-Tracks umschalten und die Tasten der Mediathek sofort
+        nachziehen (Abschnitt „Favoriten"). Gemeinsam fuer Musik, Videos, TTS — der Host ruft
+        das aus seiner Aktion (``mode: favorite``) oder per API."""
+        res = lib.favorite(track_id, on)
+        if not res.get("ok"):
+            return {"success": False, "message": str(res.get("reason") or "Favorit nicht gesetzt")}
+        entry = self._libraries.get(key)
+        if entry is not None:
+            try:
+                entry["populate"](str((lib.config() or {}).get("deck_id") or ""))
+            except Exception as e:  # noqa: BLE001 — der Stern ist gesetzt, nur die Tasten hinken
+                log.warning("Favoriten-Abgleich %s: %s", key, e)
+        star = "⭐ Favorit" if res.get("favorite") else "Stern entfernt"
+        return {"success": True, "message": f"{star}: {res.get('title')}", "favorite": bool(res.get("favorite"))}
 
     def _mon_jukebox_state(self, mon: dict, btn: dict) -> Any:
         return self.jukebox().deck_state(str(mon.get("track") or ""), str(mon.get("style") or ""))
@@ -5212,6 +5230,85 @@ class DeckCoreService:
             idle = title + (f"\nStream {src[8:10]}.{src[5:7]}." if len(src) >= 10 else "")
             return title, idle
 
+        # Sammel-Abschnitte VOR den Stilen (Richard 06.10.2026, ein Baustein fuer alle Mediatheken):
+        # „Favoriten" = Tracks mit Stern (Langdruck auf der Taste oder Cockpit), „Neueste" =
+        # die juengsten N (``config.json → recent_section``, 0 = aus). Beides sind ZWEITTASTEN
+        # (eigene Kennung ``<prefix>fav_<id>`` / ``<prefix>new_<id>``) auf dieselbe Aktion —
+        # der Track bleibt zusaetzlich in seinem Stil-Abschnitt. Kein Stern, keine Taste.
+        fav_label = str(jb.config().get("favorites_label") or "⭐ Favoriten")
+        try:
+            recent_n = int(jb.config().get("recent_section") or 0)
+        except (TypeError, ValueError):
+            recent_n = 0
+        recent_label = str(jb.config().get("recent_label") or "🆕 Neueste")
+        by_added = sorted(tracks, key=lambda x: (-float(x.get("added_at") or x.get("mtime") or 0), x["rel"]))
+        extra_sections: list[tuple[str, str, list]] = []   # (tasten-praefix, kategorie, tracks)
+        favs = [t for t in by_added if t.get("favorite") and prefix + t["id"] not in self._removed]
+        if favs:
+            extra_sections.append(("fav_", fav_label, favs))
+        if recent_n > 0:
+            recents = [t for t in by_added if prefix + t["id"] not in self._removed][:recent_n]
+            if recents:
+                extra_sections.append(("new_", recent_label, recents))
+        def upsert_track(bid: str, tr: dict, icon: str, cat: str, extra: dict) -> None:
+            """EINE Track-Taste (Haupt- oder Zweittaste) mit derselben Generator-Logik: Titel/
+            Abzeichen/Herkunft folgen dem Katalog, vom Nutzer gesetzte Kosmetik bleibt."""
+            title, idle_title = track_titles(tr)
+            previous = pool_by_id.get(bid) or {}
+            previous_image = previous.get(meta_prefix + "_cover", "")
+            # Der vom Generator ZULETZT gesetzte Titel: aendert er sich (Abzeichen kommt/geht),
+            # darf die Auffrischung greifen — vom Nutzer geaenderte Titel bleiben erhalten.
+            prev_gen = previous.get(meta_prefix + "_gen_title") or {}
+            old_generated: dict = {}
+            if prev_gen and (prev_gen.get("title"), prev_gen.get("idle")) != (title, idle_title):
+                old_generated = {"states": states(tr["id"], str(prev_gen.get("title") or ""), icon),
+                                 # exakt die Form, die der Generator zuletzt schrieb (inkl. Artwork-Feld)
+                                 "default": {"icon": icon, "title": str(prev_gen.get("idle") or ""),
+                                             "color": "off", "image": previous_image}}
+            # Der Tastenname (``label``) folgt dem Mediathek-Titel wie der Tastentext: der
+            # zuletzt generierte Name wird ersetzt, ein vom Nutzer vergebener bleibt.
+            prev_label = _generated_label(prev_gen, str(previous.get("label") or ""), badge_icon)
+            if prev_label and prev_label != tr["title"]:
+                old_generated["label"] = prev_label
+            # Altbestand (Tasten vor der Herkunftszeile, 17.09.2026): ein Ruhetext, der
+            # erkennbar aus dem DATEINAMEN gebaut ist, stammt vom Generator — er folgt dem
+            # Mediathek-Titel wie alle anderen (Musikseite M1, 25.09.2026).
+            olds: list = [old_generated] if old_generated else []
+            prev_default = previous.get("default")
+            if _generated_stem_default(prev_default, Path(str(tr.get("file") or "")).stem,
+                                       icon, previous_image, badge_icon) \
+                    and prev_default != {"icon": icon, "title": idle_title, "color": "off",
+                                         "image": previous_image}:
+                olds.append({"default": dict(prev_default)})
+            upsert({"id": bid, "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
+                    **extra,
+                    "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
+                    # Langdruck = Favoriten-Stern an/aus (Abschnitt „Favoriten" folgt beim naechsten Abgleich)
+                    "long_action": {"type": action_type, "mode": "favorite", "track": tr["id"]},
+                    "monitor": {"type": monitor_type, "track": tr["id"]},
+                    "states": states(tr["id"], title, icon),
+                    "default": {"icon": icon, "title": idle_title, "color": "off"}},
+                   olds or None)
+            # Artwork belongs to the shared button visual, consumed by every client.
+            # Refresh our previous source image only; retain manually chosen imagery.
+            button = next(b for b in self._buttons if b["id"] == bid)
+            button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title, "label": tr["title"]}
+            cover_image = tr.get("cover_url") or ""
+            default = button.setdefault("default", {})
+            if not default.get("image") or default.get("image") == previous_image:
+                default["image"] = cover_image
+            button[meta_prefix + "_cover"] = cover_image
+            wanted.append((bid, cat))
+        extra_cats: list[str] = []
+        for sub, cat_label, rows in extra_sections:
+            extra_cats.append(cat_label)
+            for tr in rows:
+                bid = prefix + sub + tr["id"]
+                if bid in self._removed:
+                    continue   # bewusst geloeschte Zweittaste bleibt weg (Codex R1 F03)
+                upsert_track(bid, tr, "⭐" if sub == "fav_" else track_icon, cat_label,
+                             {meta_prefix + "_section": sub.rstrip("_")})
+                n += 1
         for sid in order:
             label = style_label(sid)
             cat = label
@@ -5233,48 +5330,7 @@ class DeckCoreService:
                                             -float(x.get("mtime") or 0), x["rel"])):
                 if prefix + tr["id"] in self._removed:
                     continue   # in der Kategorie-Liste abgewaehlt → keine Taste (Ordner bleibt Wahrheit)
-                title, idle_title = track_titles(tr)
-                previous = pool_by_id.get(prefix + tr["id"]) or {}
-                previous_image = previous.get(meta_prefix + "_cover", "")
-                # Der vom Generator ZULETZT gesetzte Titel: aendert er sich (Abzeichen kommt/geht),
-                # darf die Auffrischung greifen — vom Nutzer geaenderte Titel bleiben erhalten.
-                prev_gen = previous.get(meta_prefix + "_gen_title") or {}
-                old_generated: dict = {}
-                if prev_gen and (prev_gen.get("title"), prev_gen.get("idle")) != (title, idle_title):
-                    old_generated = {"states": states(tr["id"], str(prev_gen.get("title") or ""), track_icon),
-                                     # exakt die Form, die der Generator zuletzt schrieb (inkl. Artwork-Feld)
-                                     "default": {"icon": track_icon, "title": str(prev_gen.get("idle") or ""),
-                                                 "color": "off", "image": previous_image}}
-                # Der Tastenname (``label``) folgt dem Mediathek-Titel wie der Tastentext: der
-                # zuletzt generierte Name wird ersetzt, ein vom Nutzer vergebener bleibt.
-                prev_label = _generated_label(prev_gen, str(previous.get("label") or ""), badge_icon)
-                if prev_label and prev_label != tr["title"]:
-                    old_generated["label"] = prev_label
-                # Altbestand (Tasten vor der Herkunftszeile, 17.09.2026): ein Ruhetext, der
-                # erkennbar aus dem DATEINAMEN gebaut ist, stammt vom Generator — er folgt dem
-                # Mediathek-Titel wie alle anderen (Musikseite M1, 25.09.2026).
-                olds: list = [old_generated] if old_generated else []
-                prev_default = previous.get("default")
-                if _generated_stem_default(prev_default, Path(str(tr.get("file") or "")).stem,
-                                           track_icon, previous_image, badge_icon)                         and prev_default != {"icon": track_icon, "title": idle_title, "color": "off",
-                                             "image": previous_image}:
-                    olds.append({"default": dict(prev_default)})
-                upsert({"id": prefix + tr["id"], "label": tr["title"], "pool_cat": group, meta_prefix + "_track": tr["id"],
-                        "action": {"type": action_type, "mode": "toggle", "track": tr["id"]},
-                        "monitor": {"type": monitor_type, "track": tr["id"]},
-                        "states": states(tr["id"], title, track_icon),
-                        "default": {"icon": track_icon, "title": idle_title, "color": "off"}},
-                       olds or None)
-                # Artwork belongs to the shared button visual, consumed by every client.
-                # Refresh our previous source image only; retain manually chosen imagery.
-                button = next(b for b in self._buttons if b["id"] == prefix + tr["id"])
-                button[meta_prefix + "_gen_title"] = {"title": title, "idle": idle_title, "label": tr["title"]}
-                cover_image = tr.get("cover_url") or ""
-                default = button.setdefault("default", {})
-                if not default.get("image") or default.get("image") == previous_image:
-                    default["image"] = cover_image
-                button[meta_prefix + "_cover"] = cover_image
-                wanted.append((prefix + tr["id"], cat))
+                upsert_track(prefix + tr["id"], tr, track_icon, cat, {})
                 n += 1
         # Aufraeumen: Tasten, die die Bibliothek nicht mehr hergibt (ohne Merken — kommt der
         # Track zurueck, kommt die Taste zurueck; bewusste Abwahl steht schon in _removed).
@@ -5285,7 +5341,7 @@ class DeckCoreService:
             self._pool_remove(bid, remember=False)
         # Deck: Abschnitte + Reihenfolge (fremde Items bleiben vorn, wo sie sind)
         if deck is not None:
-            cats = [group] + [style_label(s) for s in order]
+            cats = [group] + extra_cats + [style_label(s) for s in order]
             # Category order belongs to the deck template. A library refresh only
             # appends new sections; it must not undo the user's arrangement.
             existing_cats = list(deck.get("categories") or [])
