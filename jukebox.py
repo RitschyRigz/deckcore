@@ -225,10 +225,22 @@ class _MpvAudio:
         duration = 0.0
         ended = False
         buf = b""
+        # Aufgestaute time-pos-Meldungen zusammenfassen: nur die neueste zaehlt. Ohne das holte
+        # ein langsamer Empfaenger den Rueckstau nie auf — das Mitsing-Overlay hing im Stream
+        # 07.10.2026 bis zu 9 s hinter dem Gesang und uebersprang Zeilen.
+        pending_progress = False
+
+        def _flush_progress() -> None:
+            nonlocal pending_progress
+            if pending_progress:
+                pending_progress = False
+                self._on_event({"event": "progress", "position": position, "duration": duration})
+
         try:
             while True:
                 nl = buf.find(b"\n")
                 if nl < 0:
+                    _flush_progress()   # Puffer leer: jetzt den neuesten Stand melden
                     avail = _pipe_available(fh)
                     if avail is None:
                         break                       # Pipe weg (mpv beendet)
@@ -251,14 +263,17 @@ class _MpvAudio:
                 except ValueError:
                     continue
                 ev = msg.get("event")
+                if ev == "property-change" and msg.get("name") == "time-pos" \
+                        and isinstance(msg.get("data"), (int, float)):
+                    position = float(msg["data"])
+                    pending_progress = True
+                    continue
+                _flush_progress()   # Reihenfolge wahren: Position vor jedem anderen Ereignis
                 if ev == "file-loaded":
                     self._on_event({"event": "loaded"})
                 elif ev == "property-change":
                     name, data = msg.get("name"), msg.get("data")
-                    if name == "time-pos" and isinstance(data, (int, float)):
-                        position = float(data)
-                        self._on_event({"event": "progress", "position": position, "duration": duration})
-                    elif name == "duration" and isinstance(data, (int, float)):
+                    if name == "duration" and isinstance(data, (int, float)):
                         duration = float(data)
                         self._on_event({"event": "progress", "position": position, "duration": duration})
                     elif name == "pause" and isinstance(data, bool):
@@ -461,6 +476,9 @@ class Jukebox:
         # In-Prozess-Zuhoerer fuer Zustandswechsel (Hosts), zusaetzlich zum Bus-``publish``.
         self.listeners: list[Callable[[dict], None]] = []
         self._lyrics_cache: dict[str, tuple] = {}
+        # Mitsing-Cues des laufenden Auftrags: (request_id, cues). ``lyrics()`` scannt die ganze
+        # Bibliothek (~35 ms) und darf nicht je time-pos-Meldung laufen (Stream 07.10.2026).
+        self._progress_cues: tuple = (None, [])
         self._state: dict = {"state": "idle", "request_id": None, "track": None, "style": None,
                              "position": 0.0, "duration": 0.0, "reason": None, "lyric": {},
                              "ducked": False, "duck_level": None, "updated_at": time.time()}
@@ -1500,7 +1518,11 @@ class Jukebox:
                 now = time.monotonic()
                 heavy = now - self._last_progress_publish >= 1.0
                 position = float(ev.get("position") or 0)
-                lyric = lyric_at(self.lyrics(str(snap.get("track") or "")), position)
+                cached_rid, cues = self._progress_cues
+                if cached_rid != rid:
+                    cues = self.lyrics(str(snap.get("track") or ""))
+                    self._progress_cues = (rid, cues)
+                lyric = lyric_at(cues, position)
                 if lyric.get("index") != (snap.get("lyric") or {}).get("index"):
                     heavy = True   # Zeilenwechsel sofort raus (Overlay, Listener)
                 if heavy:
