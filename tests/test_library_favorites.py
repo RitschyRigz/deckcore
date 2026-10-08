@@ -161,3 +161,36 @@ def test_recent_excludes_styles_and_secondary_buttons_carry_the_artist(tmp_path)
     assert fav_btn["label"] == "Sentavius: 2026-09-25 - Ritschy kommt gleich"
     assert fav_btn["default"]["title"].startswith("⭐ Sentavius: ")
     assert new_btn["default"]["title"].startswith("⭐ Sentavius: ")
+
+
+def test_two_libraries_sharing_a_section_keep_their_positions(tmp_path):
+    """Codex 1c F10: zwei Mediatheken im selben Ordner teilen sich „⭐ Favoriten"; abwechselnde
+    Abgleiche (auch mit Sternwechsel) duerfen die Plaetze der Tasten nicht vertauschen."""
+    svc = _svc(tmp_path)
+    a = _lib(tmp_path / "a")
+    music_b = tmp_path / "b" / "music" / "cozy"
+    music_b.mkdir(parents=True)
+    for name in ("2026-10-01 - Clip Eins.wav", "2026-10-02 - Clip Zwei.wav"):
+        (music_b / name).write_bytes(b"RIFF")
+    b = jb.Jukebox(tmp_path / "b" / "rt", mpv_resolver=lambda p: "", run_actions=lambda x, v: {}, publish=None)
+    b.set_config(library_dir=str(tmp_path / "b" / "music"), recent_section=0)
+    a.favorite(a.library()[0]["id"], True)
+    b.favorite(b.library()[0]["id"], True)
+
+    def favs():
+        return [it["button"] for it in svc._decks[0]["items"] if it.get("category") == "⭐ Favoriten"]
+
+    svc.populate_library(a, "main", group="TTS", prefix="ta_")
+    svc.populate_library(b, "main", group="Clips", prefix="cb_")
+    first = favs()
+    assert [x[:3] for x in first] == ["ta_", "cb_"]
+    for _ in range(3):
+        svc.populate_library(a, "main", group="TTS", prefix="ta_")
+        svc.populate_library(b, "main", group="Clips", prefix="cb_")
+        assert favs() == first, "Favoritenplaetze bleiben stabil"
+    # Stern dazu bei A: neue Taste kommt dazu, die bestehenden behalten ihre Reihenfolge
+    a.favorite(a.library()[1]["id"], True)
+    svc.populate_library(a, "main", group="TTS", prefix="ta_")
+    svc.populate_library(b, "main", group="Clips", prefix="cb_")
+    now = favs()
+    assert [x for x in now if x in first] == first and len(now) == 3
