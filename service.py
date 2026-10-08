@@ -5379,7 +5379,6 @@ class DeckCoreService:
                 # appends new sections; it must not undo the user's arrangement.
                 deck["categories"] = existing_cats + [c for c in cats if c not in existing_cats]
             old_items = {it["button"]: it for it in deck["items"] if it["button"] in keep}
-            others = [it for it in deck["items"] if it["button"] not in keep]
             jb_items = []
             for bid, cat in wanted:
                 it = old_items.get(bid) or {"button": bid, "style": {}, "hidden": False}
@@ -5391,7 +5390,20 @@ class DeckCoreService:
                 if placement != "grid":
                     it["style"].setdefault("label", "off")
                 jb_items.append(it)
-            deck["items"] = others + jb_items
+            # Stabil einfuegen (Codex 1c F10): die eigenen Tasten fuellen die PLAETZE, die diese
+            # Mediathek schon belegte, in Zielreihenfolge; fremde Tasten bleiben, wo sie sind.
+            # Teilen sich zwei Mediatheken einen Abschnitt (z. B. „⭐ Favoriten" im Nipples-Ordner),
+            # springen ihre Tasten so bei abwechselnden Abgleichen nicht mehr hin und her. Neue
+            # Tasten kommen hinten dran (Erstabgleich = wie bisher: fremde zuerst, dann eigene).
+            def _ours(it) -> bool:
+                return str(it.get("button") or "").startswith(prefix)
+            merged, queue = [], list(jb_items)
+            for it in deck["items"]:
+                if not _ours(it):
+                    merged.append(it)
+                elif queue:
+                    merged.append(queue.pop(0))
+            deck["items"] = merged + queue
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "buttons": n, "removed": len(removed), "styles": order, "deck": deck_id or None}
 
