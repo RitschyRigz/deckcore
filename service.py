@@ -93,6 +93,7 @@ import logging
 import re
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -1318,6 +1319,17 @@ def _dig(obj: Any, path: str) -> Any:
     return cur
 
 
+def _render_shown(obj: Any, shown: str) -> Any:
+    """``{shown}`` in allen Zeichenketten eines Aktions-Koerpers ersetzen (rekursiv, Struktur bleibt)."""
+    if isinstance(obj, str):
+        return obj.replace("{shown}", shown)
+    if isinstance(obj, list):
+        return [_render_shown(v, shown) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _render_shown(v, shown) for k, v in obj.items()}
+    return obj
+
+
 def _match(value: Any, when: dict) -> bool:
     op = (when or {}).get("op", "any")
     target = (when or {}).get("value")
@@ -1586,6 +1598,7 @@ class DeckCoreService:
         # Tastendruck NIE auf IO wartet. Der async Eval-Loop läuft in EIGENEM Thread → Flag ungesetzt
         # → dort weiterhin voll Live-IO (er ist der eigentliche Auffrischer). threadlocal = race-frei.
         self._tls = threading.local()
+        self._poll_labels: dict = {}      # bid -> zweite Anzeigezeile aus monitor.label_path
         # F10: Neuberechnung nach Druck/Edit laeuft NICHT mehr im Press-Thread, sondern als
         # angeforderter Lauf des EINEN Eval-Loops (zusammengefasst, nie zwei Schreiber).
         self._recompute_requested = threading.Event()
@@ -4749,7 +4762,7 @@ class DeckCoreService:
 
     PRESS_VARIANTS = ("short", "long")
 
-    def press(self, bid: str, variant: str = "short", source: str = "") -> dict:
+    def press(self, bid: str, variant: str = "short", source: str = "", shown: "str | None" = None) -> dict:
         """Aktion eines Buttons ausführen (SYNC — Endpoint wrappt in to_thread).
         Dispatch über die Capability-Registry: ``action.type`` → registrierter Handler.
         ``variant``: ``short`` (Default) = ``action``; ``long`` = ``long_action`` (langer Druck).
@@ -4759,7 +4772,7 @@ class DeckCoreService:
         ein verlorener Langdruck war vorher weder im Log noch im Journal zu sehen)."""
         t0 = time.monotonic()
         try:
-            res = self._press(bid, variant)
+            res = self._press(bid, variant, shown)
         except KeyError:
             self._log_press(bid, variant, source, {"success": False, "message": "Unbekannter Button"}, t0)
             raise
@@ -4827,7 +4840,7 @@ class DeckCoreService:
         log.info("deck client_event %s", " ".join(f"{k}={v}" for k, v in fields.items()))
         return {"ok": True}
 
-    def _press(self, bid: str, variant: str = "short") -> dict:
+    def _press(self, bid: str, variant: str = "short", shown: "str | None" = None) -> dict:
         btn = next((b for b in self._buttons if b.get("id") == bid), None)
         if btn is None:
             raise KeyError(f"Unbekannter Button: {bid}")
@@ -4845,7 +4858,13 @@ class DeckCoreService:
             action = btn["long_action"]
         else:
             action = btn.get("action") or {}
-        res = self._run_action(action, btn, bid)
+        # Der angezeigte Wert reist nur fuer DIESEN Druck mit (threadlokal); Aktionen mit ``bind_shown``
+        # setzen ihn als ``{shown}`` ein, alle anderen bleiben unberuehrt.
+        self._tls.press_shown = shown
+        try:
+            res = self._run_action(action, btn, bid)
+        finally:
+            self._tls.press_shown = None
         res["variant"] = variant
         return res
 
@@ -6372,6 +6391,14 @@ class DeckCoreService:
         if not url:
             return {"success": False, "message": "http-Aktion ohne url"}
         body = action.get("body")
+        if action.get("bind_shown"):
+            # Klick an die ANGEZEIGTE Kennung gebunden (Wunschsong 2026-10-17): ohne mitgesendeten
+            # Anzeigewert wird nichts ausgeloest — nie auf den aktuellen Zustand ausweichen.
+            shown = getattr(self._tls, "press_shown", None)
+            if not shown:
+                return {"success": False, "message": "Anzeigewert fehlt – Taste neu laden"}
+            url = str(url).replace("{shown}", urllib.parse.quote(str(shown), safe=""))
+            body = _render_shown(body, str(shown))
         data = None
         headers = {}
         if body is not None and method in ("POST", "PUT", "PATCH"):
@@ -6736,15 +6763,26 @@ class DeckCoreService:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 obj = json.loads(resp.read().decode("utf-8"))
                 value = _dig(obj, mon.get("path", ""))
+                if mon.get("label_path"):
+                    # Zweite Anzeigezeile {label} aus derselben Antwort (z. B. Kennung als Wert, Name als Titel).
+                    self._poll_labels[bid] = _dig(obj, mon["label_path"])
         except Exception as e:  # noqa: BLE001
             log.debug("poll(%s) Fehler: %s", bid, e)
+            self._poll_labels.pop(bid, None)
         self._poll_cache[bid] = (value, now)
         return value
 
     def _resolve(self, btn: dict, value: Any) -> dict:
-        # {value} im Titel → aktueller Monitor-Wert (z.B. Manual-Event-Zähler).
+        # {value} im Titel → aktueller Monitor-Wert (z.B. Manual-Event-Zähler); {label} → zweite Anzeigezeile
+        # aus ``monitor.label_path`` derselben Abfrage.
+        label = self._poll_labels.get(btn.get("id")) if "_poll_labels" in self.__dict__ else None
+
         def tpl(s):
-            return s.replace("{value}", str(value if value is not None else "")) if isinstance(s, str) and "{value}" in s else s
+            if isinstance(s, str) and "{value}" in s:
+                s = s.replace("{value}", str(value if value is not None else ""))
+            if isinstance(s, str) and "{label}" in s:
+                s = s.replace("{label}", str(label if label is not None else ""))
+            return s
         # Leere/Sentinel-Farbe → SEMANTISCHER Fallback (Theme-Schlüsselwort), nicht festes Grau:
         #  • erfüllter Zustand (aktiver Look) → Akzent
         #  • Default eines Status-Buttons (= Ruhe/Idle, weil keine Bedingung griff) → Inaktivitätsfarbe `off`

@@ -1069,9 +1069,9 @@ export function TouchDeck() {
   // Ref-stabil (useCallback []): liest den aktuellen State über _liveRef → eine memoizte (übersprungene)
   // Kachel tappt NIE mit veralteter Closure (sonst falsches actionById/overlay/navStack nach einem Push).
   const _liveRef = useRef({})
-  _liveRef.current = { actionById, longById, overlay, navStack }
+  _liveRef.current = { actionById, longById, overlay, navStack, vis }
   const onTap = useCallback(async (id, evt, variant = 'short') => {
-    const { actionById, longById, overlay, navStack } = _liveRef.current
+    const { actionById, longById, overlay, navStack, vis } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) {        // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
       reportGesture({ bid: id, event: 'ignored', reason: 'swipe', variant })
       return
@@ -1103,7 +1103,11 @@ export function TouchDeck() {
     setPressed(id); setPressError('')
     let accepted = false
     try {
-      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''), { src: 'panel' })
+      // Der Wert, den DIESE Kachel gerade zeigt, reist mit (Wunschsong 2026-10-17): Aktionen mit
+      // bind_shown entscheiden genau fuer das Angezeigte, nie fuer einen inzwischen anderen Zustand.
+      const shown = vis[id]?.value
+      const body = (typeof shown === 'string' || typeof shown === 'number') ? { src: 'panel', shown: String(shown) } : { src: 'panel' }
+      const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''), body)
       accepted = result?.success === true
       if (!accepted && navigation === navigationRef.current) setPressError(result?.message || 'Auftrag nicht angenommen. Bitte erneut versuchen.')
     } catch {

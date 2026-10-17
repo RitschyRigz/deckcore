@@ -54,17 +54,34 @@ async def read_client_event_body(request: Request) -> bytes:
     return await read_limited_body(request, _CLIENT_EVENT_MAX_BYTES)
 
 
-async def press_source_from_request(request: Request) -> str:
-    """Optionale Herkunft eines Drucks aus dem JSON-Körper (``{"src": "panel"}``). Fehlender,
-    leerer oder kaputter Körper (z. B. Elgato-Plugin ohne Körper) → leer. Säubern übernimmt der Dienst."""
+_PRESS_BODY_MAX = 1024
+_SHOWN_MAX = 200
+
+
+async def press_context_from_request(request: Request) -> tuple:
+    """Herkunft und ANGEZEIGTER Wert eines Drucks aus dem JSON-Körper (``{"src": "panel", "shown": …}``).
+
+    ``shown`` ist der Monitor-Wert, den der Client beim Druck auf dieser Taste zeigt (Wunschsong
+    2026-10-17, Codex R11 F19: ein Klick gehoert zur angezeigten Kennung, nicht zum aktuellen Zustand).
+    Fehlt er, ist er ``None``; nur Aktionen mit ``bind_shown`` brauchen ihn. Fehlender, leerer oder
+    kaputter Körper → ``("", None)``; ein Druck wird dadurch nie abgelehnt."""
     try:
-        raw = await read_limited_body(request, 256)
-        if not raw or len(raw) > 256:
-            return ""
+        raw = await read_limited_body(request, _PRESS_BODY_MAX)
+        if not raw or len(raw) > _PRESS_BODY_MAX:
+            return "", None
         data = json.loads(raw.decode("utf-8"))
-        return str(data.get("src") or "") if isinstance(data, dict) else ""
+        if not isinstance(data, dict):
+            return "", None
+        shown = data.get("shown")
+        shown = str(shown)[:_SHOWN_MAX] if isinstance(shown, (str, int, float)) and not isinstance(shown, bool) else None
+        return str(data.get("src") or ""), shown
     except Exception:  # noqa: BLE001 — Herkunft ist nur Diagnose, nie ein Grund zum Ablehnen
-        return ""
+        return "", None
+
+
+async def press_source_from_request(request: Request) -> str:
+    """Nur die Herkunft (bestehende Aufrufer). Siehe ``press_context_from_request``."""
+    return (await press_context_from_request(request))[0]
 
 
 def build_streamdeck_router(
@@ -165,9 +182,9 @@ def build_streamdeck_router(
         (``long_action``); nur ``short``/``long`` sind gültig. Optionaler JSON-Körper ``{"src": …}``
         kennzeichnet die Herkunft in der Log-Zeile (z. B. ``panel``)."""
         svc = get_service(request)
-        source = await press_source_from_request(request)
+        source, shown = await press_context_from_request(request)
         try:
-            res = await asyncio.to_thread(svc.press, bid, variant, source)
+            res = await asyncio.to_thread(svc.press, bid, variant, source, shown)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return JSONResponse(res)
