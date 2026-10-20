@@ -30,7 +30,7 @@ BASE = {
     "description": "Grundfunktionen ohne externe Abhängigkeit — immer verfügbar.",
     "actions": ["launch", "open_folder", "open_deck", "http", "flag_toggle", "flag_set",
                 "media", "play_media", "none"],
-    "monitors": ["flag", "file_field", "poll", "sse_field", "none"],
+    "monitors": ["flag", "file_field", "poll", "level_http", "sse_field", "none"],
 }
 
 # ── Makro / Hotkey — eigene, abschaltbare Kategorie (vorher in der Basis) ───────────────────────

@@ -38,6 +38,7 @@ const ACTION_LABELS = {
   displayfusion: '🖥 DisplayFusion — Monitor-Profil laden',
   media: '⏯ Media-Taste (Play/Pause · ⏭⏮ · Lauter/Leiser · Mute)',
   play_media: '▶ Video im Fenster abspielen (mpv-Fensterquelle, Restart von vorn)',
+  jukebox: '🎵 Jukebox (Track spielen/stoppen · Zufall · Duck · Pause)',
   hotkey: '⌨ Makro / Tastenkürzel senden (Stream-Deck-Stil, system-weit)',
   manual_event: '🎯 Manual-Event (Tod/Boss/Win …)',
   alert: '🔔 Test-Alert abspielen (follow/sub/raid …)',
@@ -51,6 +52,16 @@ const ACTION_LABELS = {
   http: '🌐 HTTP-Aufruf (Fortgeschritten)',
   none: '— Keine (reiner Anzeige-Button)',
 }
+// Jukebox-Aktionsmodi (service._act_jukebox); Track/Stil/Text bleiben an der Aktion, wie generiert.
+const JUKEBOX_MODES = {
+  toggle: '⏯ Track umschalten (spielen/stoppen)', play: '▶ Track spielen', stop: '⏹ Stoppen',
+  pause: '⏸ Pause umschalten', duck: '🔉 Push to Duck (absenken/hoch)', random: '🎲 Zufall je Stil',
+  request: '🗣 Auftrag (wie per Sprache)', favorite: '⭐ Favorit umschalten',
+}
+const JUKEBOX_MODE_HELP = {
+  pause: 'Pausiert die laufende Wiedergabe bzw. setzt sie fort (Stand aus dem Jukebox-Status). Ohne laufenden Track passiert nichts.',
+  duck: 'Senkt die laufende Musik weich ab bzw. holt sie wieder hoch (level 0..1, Default 0,25).',
+}
 const MONITOR_LABELS = {
   aggregate: '🔀 Mehrere kombinieren (alle/eine/Anzahl) — z. B. „nur wenn ALLE …"',
   none: 'Keine — Button sieht immer gleich aus (einfach)',
@@ -62,6 +73,7 @@ const MONITOR_LABELS = {
   file_field: 'Wert aus einer Datei (Fortgeschritten)',
   sse_field: 'Wert aus Live-Event (Fortgeschritten)',
   poll: 'Wert von einer URL (Fortgeschritten)',
+  level_http: 'Pegel per HTTP (lesen/schreiben über URLs aus den Daten) — Fader + optionales VU',
   hwinfo: 'HWiNFO-Sensor (Temperatur / Last / Takt / Lüfter … als Zahl)',
   fps: 'FPS — Spiel im Vordergrund (PresentMon)',
   frametime: 'Frametime in ms — fängt Spikes (PresentMon)',
@@ -91,6 +103,7 @@ const MONITOR_INFO = {
   bot_mode: { text: 'Liefert: off · running · muted (für den gewählten Bot). Nutze „= gleich" + Wert.', values: ['off', 'running', 'muted'], bool: false },
   bot_state: { text: 'Liefert: off · ready · followup · afk (für den gewählten Bot). Nutze „= gleich" + Wert.', values: ['off', 'ready', 'followup', 'afk'], bool: false },
   poll: { text: 'Wert kommt von der URL (z. B. Health: ok · warning · error · off).', values: ['ok', 'warning', 'error', 'off'], bool: false },
+  level_http: { text: 'Pegel per HTTP für „Darstellung → 🎚 Fader": liest get_url (value_path/target_path/label_path/editable_path), bildet min..max linear auf 0..100 ab und schreibt beim Ziehen über den Deck-Proxy an set_url (set_field/target_field). Tippen = die Aktion der Taste, {shown} = das angezeigte Ziel. Optionales VU über „meter" (Wave Link) an der Taste. {value} = Prozent, {label} = Text des Ziels.', values: null, bool: false },
   hwinfo: { text: 'Liefert den HWiNFO-Sensorwert als Zahl. Setze ihn mit {value} in den Titel (z. B. „CPU {value}°"). Für Farbe nach Schwellwert: Status „> größer als" + Wert (z. B. ab 80 rot).', values: null, bool: false },
   fps: { text: 'FPS des Vordergrund-Spiels via PresentMon (herstellerneutral, keine Injection). Am schönsten als Live-Kurve: oben „Darstellung → 📈 Graph". {value} im Titel = aktuelle Zahl.', values: null, bool: false },
   frametime: { text: 'Frametime in ms via PresentMon — fängt Spikes (Maximum je Zeitfenster). Als „Darstellung → 📈 Graph" wird das ein Frametime-Verlauf wie in RivaTuner. Braucht ein laufendes Spiel im Vordergrund.', values: null, bool: false },
@@ -3278,6 +3291,17 @@ function ActionEditor({ action, options, onChange, replace, onPicked, title = '�
           </div>
           <p class="muted sd-help">Sendet die Media-Taste ans Betriebssystem — steuert den gerade aktiven
             Media-Player (Spotify, YouTube, Wave Link …).</p>
+        </>
+      )}
+      {t === 'jukebox' && (
+        <>
+          <div class="reward-row">
+            <span class="muted conn-label">Modus</span>
+            <select class="reward-input" value={action.mode || 'toggle'} onChange={(e) => onChange({ mode: e.currentTarget.value })}>
+              {Object.entries(JUKEBOX_MODES).map(([m, l]) => <option value={m}>{l}</option>)}
+            </select>
+          </div>
+          <p class="muted sd-help">{JUKEBOX_MODE_HELP[action.mode || 'toggle'] || ''}</p>
         </>
       )}
       {t === 'play_media' && <PlayMediaEditor action={action} onChange={onChange} />}

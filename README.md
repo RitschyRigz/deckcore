@@ -21,7 +21,14 @@ your own buttons, serve the UI.
     on many decks;
   - **generic capabilities** — actions `launch` · `http` · `flag_toggle/set` · `displayfusion`
     · `media` · `hotkey`; monitors `flag` · `file_field` · `poll` · `sse_field` ·
-    `displayfusion_profile`.
+    `displayfusion_profile` · `level_http`;
+  - **`level_http` fader** — a `render: "fader"` button whose level is read from `monitor.get_url`
+    (`value_path`/`target_path`/`label_path`/`editable_path`, raw `min..max` mapped linearly to
+    0..100) and written through `POST /api/streamdeck/level_http/{button_id}` `{value, target}`,
+    which the service forwards server-side as `{<set_field>: raw, <target_field>: target}` to
+    `monitor.set_url`. Tapping runs the button's own `action` with `shown` = the displayed target
+    (`bind_shown`); an optional `meter: {type: "wavelink", id}` adds a VU. All URLs come from the
+    button data.
 - **`web/`** — Preact UI modules: `StreamDeck.jsx` (editor), `TouchDeck.jsx` (touch panel),
   `deckstyle.js`, `deck.css`, plus minimal same-origin `api.js` / `sse.js` helpers.
 

@@ -93,6 +93,7 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -1319,6 +1320,62 @@ def _dig(obj: Any, path: str) -> Any:
     return cur
 
 
+# ── Pegel per HTTP (level_http): lineare Abbildung Rohwert [min,max] <-> Fader-Prozent [0,100] ──
+def _level_num(x: Any) -> Optional[float]:
+    """Zahl aus einem Rohwert (bool zählt nicht als Zahl); sonst None."""
+    if isinstance(x, bool) or x is None:
+        return None
+    try:
+        n = float(x)
+    except (TypeError, ValueError):
+        return None
+    return n if n == n and n not in (float("inf"), float("-inf")) else None
+
+
+def _level_bounds(mon: dict) -> tuple:
+    """``min``/``max`` aus den Monitor-Daten (Default 0..100). min > max = umgekehrte Skala."""
+    lo = _level_num((mon or {}).get("min"))
+    hi = _level_num((mon or {}).get("max"))
+    return (0.0 if lo is None else lo), (100.0 if hi is None else hi)
+
+
+def _level_to_pct(raw: Any, lo: float, hi: float) -> Optional[int]:
+    """Rohwert → Fader-Prozent 0..100 (linear, geklemmt, gerundet). Kein Zahlenwert → None."""
+    n = _level_num(raw)
+    if n is None:
+        return None
+    if hi == lo:
+        return 0
+    return int(round(max(0.0, min(100.0, (n - lo) / (hi - lo) * 100.0))))
+
+
+def _pct_to_level(pct: float, lo: float, hi: float, integer: bool = True) -> Any:
+    """Fader-Prozent (geklemmt 0..100) → Rohwert in [min,max]; Ganzzahl, sofern die Daten nichts anderes sagen."""
+    p = max(0.0, min(100.0, float(pct)))
+    val = lo + (hi - lo) * p / 100.0
+    return int(round(val)) if integer else round(val, 4)
+
+
+def _level_state(obj: Any, mon: dict) -> dict:
+    """Monitor-Zustand eines level_http-Faders aus einer JSON-Antwort (Pfade aus den Daten).
+    Kein lesbarer Zahlenwert → nicht verfügbar (nicht bedienbar)."""
+    lo, hi = _level_bounds(mon)
+    raw = _dig(obj, mon.get("value_path") or "value") if isinstance(obj, (dict, list)) else None
+    pct = _level_to_pct(raw, lo, hi)
+    if pct is None:
+        return dict(_LEVEL_UNAVAILABLE)
+    tgt = _dig(obj, mon["target_path"]) if mon.get("target_path") else None
+    lbl = _dig(obj, mon["label_path"]) if mon.get("label_path") else None
+    ed = _dig(obj, mon["editable_path"]) if mon.get("editable_path") else None
+    return {"available": True, "value": pct, "raw": raw,
+            "target": "" if tgt is None else str(tgt),
+            "label": "" if lbl is None else str(lbl),
+            "editable": True if ed is None else bool(ed)}
+
+
+_LEVEL_UNAVAILABLE = {"available": False, "value": None, "raw": None, "target": "", "label": "", "editable": False}
+
+
 def _render_shown(obj: Any, shown: str) -> Any:
     """``{shown}`` in allen Zeichenketten eines Aktions-Koerpers ersetzen (rekursiv, Struktur bleibt)."""
     if isinstance(obj, str):
@@ -1713,6 +1770,7 @@ class DeckCoreService:
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
         M("poll", self._mon_poll)
+        M("level_http", self._mon_level_http)   # Pegel per HTTP lesen (Fader); Schreiben über level_http_set()
         M("sse_field", self._mon_sse_field)
         M("displayfusion_profile", self._mon_displayfusion_profile)
         M("obs_scene", self._mon_obs_scene)
@@ -5051,6 +5109,12 @@ class DeckCoreService:
             except (TypeError, ValueError):
                 level = 0.25
             res = jb.duck_toggle(level)
+        elif mode == "pause":
+            # Pause umschalten: pausiert ↔ weiter (Stand aus dem Jukebox-Status, kein eigener Merker)
+            flag = (jb.status() or {}).get("state") != "paused"
+            res = jb.pause(flag)
+            if res.get("ok"):
+                res["message"] = "Pausiert" if flag else "Weiter"
         elif mode == "random":
             res = jb.play_random(style, pick=str(action.get("pick") or "random"))
         elif mode == "request":
@@ -6326,7 +6390,7 @@ class DeckCoreService:
                          "play_media", "jukebox", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "jukebox_state", "hwinfo", "fps", "frametime", "weather",
+                          "file_field", "sse_field", "poll", "level_http", "jukebox_state", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "arduino_status", "lock_state", "displayfusion_profile", "none"]
@@ -6552,6 +6616,93 @@ class DeckCoreService:
     def _mon_poll(self, mon: dict, btn: dict) -> Any:
         return self._poll_value(btn["id"], mon)
 
+    def _mon_level_http(self, mon: dict, btn: dict) -> Any:
+        # Pegel per HTTP: Zustand {available,value(0..100),raw,target,label,editable} aus ``get_url``.
+        return self._level_http_state(btn["id"], mon)
+
+    def _level_http_state(self, bid: str, mon: dict, fresh: bool = False) -> dict:
+        """Wie ``_poll_value`` (Pro-Button-Cache, ``interval`` Default 1 s, Cache-only beim Druck), nur
+        mit dem ganzen Fader-Zustand. Fehler/kein Wert → nicht verfügbar, wirft nie."""
+        interval = float(mon.get("interval", 1))
+        cached = self._poll_cache.get(bid)
+        now = time.monotonic()
+        if not fresh and cached is not None and (now - cached[1]) < interval:
+            return cached[0]
+        if not fresh and getattr(self._tls, "cache_only", False):
+            return cached[0] if cached is not None else dict(_LEVEL_UNAVAILABLE)
+        state = dict(_LEVEL_UNAVAILABLE)
+        url = mon.get("get_url")
+        if url:
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+                    state = _level_state(json.loads(resp.read().decode("utf-8")), mon)
+            except Exception as e:  # noqa: BLE001
+                log.debug("level_http(%s) Fehler: %s", bid, e)
+        # {label} im Titel (z. B. physisches Deck) aus derselben Abfrage.
+        if state.get("label"):
+            self._poll_labels[bid] = state["label"]
+        else:
+            self._poll_labels.pop(bid, None)
+        self._poll_cache[bid] = (state, now)
+        return state
+
+    def level_http_set(self, bid: str, value: Any, target: Any = "") -> dict:
+        """Fader-Stellung eines level_http-Buttons schreiben (Proxy, serverseitig → kein CORS beim Host).
+        ``value`` = Fader-Prozent 0..100 → linear auf [min,max]; POST ``{set_field: Wert, target_field:
+        target}`` an ``monitor.set_url``. Antwort des Hosts unverändert zurück (+ ``fader_value``, falls
+        die Antwort einen Wert unter ``value_path`` trägt); der Monitor-Cache der Taste wird sofort
+        frisch gelesen. Fehlkonfiguration → klare Fehlermeldung, KEIN Request."""
+        btn = next((b for b in self._buttons if b.get("id") == bid), None)
+        if btn is None:
+            return {"ok": False, "reason": "unknown_button", "message": f"Unbekannter Button: {bid}"}
+        mon = btn.get("monitor") or {}
+        if mon.get("type") != "level_http":
+            return {"ok": False, "reason": "not_level_http", "message": "Button hat keinen level_http-Monitor"}
+        url = str(mon.get("set_url") or "").strip()
+        if not url:
+            return {"ok": False, "reason": "no_set_url", "message": "level_http ohne set_url"}
+        pct = _level_num(value)
+        if pct is None:
+            return {"ok": False, "reason": "bad_value", "message": "value muss eine Zahl 0..100 sein"}
+        lo, hi = _level_bounds(mon)
+        mapped = _pct_to_level(pct, lo, hi, integer=mon.get("set_integer", True) is not False)
+        body = {str(mon.get("set_field") or "value"): mapped}
+        tfield = mon.get("target_field", "target")
+        if tfield:
+            body[str(tfield)] = "" if target is None else str(target)
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+                raw = resp.read()
+                try:
+                    out = json.loads(raw.decode("utf-8")) if raw else {}
+                except ValueError:
+                    out = {}
+        except urllib.error.HTTPError as e:
+            # Host lehnt ab (z. B. 409 target_changed): seine JSON-Antwort zählt, ok fehlt → false.
+            try:
+                out = json.loads(e.read().decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                out = {}
+            if not isinstance(out, dict):
+                out = {"response": out}
+            out.setdefault("ok", False)
+            out.setdefault("reason", f"http_{e.code}")
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "reason": "request_failed", "message": f"HTTP-Fehler: {e}"}
+        if not isinstance(out, dict):
+            out = {"response": out}
+        fv = _level_to_pct(_dig(out, mon.get("value_path") or "value"), lo, hi)
+        if fv is not None:
+            out["fader_value"] = fv
+        # Sofort frisch lesen + diese Taste neu auflösen (der nächste Push zeigt die Host-Wahrheit).
+        self._level_http_state(bid, mon, fresh=True)
+        self._last_eval.pop(bid, None)
+        self._schedule_recompute()
+        return out
+
     def _mon_displayfusion_profile(self, mon: dict, btn: dict) -> Any:
         # Aktives (zuletzt geladenes) DisplayFusion-Profil — für Profil-Buttons.
         return self._df_active_profile()
@@ -6776,10 +6927,14 @@ class DeckCoreService:
         # {value} im Titel → aktueller Monitor-Wert (z.B. Manual-Event-Zähler); {label} → zweite Anzeigezeile
         # aus ``monitor.label_path`` derselben Abfrage.
         label = self._poll_labels.get(btn.get("id")) if "_poll_labels" in self.__dict__ else None
+        # level_http: der Zustand ist ein Dict — {value} im Titel meint die Fader-Prozent.
+        shown_val = value
+        if isinstance(value, dict) and (btn.get("monitor") or {}).get("type") == "level_http":
+            shown_val = value.get("value")
 
         def tpl(s):
             if isinstance(s, str) and "{value}" in s:
-                s = s.replace("{value}", str(value if value is not None else ""))
+                s = s.replace("{value}", str(shown_val if shown_val is not None else ""))
             if isinstance(s, str) and "{label}" in s:
                 s = s.replace("{label}", str(label if label is not None else ""))
             return s

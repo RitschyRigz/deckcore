@@ -189,6 +189,18 @@ def build_streamdeck_router(
             raise HTTPException(status_code=404, detail=str(e))
         return JSONResponse(res)
 
+    @r.post("/api/streamdeck/level_http/{bid}")
+    async def streamdeck_level_http(bid: str, request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Fader-Stellung eines ``level_http``-Buttons schreiben: ``{value: 0..100, target: "…"}``.
+        Der Dienst rechnet auf [min,max] um und POSTet an die ``set_url`` aus den Button-Daten;
+        Antwort = die JSON-Antwort des Ziels (+ ``fader_value``). Fehlkonfiguration → 404/400, kein Request."""
+        svc = get_service(request)
+        b = body if isinstance(body, dict) else {}
+        res = await asyncio.to_thread(svc.level_http_set, bid, b.get("value"), b.get("target", ""))
+        reason = res.get("reason") if isinstance(res, dict) else None
+        status = 404 if reason == "unknown_button" else 400 if reason in ("not_level_http", "no_set_url", "bad_value") else 200
+        return JSONResponse(res, status_code=status)
+
     @r.post("/api/streamdeck/client_event")
     async def streamdeck_client_event(request: Request) -> JSONResponse:
         """Gedrosselte Telemetrie des Touch-Panels: warum eine Tasten-Geste nichts ausgelöst hat

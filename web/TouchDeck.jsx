@@ -512,9 +512,15 @@ const holdStyle = (v) => (v && v.has_long) ? `;--hold-ms:${holdMs(v)}ms;` : ''
 const holdClass = (v) => (v && v.has_long) ? ' t-hold' : ''
 const LongBadge = () => <><span class="t-long-badge" aria-hidden="true">⏱</span><span class="t-long-bar" aria-hidden="true" /></>
 
-function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly, skin, opts }) {
+function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress, meter, iconOnly, skin, opts }) {
   const isWa = mon.type === 'winaudio_volume'
   const isApp = mon.type === 'app_volume'
+  // Pegel per HTTP (level_http): Regler = Monitor-Zustand der Taste (vom Server gepollt), Schreiben über
+  // den Deck-Proxy; VU nur, wenn die Taste ein eigenes ``meter`` (Wave Link) trägt — Regler und VU getrennt.
+  const isLh = mon.type === 'level_http'
+  const lh = isLh ? ((v.value && typeof v.value === 'object') ? v.value : {}) : null
+  const lhLocked = isLh && lh.editable !== true
+  const lhMeterId = isLh && meter && meter.type === 'wavelink' ? String(meter.id || '') : ''
   const ttype = mon.target_type || 'mix'
   const targetId = mon.id || mon.target || ''
   const mixId = mon.mix_id || ''
@@ -525,19 +531,22 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   const downXRef = useRef(null)                 // Start-X — für die Richtungs-Erkennung (vertikal=Fader / horizontal=Wisch)
   const lockRef = useRef(null)                  // null | 'drag' (vertikal) | 'swipe' (horizontal) — einmal entschieden, fix
   const sentRef = useRef(0)
+  const lhSeqRef = useRef(0)                    // level_http: laufende Nummer je Senden — nur die NEUESTE Antwort zählt
+  const lhTargetRef = useRef('')                // level_http: Ziel-Kennung, die beim Greifen angezeigt war
   const [drag, setDrag] = useState(null)        // lokaler Level beim Ziehen (0..100) | null
   const [optMute, setOptMute] = useState(null)  // optimistischer Mute direkt nach Tap | null
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
   const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
 
-  const st = isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
-  const baseLevel = Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
+  const st = isLh ? lh : isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
+  const baseLevel = isLh ? (Number.isFinite(lh.value) ? lh.value : 0) : Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
   // Beim Ziehen = Finger-Wert; kurz nach dem Loslassen = gehaltene Position (kein Zurückspringen, während
   // Set + Geräte-Roundtrip + nächster Live-Wert unterwegs sind); sonst der Live-State.
   const level = drag != null ? drag : (optLevel != null ? optLevel : baseLevel)
   const muted = optMute != null ? optMute : !!st.muted
-  const mlvl = (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
+  const mlvl = isLh ? (lhMeterId ? Math.max(0, Math.min(1, (meters[lhMeterId]) || 0)) : 0)
+    : (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
   // Akzent wie bei flachen Tasten: Theme-Schlüsselwort (resolveColor → var(--x)) ODER feste Hex, sonst
   // Fallback. --acc-dim wird in deck.css via color-mix aus --acc abgeleitet (kein JS-darken mehr).
   const accCss = accentVar(v.color)
@@ -607,18 +616,33 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
     const r = el.getBoundingClientRect()
     return Math.max(0, Math.min(100, Math.round((1 - (clientY - r.top) / r.height) * 100)))
   }
+  // level_http: Ziel lehnt ab (ok:false, z. B. target_changed) oder Anfrage scheitert → lokale Stellung
+  // verwerfen, Geste beenden, wieder die gepollte Wahrheit zeigen (sichtbares Zurückspringen, kein Retry).
+  const lhFail = () => {
+    downYRef.current = null; downXRef.current = null; lockRef.current = null
+    if (holdT.current) { clearTimeout(holdT.current); holdT.current = null }
+    setDrag(null); setOptLevel(null)
+  }
   const push = (lvl, force) => {
     const t = Date.now()
     if (!force && t - sentRef.current < 45) return     // ~22 Hz drosseln
     sentRef.current = t
-    if (isApp) postJSON('/api/winaudio/app_volume', { proc: proc || '', level: lvl }).catch(() => {})
+    if (isLh) {
+      const seq = ++lhSeqRef.current
+      postJSON('/api/streamdeck/level_http/' + encodeURIComponent(id), { value: lvl, target: lhTargetRef.current })
+        .then((r) => { if (seq === lhSeqRef.current && r && r.ok === false) lhFail() })   // ältere Antworten ignorieren
+        .catch(() => { if (seq === lhSeqRef.current) lhFail() })
+    }
+    else if (isApp) postJSON('/api/winaudio/app_volume', { proc: proc || '', level: lvl }).catch(() => {})
     else if (isWa) postJSON('/api/winaudio/volume', { level: lvl, device_id: dev || '' }).catch(() => {})
     else postJSON('/api/wavelink/level', { target_type: ttype, id: targetId, level: lvl, mix_id: mixId }).catch(() => {})
   }
   // Tap vs. Drag NUR über Refs (kein State-Timing/Closure-Problem): „bewegt" = >4 px gegen die DOWN-
   // Position (NICHT gegen den Füllstand — sonst gilt jeder Tap neben dem Knopf als Drag → kein Mute).
   const onDown = (e) => {
+    if (lhLocked) return                            // nicht bedienbar (editable=false / n/v): kein Ziehen, kein Tippen
     e.stopPropagation()
+    if (isLh) lhTargetRef.current = String(lh.target || '')   // Ziel beim Greifen festhalten
     movedRef.current = false
     downYRef.current = e.clientY
     downXRef.current = e.clientX
@@ -659,6 +683,8 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
       setOptLevel(fin)                                // Position halten, bis der Live-Wert nachgezogen ist
       if (holdT.current) clearTimeout(holdT.current)
       holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
+    } else if (isLh) {                                // level_http: Tippen = normaler Tastendruck (konfigurierte Aktion)
+      if (onPress) onPress(lhTargetRef.current)       // … mit dem angezeigten Ziel als „shown" (bind_shown)
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
       setOptMute(!muted)
       if (isApp) postJSON('/api/winaudio/app_mute', { proc: proc || '' }).catch(() => {})
@@ -673,7 +699,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
   // VU-Renderer ist mit der Editor-Vorschau geteilt (FaderVU); der Peak-Hold-Marker wird live per rAF bewegt.
   const fbVariant = _fo.variant || ''
   return (
-    <div class={'t-fader s-' + (skin || 'brackets') + (fbVariant ? ' v-' + fbVariant : '') + (muted ? ' muted' : '') + (isApp && st.available === false ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
+    <div class={'t-fader s-' + (skin || 'brackets') + (fbVariant ? ' v-' + fbVariant : '') + (muted ? ' muted' : '') + ((isApp && st.available === false) || lhLocked ? ' off' : '') + (_fo.nameLines === 2 ? ' ml-name' : '')} style={faderStyle}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel}>
       <div class="t-fader-name" title={name}>
         {iconOnly
@@ -690,9 +716,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, iconOnly
           <div class="t-fader-fill" style={`height:${level}%`} />
           <div class="t-fader-knob" style={`bottom:${level}%`} />
         </div>
-        <FaderVU vu={_fo.vu} mlvl={mlvl} peakEl={<div class="t-vu-peak" ref={peakRef} />} />
+        {(!isLh || lhMeterId) && <FaderVU vu={_fo.vu} mlvl={mlvl} peakEl={<div class="t-vu-peak" ref={peakRef} />} />}
       </div>
-      <div class="t-fader-foot">{isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
+      <div class="t-fader-foot">{isLh ? (lh.available === false || lh.value == null ? '— n/v'
+          : (drag == null && optLevel == null && lh.label) ? lh.label : level + '%')
+        : isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {!iconOnly && (showImg
         ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={() => setImgErr(true)} /></div>
         : liveGlyph
@@ -851,6 +879,7 @@ export function TouchDeck() {
   const [actionById, setActionById] = useState({})   // button-id → action (für „ist Ordner?")
   const [renderById, setRenderById] = useState({})   // button-id → Darstellung ('value' | 'graph')
   const [monById, setMonById] = useState({})         // button-id → monitor (für High-Rate-Graphen fps/frametime)
+  const [meterById, setMeterById] = useState({})     // button-id → meter (optionales VU einer level_http-Fader-Kachel)
   const [optsById, setOptsById] = useState({})       // button-id → opts (Schrift/Farbe/Uhr-Modus für Text/Uhr-Buttons)
   const histRef = useRef({})                         // button-id → Zahlenreihe (Verlauf für Graph-Kacheln)
   const tsRef = useRef({})                            // button-id → Zeitstempel je Verlaufswert (für das zeitbasierte Graph-Fenster)
@@ -893,9 +922,9 @@ export function TouchDeck() {
     const def = d.default_deck || 'main'
     setDefaultDeck(def)
     setDeck((cur) => (cur && dks.some((x) => x.id === cur)) ? cur : pickInitialDeck(dks, def))
-    const am = {}, rm = {}, mm = {}, om = {}, lm = {}
-    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {}; if (b.long_action) lm[b.id] = b.long_action }
-    setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om); setLongById(lm)
+    const am = {}, rm = {}, mm = {}, om = {}, lm = {}, vm = {}
+    for (const b of d.buttons || []) { am[b.id] = b.action || {}; rm[b.id] = b.render || 'value'; mm[b.id] = b.monitor || {}; om[b.id] = b.opts || {}; if (b.long_action) lm[b.id] = b.long_action; if (b.meter) vm[b.id] = b.meter }
+    setActionById(am); setRenderById(rm); setMonById(mm); setOptsById(om); setLongById(lm); setMeterById(vm)
     setNavStack((s) => s.filter((entry) => dks.some((x) => x.id === entry.deck)))
     preloadDeckImages(d.buttons || [])
   }).catch(() => {})
@@ -953,7 +982,8 @@ export function TouchDeck() {
   // die auf dem sichtbaren Deck liegen. Wave Link: VU schnell + Level/Mute langsam. Windows-Master: ein
   // Poll (Peak ändert schnell, Level/Mute kommen gratis mit). Quelle = der Monitor-Typ des Fader-Buttons.
   const faderMons = Object.entries(monById).filter(([fid]) => renderById[fid] === 'fader' && _visIds.has(fid))
-  const hasWlFader = faderMons.some(([, m]) => { const ty = (m || {}).type; return ty !== 'winaudio_volume' && ty !== 'app_volume' })
+  // level_http braucht Wave Link nur für sein optionales VU (meter.type=wavelink); der Regler kommt vom Monitor.
+  const hasWlFader = faderMons.some(([fid, m]) => { const ty = (m || {}).type; return ty !== 'winaudio_volume' && ty !== 'app_volume' && (ty !== 'level_http' || ((meterById[fid] || {}).type === 'wavelink' && !!(meterById[fid] || {}).id)) })
   // Windows-Volume-Fader zeigen je auf ein Gerät ('' = Standard) — das Gerät steht an der AKTION (device_id).
   const waDevices = [...new Set(faderMons.filter(([fid, m]) => (m || {}).type === 'winaudio_volume')
     .map(([fid]) => (actionById[fid] || {}).device_id || ''))]
@@ -1070,7 +1100,7 @@ export function TouchDeck() {
   // Kachel tappt NIE mit veralteter Closure (sonst falsches actionById/overlay/navStack nach einem Push).
   const _liveRef = useRef({})
   _liveRef.current = { actionById, longById, overlay, navStack, vis }
-  const onTap = useCallback(async (id, evt, variant = 'short') => {
+  const onTap = useCallback(async (id, evt, variant = 'short', shownOverride) => {
     const { actionById, longById, overlay, navStack, vis } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) {        // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
       reportGesture({ bid: id, event: 'ignored', reason: 'swipe', variant })
@@ -1105,7 +1135,8 @@ export function TouchDeck() {
     try {
       // Der Wert, den DIESE Kachel gerade zeigt, reist mit (Wunschsong 2026-10-17): Aktionen mit
       // bind_shown entscheiden genau fuer das Angezeigte, nie fuer einen inzwischen anderen Zustand.
-      const shown = vis[id]?.value
+      // Eine Kachel mit eigenem Anzeigewert (level_http-Fader: das angezeigte Ziel) gibt ihn explizit mit.
+      const shown = shownOverride !== undefined ? shownOverride : vis[id]?.value
       const body = (typeof shown === 'string' || typeof shown === 'number') ? { src: 'panel', shown: String(shown) } : { src: 'panel' }
       const result = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id) + (isLong ? '?variant=long' : ''), body)
       accepted = result?.success === true
@@ -1210,6 +1241,7 @@ export function TouchDeck() {
           <Fader id={id} v={v} mon={monById[id] || {}} meters={wlMeters} state={wlState} skin={skin} opts={o}
                  dev={(actionById[id] || {}).device_id || ''} wa={waSnap[(actionById[id] || {}).device_id || ''] || {}}
                  proc={(actionById[id] || {}).app_proc || ''} app={appSnap[(actionById[id] || {}).app_proc || ''] || {}}
+                 meter={meterById[id]} onPress={(shown) => onTap(id, null, 'short', shown)}
                  onMute={() => onTap(id)} />
         </div>
       )
