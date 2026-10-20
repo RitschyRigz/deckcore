@@ -473,6 +473,10 @@ class Jukebox:
         # request_id ueber play(..., direct=True) ausgeloest (z.B. Ansage einer Show zuerst).
         self.before_play: Optional[Callable[[dict, str, str], Optional[dict]]] = None
         self.cancel_deferred: Optional[Callable[[str], dict]] = None
+        # ``base_volume_for(track, style, request_id)`` (optional): Grundpegel DIESER Wiedergabe
+        # (0..130 wie mpv). None/Fehler = ``config.volume``. Der Wert gilt bis zum Ende der
+        # Wiedergabe und ist die Basis aller Duck-Rampen; ``set_base_volume`` aendert ihn live.
+        self.base_volume_for: Optional[Callable[[dict, str, str], Optional[float]]] = None
         # In-Prozess-Zuhoerer fuer Zustandswechsel (Hosts), zusaetzlich zum Bus-``publish``.
         self.listeners: list[Callable[[dict], None]] = []
         self._lyrics_cache: dict[str, tuple] = {}
@@ -1168,7 +1172,7 @@ class Jukebox:
                   if self._player_factory is None else "")
         common = dict(request_id=rid, track=t["id"], title=t["title"], style=style,
                       position=0.0, duration=0.0, reason=None, detail=None, file=t["file"],
-                      ducked=False, duck_level=None)
+                      ducked=False, duck_level=None, base_volume=self._hook_base(t, style, rid))
         prepared = self._has_hook(style, "on_prepare")
         with self._start_lock:
             with self._lock:
@@ -1209,7 +1213,9 @@ class Jukebox:
             self._player = player
         self._set(state="starting", **common)
         try:
-            player.start(t["file"], audio_device=device, volume=self.config().get("volume"))
+            base = common.get("base_volume")
+            player.start(t["file"], audio_device=device,
+                         volume=base if base is not None else self.config().get("volume"))
         except Exception as e:  # noqa: BLE001
             self._finish(self.status(), reason="error", detail=f"mpv-Start: {e}")
             return {"ok": False, "reason": f"mpv-Start fehlgeschlagen: {e}", "request_id": rid}
@@ -1394,10 +1400,7 @@ class Jukebox:
                 return {"ok": True, "ducked": False, "duck_level": None, "player": False,
                         "state": snap.get("state")}
             return {"ok": False, "reason": "kein laufender Player", "state": snap.get("state")}
-        try:
-            base = float(self.config().get("volume") if self.config().get("volume") is not None else 100.0)
-        except (TypeError, ValueError):
-            base = 100.0
+        base = self._active_base(snap)
         ducked = level is not None and float(level) < 1.0
         target_level = max(0.0, min(1.0, float(level))) if ducked else 1.0
         # Ausgangspegel = zuletzt angewiesener Pegel. Null ist dabei ein GUELTIGER Wert (ein
@@ -1425,6 +1428,70 @@ class Jukebox:
         threading.Thread(target=_ramp, name="jukebox-duck", daemon=True).start()
         return {"ok": True, "ducked": ducked, "duck_level": target_level if ducked else None,
                 "request_id": snap.get("request_id")}
+
+    def _config_volume(self) -> Optional[float]:
+        try:
+            v = self.config().get("volume")
+            return None if v is None else max(0.0, min(130.0, float(v)))
+        except (TypeError, ValueError):
+            return None
+
+    def _hook_base(self, track: dict, style: str, rid: str) -> Optional[float]:
+        """Grundpegel einer neuen Wiedergabe aus dem Host-Haken. None = kein eigener Pegel:
+        dann bleibt ``config.volume`` die Basis und wird wie bisher live gelesen."""
+        if self.base_volume_for is None:
+            return None
+        try:
+            v = self.base_volume_for(track, style, rid)
+            return None if v is None else max(0.0, min(130.0, float(v)))
+        except Exception as e:  # noqa: BLE001 - der Pegel haelt nie den Start auf
+            log.warning("Jukebox base_volume_for fehlgeschlagen (config.volume): %s", e)
+            return None
+
+    def _active_base(self, snap: dict) -> float:
+        """Basis der Duck-Rampen: eigener Grundpegel der laufenden Wiedergabe, sonst (wie
+        bisher) das aktuelle ``config.volume``."""
+        v = snap.get("base_volume")
+        if v is None:
+            v = self._config_volume()
+        try:
+            return 100.0 if v is None else float(v)
+        except (TypeError, ValueError):
+            return 100.0
+
+    def set_base_volume(self, volume: Any, *, request_id: str = "", fade_ms: int = 250) -> dict:
+        """Grundpegel der LAUFENDEN Wiedergabe live aendern (0..130). Mit ``request_id`` nur,
+        wenn genau diese Wiedergabe noch laeuft — ein spaeter Aufruf trifft nie den naechsten
+        Titel. Ein bestehendes Ducking bleibt als Faktor auf der neuen Basis erhalten."""
+        try:
+            vol = max(0.0, min(130.0, float(volume)))
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "volume ungueltig"}
+        with self._lock:
+            player, snap = self._player, dict(self._state)
+        if player is None or snap.get("state") not in _ACTIVE:
+            return {"ok": False, "reason": "kein laufender Player", "state": snap.get("state")}
+        if request_id and str(snap.get("request_id") or "") != str(request_id):
+            return {"ok": False, "reason": "request_changed", "request_id": snap.get("request_id")}
+        old = self._active_base(snap)
+        factor = (float(snap["duck_level"]) if snap.get("ducked") and snap.get("duck_level") is not None
+                  else 1.0)
+        with self._lock:
+            self._duck_generation += 1
+            generation = self._duck_generation
+        self._set(base_volume=vol)
+
+        def _ramp() -> None:
+            steps = max(1, int(DUCK_FADE_STEPS))
+            for i in range(1, steps + 1):
+                if self._duck_generation != generation or not player.alive():
+                    return
+                player.set_volume((old + (vol - old) * (i / steps)) * factor)
+                if i < steps:
+                    time.sleep(max(0.0, float(fade_ms)) / 1000.0 / steps)
+
+        threading.Thread(target=_ramp, name="jukebox-base", daemon=True).start()
+        return {"ok": True, "base_volume": vol, "request_id": snap.get("request_id")}
 
     def duck_toggle(self, level: float = DUCK_LEVEL_DEFAULT) -> dict:
         """Push to Duck: geduckt -> hoch, sonst absenken. Ohne laufenden Player ist ein
