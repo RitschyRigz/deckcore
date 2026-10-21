@@ -538,7 +538,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
   const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
-  const [lhResp, setLhResp] = useState(null)    // level_http: letzte bestätigte Antwort {value, label, at}
+  const [lhResp, setLhResp] = useState(null)    // level_http: letzte bestätigte Antwort {value, label, target, at}
 
   const st = isLh ? lh : isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = isLh ? (Number.isFinite(lh.value) ? lh.value : 0) : Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
@@ -548,7 +548,9 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
   // level_http (Codex R6 F19): Füllung und Fußzeile zeigen den WIRKSAMEN, bestätigten Pegel samt Kontext
   // (z. B. „Duck · 15%", auch wenn der Finger die Obergrenze auf 80 zieht) — nie den Fingerwert. Der Knopf
   // folgt beim Ziehen dem Finger (Eingabe), sonst ebenfalls dem wirksamen Wert.
-  const lhFresh = isLh && lhResp && Date.now() - lhResp.at < 1500
+  // Nur gültig, solange sie zum SELBEN Ziel gehört wie der aktuelle Monitor (Codex R7 F19): Anzeige und
+  // Bedienziel beschreiben immer denselben Zustand — nach einem Song-/Duck-Wechsel zählt sofort der Monitor.
+  const lhFresh = isLh && lhResp && Date.now() - lhResp.at < 1500 && lhResp.target === String(lh.target || '')
   const lhEff = isLh ? (lhFresh && Number.isFinite(lhResp.value) ? lhResp.value : baseLevel) : level
   const lhLabel = isLh ? ((lhFresh && lhResp.label) || lh.label || '') : ''
   const fillLevel = isLh ? lhEff : level
@@ -630,7 +632,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
   const lhFail = () => {
     downYRef.current = null; downXRef.current = null; lockRef.current = null
     if (holdT.current) { clearTimeout(holdT.current); holdT.current = null }
-    setDrag(null); setOptLevel(null)
+    setDrag(null); setOptLevel(null); setLhResp(null)   // bestätigte Altanzeige verwerfen
   }
   const push = (lvl, force) => {
     const t = Date.now()
@@ -642,7 +644,7 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
         .then((r) => {                                  // ältere Antworten ignorieren
           if (seq !== lhSeqRef.current || !r) return
           if (r.ok === false) { lhFail(); return }
-          setLhResp({ value: Number(r.fader_value), label: String(r.label || ''), at: Date.now() })
+          setLhResp({ value: Number(r.fader_value), label: String(r.fader_label || ''), target: String(r.fader_target || ''), at: Date.now() })
         })
         .catch(() => { if (seq === lhSeqRef.current) lhFail() })
     }

@@ -6697,6 +6697,13 @@ class DeckCoreService:
         fv = _level_to_pct(_dig(out, mon.get("value_path") or "value"), lo, hi)
         if fv is not None:
             out["fader_value"] = fv
+        # Ziel und Anzeigezeile derselben Antwort ueber die Pfade der Taste (kein fester Feldname):
+        # das Panel verwendet die bestaetigte Anzeige nur, solange sie zum aktuellen Ziel gehoert.
+        if mon.get("target_path") and out.get("ok") is not False:
+            out["fader_target"] = str(_dig(out, mon["target_path"]) or "")
+        if mon.get("label_path") and out.get("ok") is not False:
+            lbl = _dig(out, mon["label_path"])
+            out["fader_label"] = "" if lbl is None else str(lbl)
         # Sofort frisch lesen + diese Taste neu auflösen (der nächste Push zeigt die Host-Wahrheit).
         self._level_http_state(bid, mon, fresh=True)
         self._last_eval.pop(bid, None)

@@ -121,7 +121,8 @@ def test_proxy_maps_and_posts_to_set_url(tmp_path, monkeypatch):
     svc = _svc(tmp_path, monkeypatch, host, min=-40, max=0)
     res = _client(svc).post("/api/streamdeck/level_http/lvl", json={"value": 50, "target": "song-1"}).json()
     assert host.posts == [(SET, {"value": -20, "target": "song-1"})]
-    assert res == {"ok": True, "value": -20, "extra": "x", "fader_value": 50}, "Host-Antwort unveraendert + Prozent"
+    assert res == {"ok": True, "value": -20, "extra": "x", "fader_value": 50,
+                   "fader_target": "", "fader_label": ""}, "Host-Antwort unveraendert + Prozent/Ziel/Zeile"
     assert host.gets >= 1, "Monitor-Cache sofort frisch gelesen"
 
 
@@ -191,3 +192,11 @@ def test_jukebox_pause_toggles(tmp_path, monkeypatch):
     jb.state = "paused"
     assert svc._act_jukebox({"mode": "pause"}, {}) == {"success": True, "message": "Weiter"}
     assert jb.calls == [True, False]
+
+
+def test_proxy_reports_target_and_label_of_the_confirmed_answer(tmp_path, monkeypatch):
+    """Codex R7 F19: die bestaetigte Anzeige gehoert zu einem Ziel — ueber die Pfade der Taste."""
+    host = Host(reply={"ok": True, "value": 15, "target": "song:r2:duck", "label": "Duck · 15%"})
+    svc = _svc(tmp_path, monkeypatch, host)
+    res = _client(svc).post("/api/streamdeck/level_http/lvl", json={"value": 80, "target": "song:r2:duck"}).json()
+    assert res["fader_value"] == 15 and res["fader_target"] == "song:r2:duck" and res["fader_label"] == "Duck · 15%"
