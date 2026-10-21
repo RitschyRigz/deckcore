@@ -1720,6 +1720,9 @@ class DeckCoreService:
         # Die Musik-Jukebox registriert sich beim Start selbst; ein Host haengt weitere
         # Mediatheken (z.B. eine Videobox) ueber ``register_library`` an — kein Sondercode.
         self._libraries: dict[str, dict] = {}
+        # Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek (Name aus der
+        # Mediathek-Config → ``matcher()``; siehe ``register_library_matcher``).
+        self._library_matchers: dict[str, Any] = {}
         # Besitzer-Registry (Praefix → Integration, feste id → Integration); Kern-Generatoren vorab,
         # Hosts/Mediatheken haengen ihre ueber register_owner_prefix()/register_library() an.
         self._owner_prefixes: dict[str, str] = dict(_CORE_OWNER_PREFIXES)
@@ -5357,6 +5360,31 @@ class DeckCoreService:
                        and t.get("style") not in recent_skip][:recent_n]
             if recents:
                 extra_sections.append(("new_", recent_label, recents))
+        # Sammel-Abschnitt „passend" (``config.json → match_section``, Host-Matcher siehe
+        # ``register_library_matcher``): alle Titel, deren Schluessel zum aktuellen Wert des
+        # Hosts passt, neueste zuerst — immer der ERSTE Abschnitt. Passt nichts (oder ist der
+        # Wert unbekannt), steht dort eine einzelne Hinweis-Taste ohne Aktion, damit der
+        # Abschnitt sichtbar leer bleibt statt zu verschwinden.
+        match = self._library_match(jb)
+        match_rows: list = []
+        if match is not None and match["value"] and match["key"] is not None:
+            want_key = match["value"].casefold()
+            for t in by_added:
+                if prefix + t["id"] in self._removed:
+                    continue
+                try:
+                    k = str(match["key"](t) or "").strip().casefold()
+                except Exception:  # noqa: BLE001 - ein Schluessel-Fehler laesst nur diesen Titel aus
+                    k = ""
+                if k and k == want_key:
+                    match_rows.append(t)
+            # „Neueste" = juengstes Herkunftsdatum (Stream des Titels), bei gleichem Datum
+            # der juengere Neuzugang — gleichzeitig kopierte Videos stehen so trotzdem richtig.
+            match_rows.sort(key=lambda t: (str(t.get("source_date") or ""),
+                                           float(t.get("added_at") or t.get("mtime") or 0)),
+                            reverse=True)
+            if match_rows:
+                extra_sections.insert(0, ("match_", match["label"], match_rows))
         def upsert_track(bid: str, tr: dict, icon: str, cat: str, extra: dict) -> None:
             """EINE Track-Taste (Haupt- oder Zweittaste) mit derselben Generator-Logik: Titel/
             Abzeichen/Herkunft folgen dem Katalog, vom Nutzer gesetzte Kosmetik bleibt."""
@@ -5418,6 +5446,19 @@ class DeckCoreService:
                 upsert_track(bid, tr, "⭐" if sub == "fav_" else track_icon, cat_label,
                              {meta_prefix + "_section": sub.rstrip("_")})
                 n += 1
+        if match is not None and not match_rows:
+            hint_id = prefix + "match_none"
+            hint_title = match["empty_title"] + (f"\n{match['value']}" if match["value"] else "")
+            hint_default = {"icon": "🎯", "title": hint_title, "color": "off"}
+            prev_hint = (pool_by_id.get(hint_id) or {}).get(meta_prefix + "_match_gen")
+            upsert({"id": hint_id, "label": match["empty_title"], "pool_cat": group,
+                    meta_prefix + "_section": "match", meta_prefix + "_match_gen": hint_default,
+                    "action": {"type": "none"}, "monitor": {"type": "none"},
+                    "default": hint_default},
+                   {"default": prev_hint} if prev_hint else None)
+            wanted.append((hint_id, match["label"]))
+            extra_cats.insert(0, match["label"])
+            n += 1
         for sid in order:
             label = style_label(sid)
             cat = label
@@ -5461,6 +5502,11 @@ class DeckCoreService:
                 # Category order belongs to the deck template. A library refresh only
                 # appends new sections; it must not undo the user's arrangement.
                 deck["categories"] = existing_cats + [c for c in cats if c not in existing_cats]
+            if match is not None:
+                # Der Sammel-Abschnitt „passend" steht immer ganz vorn (Richard 21.10.2026:
+                # „im Kern immer nur passende Videos, das neueste zuvorderst").
+                deck["categories"] = [match["label"]] + [c for c in deck["categories"]
+                                                         if c != match["label"]]
             old_items = {it["button"]: it for it in deck["items"] if it["button"] in keep}
             jb_items = []
             for bid, cat in wanted:
@@ -5760,6 +5806,44 @@ class DeckCoreService:
         return {"ok": bool(res.get("ok", True)), "created": created, "updated": updated, "removed": removed,
                 "reason": res.get("reason")}
 
+    def register_library_matcher(self, name: str, matcher) -> None:
+        """Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek.
+
+        Die Mediathek-Config nennt ihn (``config.json → match_section.match = "<name>"``).
+        ``matcher()`` liefert ``{"value": <aktueller Vergleichswert>, "key": key(track) -> str}``
+        oder ``None``, wenn der Wert gerade unbekannt ist. Der Abschnitt zeigt alle Titel, deren
+        ``key`` dem Wert entspricht (Gross-/Kleinschreibung egal), neueste zuerst. Der Kern
+        kennt die Bedeutung nicht — welcher Wert gilt, bestimmt allein der Host."""
+        self._library_matchers[str(name)] = matcher
+
+    def _library_match(self, jb) -> Optional[dict]:
+        """Sammel-Abschnitt ``match_section`` dieser Mediathek: ``None`` = nicht konfiguriert;
+        sonst ``{label, empty_title, value, key}`` — ``value`` leer, wenn der Matcher fehlt,
+        scheitert oder keinen Wert kennt (der Abschnitt zeigt dann nur den Leer-Hinweis)."""
+        spec = (jb.config() or {}).get("match_section")
+        if not isinstance(spec, dict) or not str(spec.get("match") or "").strip():
+            return None
+        current = None
+        matcher = self._library_matchers.get(str(spec.get("match")).strip())
+        if matcher is not None:
+            try:
+                current = matcher()
+            except Exception as e:  # noqa: BLE001 - ein Host-Matcher haelt den Abgleich nie an
+                log.warning("library matcher %s: %s", spec.get("match"), e)
+        current = current if isinstance(current, dict) else {}
+        key = current.get("key")
+        return {"label": str(spec.get("label") or "🎯 Passend"),
+                "empty_title": str(spec.get("empty_title") or "Nichts passend"),
+                "value": str(current.get("value") or "").strip() if callable(key) else "",
+                "key": key if callable(key) else None}
+
+    def _library_match_sig(self, lib) -> str:
+        """Teil des Waechter-Fingerabdrucks: der aktuelle Vergleichswert des Sammel-Abschnitts.
+        Wechselt er (z. B. andere Kategorie), zieht der Waechter die Tasten nach — die Titel-
+        Seite deckt ``library_signature`` ab."""
+        match = self._library_match(lib)
+        return "" if match is None else "\nmatch|" + match["value"].casefold()
+
     async def _library_watch_loop(self, key: str) -> None:
         """Ordnerwaechter: alle paar Sekunden den Bibliotheks-Fingerabdruck pruefen; bei Aenderung
         (Datei rein/raus, library.json, styles.json) die Tasten neu ableiten — aufs gemerkte Deck
@@ -5775,6 +5859,7 @@ class DeckCoreService:
                 if not str(cfg.get("library_dir") or ""):
                     continue
                 sig = await asyncio.to_thread(lib.library_signature)
+                sig += await asyncio.to_thread(self._library_match_sig, lib)
                 hook = entry.get("on_change")
                 if sig == entry.get("sig"):
                     if hook is not None and entry.get("hook_pending"):
@@ -5807,8 +5892,12 @@ class DeckCoreService:
                 entry["hook_writes"] = 0
                 first = entry.get("sig") is None
                 entry["sig"] = sig
-                if first and not self._library_needs_sync(lib, entry):
-                    continue   # Start: Tasten passen schon zum Ordner -> nichts schreiben
+                if (first and not self._library_needs_sync(lib, entry)
+                        and self._library_match(lib) is None):
+                    # Start: Tasten passen schon zum Ordner -> nichts schreiben. Ein Sammel-
+                    # Abschnitt ``match_section`` haengt am Live-Wert des Hosts und wird beim
+                    # Start immer einmal abgeglichen.
+                    continue
                 res = await asyncio.to_thread(entry["populate"], str(cfg.get("deck_id") or ""))
                 log.info("Mediathek %s geaendert -> Tasten nachgezogen: %s", key, res)
             except asyncio.CancelledError:
