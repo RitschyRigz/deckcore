@@ -113,3 +113,19 @@ def test_set_base_volume_keeps_duck_factor_and_binds_request(tmp_path):
 def test_set_base_volume_without_player_fails(tmp_path):
     lib = _lib(tmp_path)
     assert lib.set_base_volume(50)["ok"] is False
+
+
+def test_set_base_volume_with_duck_level_is_one_ramp_from_actual_to_target(tmp_path):
+    """Codex R6 F17: Basis 15 → 100 unter einer Grenze von 25 % darf nie dazwischen
+    hochspringen — Basis und Duck wechseln in EINER Rampe."""
+    lib = _lib(tmp_path)
+    lib.base_volume_for = lambda *a: 15
+    rid = _play(lib)
+    seen = len(_Player.last.volumes)
+    out = lib.set_base_volume(100, request_id=rid, fade_ms=0, duck_level=0.25)
+    assert out["ok"] and lib.status()["ducked"] is True and lib.status()["duck_level"] == 0.25
+    assert _settle(lambda: _Player.last.volumes and _Player.last.volumes[-1] == 25)
+    ramp = _Player.last.volumes[seen:]
+    assert max(ramp) <= 25 and ramp == sorted(ramp)
+    lib.set_base_volume(100, request_id=rid, fade_ms=0, duck_level=None)
+    assert _settle(lambda: _Player.last.volumes[-1] == 100) and lib.status()["ducked"] is False

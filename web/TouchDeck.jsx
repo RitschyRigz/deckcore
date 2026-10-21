@@ -538,12 +538,21 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
   const [optLevel, setOptLevel] = useState(null) // Finger-Position nach dem Loslassen kurz „einfrieren" (0..100) | null
   const [imgErr, setImgErr] = useState(false)   // Symbol-Bild (App-/Wave-Link-Icon) konnte nicht laden → Emoji-Fallback
   const holdT = useRef(null)                    // Timer fürs Einfrieren — danach wieder Live-State
+  const [lhResp, setLhResp] = useState(null)    // level_http: letzte bestätigte Antwort {value, label, at}
 
   const st = isLh ? lh : isWa ? (wa || {}) : isApp ? (app || {}) : (state[targetId] || {})
   const baseLevel = isLh ? (Number.isFinite(lh.value) ? lh.value : 0) : Number.isFinite(st.level) ? st.level : (Number(v.value) || 0)
   // Beim Ziehen = Finger-Wert; kurz nach dem Loslassen = gehaltene Position (kein Zurückspringen, während
   // Set + Geräte-Roundtrip + nächster Live-Wert unterwegs sind); sonst der Live-State.
   const level = drag != null ? drag : (optLevel != null ? optLevel : baseLevel)
+  // level_http (Codex R6 F19): Füllung und Fußzeile zeigen den WIRKSAMEN, bestätigten Pegel samt Kontext
+  // (z. B. „Duck · 15%", auch wenn der Finger die Obergrenze auf 80 zieht) — nie den Fingerwert. Der Knopf
+  // folgt beim Ziehen dem Finger (Eingabe), sonst ebenfalls dem wirksamen Wert.
+  const lhFresh = isLh && lhResp && Date.now() - lhResp.at < 1500
+  const lhEff = isLh ? (lhFresh && Number.isFinite(lhResp.value) ? lhResp.value : baseLevel) : level
+  const lhLabel = isLh ? ((lhFresh && lhResp.label) || lh.label || '') : ''
+  const fillLevel = isLh ? lhEff : level
+  const knobLevel = isLh ? (drag != null ? drag : lhEff) : level
   const muted = optMute != null ? optMute : !!st.muted
   const mlvl = isLh ? (lhMeterId ? Math.max(0, Math.min(1, (meters[lhMeterId]) || 0)) : 0)
     : (isWa || isApp) ? waMeter(st.peak) : Math.max(0, Math.min(1, (meters[meterId]) || 0))
@@ -630,7 +639,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
     if (isLh) {
       const seq = ++lhSeqRef.current
       postJSON('/api/streamdeck/level_http/' + encodeURIComponent(id), { value: lvl, target: lhTargetRef.current })
-        .then((r) => { if (seq === lhSeqRef.current && r && r.ok === false) lhFail() })   // ältere Antworten ignorieren
+        .then((r) => {                                  // ältere Antworten ignorieren
+          if (seq !== lhSeqRef.current || !r) return
+          if (r.ok === false) { lhFail(); return }
+          setLhResp({ value: Number(r.fader_value), label: String(r.label || ''), at: Date.now() })
+        })
         .catch(() => { if (seq === lhSeqRef.current) lhFail() })
     }
     else if (isApp) postJSON('/api/winaudio/app_volume', { proc: proc || '', level: lvl }).catch(() => {})
@@ -680,9 +693,11 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
     if (movedRef.current) {
       const fin = levelAt(e.clientY)
       push(fin, true)                                 // finalen Wert sicher senden
-      setOptLevel(fin)                                // Position halten, bis der Live-Wert nachgezogen ist
-      if (holdT.current) clearTimeout(holdT.current)
-      holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
+      if (!isLh) {                                    // level_http zeigt die bestätigte Antwort, keinen Fingerwert
+        setOptLevel(fin)                              // Position halten, bis der Live-Wert nachgezogen ist
+        if (holdT.current) clearTimeout(holdT.current)
+        holdT.current = setTimeout(() => { holdT.current = null; setOptLevel(null) }, 700)
+      }
     } else if (isLh) {                                // level_http: Tippen = normaler Tastendruck (konfigurierte Aktion)
       if (onPress) onPress(lhTargetRef.current)       // … mit dem angezeigten Ziel als „shown" (bind_shown)
     } else {                                          // Tap ohne Bewegung = Mute (toggle)
@@ -713,13 +728,13 @@ function Fader({ id, v, mon, meters, state, wa, dev, app, proc, onMute, onPress,
       </div>
       <div class="t-fader-body">
         <div class="t-fader-track" ref={trackRef}>
-          <div class="t-fader-fill" style={`height:${level}%`} />
-          <div class="t-fader-knob" style={`bottom:${level}%`} />
+          <div class="t-fader-fill" style={`height:${fillLevel}%`} />
+          <div class="t-fader-knob" style={`bottom:${knobLevel}%`} />
         </div>
         {(!isLh || lhMeterId) && <FaderVU vu={_fo.vu} mlvl={mlvl} peakEl={<div class="t-vu-peak" ref={peakRef} />} />}
       </div>
       <div class="t-fader-foot">{isLh ? (lh.available === false || lh.value == null ? '— n/v'
-          : (drag == null && optLevel == null && lh.label) ? lh.label : level + '%')
+          : lhLabel || (Math.round(lhEff) + '%'))
         : isApp && st.available === false ? '— App aus' : isWa && st.available === false ? '— n/v' : muted ? '🔇 stumm' : level + '%'}</div>
       {!iconOnly && (showImg
         ? <div class="t-fader-icon t-fader-img" title={name}><img src={imgSrc} alt="" onError={() => setImgErr(true)} /></div>

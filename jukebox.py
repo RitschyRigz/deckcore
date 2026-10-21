@@ -68,6 +68,8 @@ log = logging.getLogger("deckcore.jukebox")
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac"}
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".m4v"}
+_KEEP_DUCK = object()   # set_base_volume: bestehendes Ducking unveraendert lassen
+
 STATES = ("idle", "queued", "preparing", "starting", "playing", "paused", "ended", "stopped", "error")
 _ACTIVE = {"preparing", "starting", "playing", "paused"}
 PICKS = ("random", "newest", "latest_origin")
@@ -1459,10 +1461,14 @@ class Jukebox:
         except (TypeError, ValueError):
             return 100.0
 
-    def set_base_volume(self, volume: Any, *, request_id: str = "", fade_ms: int = 250) -> dict:
+    def set_base_volume(self, volume: Any, *, request_id: str = "", fade_ms: int = 250,
+                        duck_level: Any = _KEEP_DUCK) -> dict:
         """Grundpegel der LAUFENDEN Wiedergabe live aendern (0..130). Mit ``request_id`` nur,
         wenn genau diese Wiedergabe noch laeuft — ein spaeter Aufruf trifft nie den naechsten
-        Titel. Ein bestehendes Ducking bleibt als Faktor auf der neuen Basis erhalten."""
+        Titel. Ohne ``duck_level`` bleibt ein bestehendes Ducking als Faktor erhalten; mit
+        ``duck_level`` (0..1 oder None = aus) wechseln Basis UND Duck in EINER Rampe vom
+        tatsaechlich angewiesenen Pegel zum Ziel — keine zweite, konkurrierende Rampe, die mit
+        altem Faktor auf neuer Basis kurz ueber eine Obergrenze springt (Codex R6 F17)."""
         try:
             vol = max(0.0, min(130.0, float(volume)))
         except (TypeError, ValueError):
@@ -1476,17 +1482,24 @@ class Jukebox:
         old = self._active_base(snap)
         factor = (float(snap["duck_level"]) if snap.get("ducked") and snap.get("duck_level") is not None
                   else 1.0)
+        new_factor = factor
+        fields: dict = {"base_volume": vol}
+        if duck_level is not _KEEP_DUCK:
+            ducked = duck_level is not None and float(duck_level) < 1.0
+            new_factor = max(0.0, min(1.0, float(duck_level))) if ducked else 1.0
+            fields.update(ducked=ducked, duck_level=new_factor if ducked else None)
+        start, end = old * factor, vol * new_factor
         with self._lock:
             self._duck_generation += 1
             generation = self._duck_generation
-        self._set(base_volume=vol)
+        self._set(**fields)
 
         def _ramp() -> None:
             steps = max(1, int(DUCK_FADE_STEPS))
             for i in range(1, steps + 1):
                 if self._duck_generation != generation or not player.alive():
                     return
-                player.set_volume((old + (vol - old) * (i / steps)) * factor)
+                player.set_volume(start + (end - start) * (i / steps))
                 if i < steps:
                     time.sleep(max(0.0, float(fade_ms)) / 1000.0 / steps)
 
