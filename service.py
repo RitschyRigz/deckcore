@@ -534,6 +534,26 @@ def _is_fader(btn) -> bool:
     return isinstance(btn, dict) and btn.get("render") == "fader"
 
 
+def _retarget_track_refs(btn: dict, old_tid: str, new_tid: str) -> bool:
+    """Alle Verweise einer Taste auf eine Track-Kennung umhaengen: Kurz-/Langdruck, Monitor und
+    die Zustandsregeln (``<zustand>:<track>``), an denen die Taste beim Abspielen leuchtet.
+    Rueckgabe: etwas geaendert."""
+    changed = False
+    for part in ("action", "long_action", "monitor"):
+        p = btn.get(part)
+        if isinstance(p, dict) and p.get("track") == old_tid:
+            p["track"] = new_tid
+            changed = True
+    suffix = ":" + old_tid
+    for st in btn.get("states") or []:
+        when = st.get("when") if isinstance(st, dict) else None
+        value = when.get("value") if isinstance(when, dict) else None
+        if isinstance(value, str) and value.endswith(suffix):
+            when["value"] = value[: -len(suffix)] + ":" + new_tid
+            changed = True
+    return changed
+
+
 def _has_long_action(btn) -> bool:
     """Wirksamer langer Druck. Fader sind ausgenommen (Richard 26.09.: Tippen = Mute, Halten und
     Ziehen = Pegel — eine dritte Funktion wäre zu viel). Eine dort noch gespeicherte long_action
@@ -5677,8 +5697,13 @@ class DeckCoreService:
         Deck-Items, Abwahl). Idempotent: gibt es die neue Taste schon oder die alte nicht, passiert
         nichts. Rueckgabe = umbenannte Tasten. Der Aufrufer speichert."""
         old_bid, new_bid = prefix + old_tid, prefix + new_tid
-        if old_tid == new_tid or any(b.get("id") == new_bid for b in self._buttons):
+        if old_tid == new_tid:
             return 0
+        if any(b.get("id") == new_bid for b in self._buttons):
+            # Schon umbenannt (z. B. vor diesem Fix): nur noch haengengebliebene Verweise auf die
+            # alte Kennung nachziehen — sonst leuchtet die Taste beim Abspielen nie (23.10.2026).
+            return sum(1 for b in self._buttons
+                       if b.get("id") == new_bid and _retarget_track_refs(b, old_tid, new_tid))
         moved = 0
         for b in self._buttons:
             if b.get("id") != old_bid:
@@ -5686,9 +5711,7 @@ class DeckCoreService:
             b["id"] = new_bid
             if meta:
                 b[meta + "_track"] = new_tid
-            for part in ("action", "monitor"):
-                if isinstance(b.get(part), dict) and b[part].get("track") == old_tid:
-                    b[part]["track"] = new_tid
+            _retarget_track_refs(b, old_tid, new_tid)
             moved += 1
         if not moved:
             return 0
@@ -5717,6 +5740,17 @@ class DeckCoreService:
             prefix, meta = str(entry.get("prefix") or ""), str(entry.get("meta_prefix") or "")
             for old_tid, new_tid in (aliases or {}).items():
                 n += self._rename_library_button(prefix, meta, str(old_tid), str(new_tid))
+        return n
+
+    def _repair_library_aliases(self) -> int:
+        """Einmal je Start: Tasten umgezogener Tracks (Alias-Karte) auf die aktuelle Kennung
+        ziehen, inkl. ihrer Zustandsregeln. Speichert nur bei einer Aenderung."""
+        with self._library_mutation_lock:
+            n = self._apply_library_aliases()
+            if n:
+                self._save()
+        if n:
+            log.info("Mediathek: %d Taste(n) auf umgezogene Track-Kennung nachgezogen", n)
         return n
 
     def _library_meta(self, key: str) -> dict:
@@ -5892,6 +5926,8 @@ class DeckCoreService:
                 entry["hook_writes"] = 0
                 first = entry.get("sig") is None
                 entry["sig"] = sig
+                if first:
+                    await asyncio.to_thread(self._repair_library_aliases)
                 if (first and not self._library_needs_sync(lib, entry)
                         and self._library_match(lib) is None):
                     # Start: Tasten passen schon zum Ordner -> nichts schreiben. Ein Sammel-
