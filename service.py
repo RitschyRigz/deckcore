@@ -1743,6 +1743,9 @@ class DeckCoreService:
         # Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek (Name aus der
         # Mediathek-Config → ``matcher()``; siehe ``register_library_matcher``).
         self._library_matchers: dict[str, Any] = {}
+        # Host-Tor fuer den vollen Ordnerlauf der Waechter (``set_library_scan_gate``): liefert
+        # einen Pausengrund, laeuft je Takt nur der billige Vorfilter ``tree_signature``.
+        self._library_scan_gate: Optional[Callable[[], Optional[str]]] = None
         # Besitzer-Registry (Praefix → Integration, feste id → Integration); Kern-Generatoren vorab,
         # Hosts/Mediatheken haengen ihre ueber register_owner_prefix()/register_library() an.
         self._owner_prefixes: dict[str, str] = dict(_CORE_OWNER_PREFIXES)
@@ -5231,6 +5234,11 @@ class DeckCoreService:
         Wiederauftauchen zurueckkommen."""
         jb = lib
         group = self.library_category(jb, group or "Jukebox")
+        # Tasten ableiten ist ein bewusster Abgleich: einmal den Ordner laufen (nimmt auch
+        # geaenderte Inhalte bestehender Dateien auf, z. B. ein ersetztes Cover), dann lesen.
+        rescan = getattr(jb, "scan", None)
+        if callable(rescan):
+            rescan()
         tracks = jb.library()
         styles = jb.styles()
         # Auswahlart des Kategorie-Wuerfels = Mediathek-Config (``category_pick``); die Taste
@@ -5871,6 +5879,33 @@ class DeckCoreService:
                 "value": str(current.get("value") or "").strip() if callable(key) else "",
                 "key": key if callable(key) else None}
 
+    def set_library_scan_gate(self, gate) -> None:
+        """Host-Tor fuer den Ordnerwaechter aller Mediatheken: ``gate() -> str | None``. Ein Grund
+        (z. B. „Live-Fenster") haelt den vollen Ordnerlauf je Takt an; der Waechter prueft dann nur
+        noch den billigen Vorfilter (``tree_signature``: Ordner-Zeitstempel + Metadaten) und laeuft
+        den Ordner erst, wenn der sich aendert (Neuzugang, Entfernung, Metadaten). ``None`` = wie
+        bisher. Der Kern kennt die Bedeutung des Grundes nicht."""
+        self._library_scan_gate = gate
+
+    def _library_scan_paused(self) -> Optional[str]:
+        gate = self._library_scan_gate
+        if gate is None:
+            return None
+        try:
+            reason = gate()
+        except Exception as e:  # noqa: BLE001 - ein Host-Tor haelt den Waechter nie an
+            log.debug("library scan gate: %s", e)
+            return None
+        return str(reason) if reason else None
+
+    def _library_tree_sig(self, lib) -> Optional[str]:
+        """Billiger Vorfilter der Mediathek (+ Sammel-Abschnitt); ``None`` = die Instanz kennt
+        keinen (Fremd-Mediathek) -> immer voller Lauf."""
+        fn = getattr(lib, "tree_signature", None)
+        if not callable(fn):
+            return None
+        return str(fn()) + self._library_match_sig(lib)
+
     def _library_match_sig(self, lib) -> str:
         """Teil des Waechter-Fingerabdrucks: der aktuelle Vergleichswert des Sammel-Abschnitts.
         Wechselt er (z. B. andere Kategorie), zieht der Waechter die Tasten nach — die Titel-
@@ -5892,8 +5927,29 @@ class DeckCoreService:
                 cfg = lib.config()
                 if not str(cfg.get("library_dir") or ""):
                     continue
+                paused = self._library_scan_paused()
+                if paused:
+                    # Tor G: im Live-Fenster kein voller Ordnerlauf je Takt. Der Vorfilter
+                    # (Ordner-Zeitstempel) erkennt Neuzugaenge/Entfernungen und Metadaten;
+                    # erst eine Aenderung loest den vollen Lauf unten aus.
+                    tree = await asyncio.to_thread(self._library_tree_sig, lib)
+                    if entry.get("paused_reason") != paused:
+                        entry["paused_reason"] = paused
+                        log.info("Mediathek %s: Ordnerwaechter nur Vorfilter (%s)", key, paused)
+                    if (tree is not None and tree == entry.get("tree_sig")
+                            and not entry.get("hook_pending")):
+                        continue
+                    entry["tree_sig"] = tree
+                else:
+                    if entry.get("paused_reason"):
+                        log.info("Mediathek %s: Ordnerwaechter wieder voll", key)
+                    entry["paused_reason"] = None
                 sig = await asyncio.to_thread(lib.library_signature)
                 sig += await asyncio.to_thread(self._library_match_sig, lib)
+                if not paused:
+                    # Vorfilter-Stand mitfuehren, damit der Eintritt ins Live-Fenster keinen
+                    # eigenen Lauf kostet (der Katalog ist nach library_signature frisch).
+                    entry["tree_sig"] = await asyncio.to_thread(self._library_tree_sig, lib)
                 hook = entry.get("on_change")
                 if sig == entry.get("sig"):
                     if hook is not None and entry.get("hook_pending"):
@@ -7128,6 +7184,9 @@ class DeckCoreService:
         ``force`` = alles sofort neu (nach Tastendruck/Edit). Baut ein frisches Dict
         und tauscht es atomar (thread-safe ggü. parallelem Endpoint-Aufruf)."""
         now = time.monotonic()
+        # Laufnummer je Recompute: Monitore, die einen teuren Stand teilen (z. B. die Prozess-
+        # liste des Hosts), holen ihn je Takt einmal statt je Taste.
+        self._recompute_seq = int(self.__dict__.get("_recompute_seq", 0)) + 1
         prev = self._resolved
         out: dict[str, dict] = {}
         last = dict(self._last_eval)

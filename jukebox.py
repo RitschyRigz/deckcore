@@ -86,6 +86,10 @@ class RollbackFailed(RuntimeError):
 # library.json-Felder, die die Jukebox selbst auswertet; alles andere reicht library() als ``meta`` durch.
 _CORE_META = frozenset({"style", "title", "max_seconds", "source_date", "source_session",
                         "lyrics", "lyrics_offset"})
+_COVER_SUFFIXES = (".jpg", ".png", ".webp", ".jpeg")      # Reihenfolge = Vorrang des Covers
+_IMAGE_EXTS = frozenset(_COVER_SUFFIXES)
+_META_FILES = ("library.json", "styles.json", "config.json")
+_WALK_MAX_DEPTH = 16
 
 
 def _published(path: Path, exts: Optional[set] = None) -> bool:
@@ -482,6 +486,13 @@ class Jukebox:
         # In-Prozess-Zuhoerer fuer Zustandswechsel (Hosts), zusaetzlich zum Bus-``publish``.
         self.listeners: list[Callable[[dict], None]] = []
         self._lyrics_cache: dict[str, tuple] = {}
+        # Vorbereiteter Katalog (Bibliotheksvertrag, Tor G): EIN Ordnerlauf liefert Liste, Index
+        # ``id -> Track`` und Fingerabdruck; ``library()``/``track()`` lesen daraus, statt je
+        # Aufruf den Ordner abzulaufen. Metadaten (library.json) werden je Dateistand neu
+        # aufgelegt, ohne Ordnerlauf. Ersetzt wird der Katalog als Ganzes (atomar), nie geaendert.
+        self._catalog: Optional[dict] = None
+        self._catalog_dirty = False
+        self._scan_lock = threading.Lock()
         # Mitsing-Cues des laufenden Auftrags: (request_id, cues). ``lyrics()`` scannt die ganze
         # Bibliothek (~35 ms) und darf nicht je time-pos-Meldung laufen (Stream 07.10.2026).
         self._progress_cues: tuple = (None, [])
@@ -632,47 +643,105 @@ class Jukebox:
             return {"ok": False, "reason": str(e)}
         return {"ok": True, "track": t["id"], "title": t["title"], "favorite": want}
 
-    def library(self) -> list[dict]:
-        """Ordner scannen; Stil aus library.json, sonst aus dem Unterordnernamen; sonst leer."""
-        cfg = self.config()
-        lib_dir = str(cfg.get("library_dir") or "").strip()
+    def _library_root(self) -> Optional[Path]:
+        lib_dir = str(self.config().get("library_dir") or "").strip()
         if not lib_dir:
-            return []      # kein Ordner konfiguriert: Path("") waere das Arbeitsverzeichnis
+            return None    # kein Ordner konfiguriert: Path("") waere das Arbeitsverzeichnis
         root = Path(lib_dir)
-        if not root.is_dir():
-            return []
-        meta = self._json("library.json").get("tracks")
-        meta = meta if isinstance(meta, dict) else {}
-        out: list[dict] = []
-        for p in sorted(root.rglob("*")):
-            if not p.is_file() or not _published(p, self._exts):
-                continue
+        return root if root.is_dir() else None
+
+    def _meta_stamp(self) -> tuple:
+        """Dateistand von library.json (Zeitstempel + Groesse); ``None`` = keine Datei."""
+        try:
+            st = (self._dir / "library.json").stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (None, None)
+
+    def _walk(self, root: Path) -> tuple[list[dict], list[Path]]:
+        """EIN Ordnerlauf mit ``os.scandir`` (Windows liefert die Dateidaten mit dem Listing,
+        kein ``stat`` je Datei): Mediendateien + Bild-Begleitdateien als ``{rel, path, size,
+        mtime_ns, mtime, added_at, media, image}`` (nach ``rel`` sortiert) und die Ordnerliste
+        (Wurzel zuerst) fuer ``tree_signature``."""
+        files: list[dict] = []
+        dirs: list[Path] = [root]
+        stack: list[tuple[Path, int]] = [(root, 0)]
+        while stack:
+            d, depth = stack.pop()
             try:
-                mtime = float(p.stat().st_mtime)
+                it = os.scandir(d)
             except OSError:
                 continue
-            rel = p.relative_to(root)
+            with it:
+                for e in it:
+                    try:
+                        if e.is_dir():
+                            if depth < _WALK_MAX_DEPTH:
+                                sub = Path(e.path)
+                                dirs.append(sub)
+                                stack.append((sub, depth + 1))
+                            continue
+                        if not e.is_file():
+                            continue
+                        p = Path(e.path)
+                        media = _published(p, self._exts)
+                        image = (not p.name.startswith(_UNPUBLISHED_PREFIX)
+                                 and p.suffix.lower() in _IMAGE_EXTS)
+                        if not media and not image:
+                            continue
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    rel = p.relative_to(root)
+                    files.append({
+                        "rel": rel, "path": p, "size": int(st.st_size),
+                        "mtime_ns": int(st.st_mtime_ns), "mtime": float(st.st_mtime),
+                        "added_at": float(getattr(st, "st_birthtime", 0) or st.st_ctime or st.st_mtime),
+                        "media": media, "image": image,
+                    })
+        files.sort(key=lambda f: str(f["rel"]))
+        return files, dirs
+
+    def _build_catalog(self, root: Path, files: list[dict], dirs: list[Path]) -> dict:
+        """Katalog aus einem Ordnerlauf: Fingerabdruck (wie bisher ``library_signature``) +
+        die Tracks mit den aktuellen Metadaten."""
+        parts = [f"{f['rel']}|{f['size']}|{f['mtime_ns']}" for f in files]
+        parts.append(self._meta_files_signature())
+        cat = {"root": str(root), "sig": "\n".join(parts), "files": files, "dirs": dirs}
+        return self._decorate(cat)
+
+    def _decorate(self, cat: dict) -> dict:
+        """Tracks aus den Dateidaten des Katalogs + library.json (``hidden`` filtert, Titel/Stil/
+        Favorit/Host-Felder kommen aus den Metadaten). Kein Ordnerlauf."""
+        meta = self._json("library.json").get("tracks")
+        meta = meta if isinstance(meta, dict) else {}
+        stamp = self._meta_stamp()
+        covers: dict[tuple, dict] = {}
+        for f in cat["files"]:
+            if f["image"] and 0 < f["size"] <= 16_000_000:
+                key = (str(f["rel"].parent).lower(), f["rel"].stem.lower())
+                covers.setdefault(key, {})[f["path"].suffix.lower()] = f
+        tracks: list[dict] = []
+        for f in cat["files"]:
+            if not f["media"]:
+                continue
+            p, rel = f["path"], f["rel"]
             tid = _slug(str(rel.with_suffix("")))
             m = meta.get(tid) if isinstance(meta.get(tid), dict) else {}
             if m.get("hidden"):
                 continue   # Host-Entscheid: Datei bleibt im Ordner, bekommt aber keine Taste/Auswahl
             folder_style = rel.parts[0] if len(rel.parts) > 1 else ""
-            cover = self._cover_sidecar(p, root)
-            title = str(m.get("title") or p.stem)
-            try:
-                st = p.stat()
-                added_at = float(getattr(st, "st_birthtime", 0) or st.st_ctime)
-            except OSError:
-                added_at = mtime
-            out.append({
+            cands = covers.get((str(rel.parent).lower(), rel.stem.lower())) or {}
+            cover = next((cands[s] for s in _COVER_SUFFIXES if s in cands), None)
+            tracks.append({
                 "id": tid, "file": str(p), "rel": str(rel).replace("\\", "/"),
-                "title": title,
+                "title": str(m.get("title") or p.stem),
                 # Titel steht ausdruecklich in library.json (auch wenn er dem Dateinamen gleicht) —
                 # Hosts unterscheiden so „kein Titel" von „bewusst so benannt" (Codex R14 F24).
                 "title_set": bool(str(m.get("title") or "").strip()),
                 "style": str(m.get("style") or folder_style or ""),
                 "max_seconds": float(m.get("max_seconds") or 0) or 0.0,
-                "mtime": mtime,
+                "mtime": f["mtime"],
                 # Herkunft getrennt von der Aufnahme in die Bibliothek: ``source_date`` = Quell-
                 # stream (Metadaten oder Titel), ``source_session`` = Session-Prefix (Metadaten),
                 # ``added_at`` = wann die Datei hier angelegt wurde (Neuzugang), nie „produziert".
@@ -681,15 +750,99 @@ class Jukebox:
                 # ``pick=latest_origin`` saehe sonst keine Herkunft (Musikseite M1, 25.09.2026).
                 "source_date": self._origin_date(m, p.stem),
                 "source_session": str(m.get("source_session") or ""),
-                "added_at": added_at,
+                "added_at": f["added_at"],
                 # Favoriten-Stern (Metafeld ``favorite``), von Hosts/Deck gemeinsam genutzt.
                 "favorite": bool(m.get("favorite")),
-                "cover_url": f"{self._cover_route}/{tid}?v={cover.stat().st_mtime_ns}" if cover else "",
+                "cover_url": f"{self._cover_route}/{tid}?v={cover['mtime_ns']}" if cover else "",
                 # Freie Host-Felder aus library.json (z. B. Spiel/Anlass einer Musikseite) —
                 # die Jukebox deutet sie nicht, sie reicht sie nur durch.
                 "meta": {k: v for k, v in m.items() if k not in _CORE_META},
             })
-        return out
+        return {**cat, "meta_stamp": stamp, "tracks": tracks, "index": {t["id"]: t for t in tracks}}
+
+    def scan(self) -> Optional[dict]:
+        """Voller Ordnerlauf -> neuer Katalog (der einzige Weg, neue/entfernte/geaenderte
+        Mediendateien aufzunehmen). ``None`` ohne nutzbaren Ordner. Laeuft im Ordnerwaechter
+        (``library_signature``), beim ersten Zugriff und nach eigenen Dateischritten."""
+        root = self._library_root()
+        if root is None:
+            self._catalog = None
+            return None
+        with self._scan_lock:
+            self._catalog_dirty = False      # vor dem Lauf: eine Aenderung waehrend des Laufs bleibt offen
+            files, dirs = self._walk(root)
+            cat = self._build_catalog(root, files, dirs)
+            cat["dirs_sig"] = self._dirs_signature(root, dirs)
+            self._catalog = cat
+        return cat
+
+    def invalidate(self) -> None:
+        """Katalog als veraltet markieren (eigene Dateischritte: Umzug, Papierkorb, Zurueckstellen;
+        Hosts nach einem Import). Der naechste Zugriff laeuft den Ordner einmal."""
+        self._catalog_dirty = True
+
+    def _current_catalog(self) -> Optional[dict]:
+        """Katalog fuer Leser: fehlt er, ist er veraltet markiert oder zeigt der Vorfilter
+        (``tree_signature``: Ordner-Zeitstempel = Neuzugang/Entfernung) eine Aenderung, laeuft
+        der Ordner einmal; geaenderte Metadaten werden nur neu aufgelegt. Geaenderte Inhalte
+        bestehender Dateien (Cover ersetzt, Datei neu exportiert) sieht erst der naechste volle
+        Lauf (``scan``/``library_signature``: Waechter ausserhalb des Live-Fensters, ``populate``)."""
+        root = self._library_root()
+        if root is None:
+            return None
+        cat = self._catalog
+        if cat is None or self._catalog_dirty or cat.get("root") != str(root):
+            return self.scan()
+        if self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig"):
+            return self.scan()                # Neuzugang/Entfernung: einmal laufen
+        if cat.get("meta_stamp") != self._meta_stamp():
+            cat = self._decorate(cat)        # nur Metadaten neu auflegen, kein Ordnerlauf
+            self._catalog = cat
+        return cat
+
+    def library(self) -> list[dict]:
+        """Tracks aus dem vorbereiteten Katalog; Stil aus library.json, sonst aus dem
+        Unterordnernamen; sonst leer. Ohne Katalog laeuft der Ordner einmal (``scan``)."""
+        cat = self._current_catalog()
+        if cat is None:
+            return []
+        return [{**t, "meta": dict(t["meta"])} for t in cat["tracks"]]
+
+    def tree_signature(self) -> str:
+        """Billiger Vorfilter fuer das Live-Fenster (Tor G, Codex R5 C2): Zeitstempel der
+        Bibliotheksordner (eine neue oder entfernte Datei aendert ihren Ordner) plus der
+        Metadaten-Dateien. Geaenderte INHALTE bestehender Dateien erkennt er bewusst nicht —
+        dafuer gibt es ``library_signature`` (voller Ordnerlauf). Kostet ein ``stat`` je Ordner."""
+        root = self._library_root()
+        dirs_sig = ""
+        if root is not None:
+            cat = self._catalog
+            dirs = cat["dirs"] if cat is not None and cat.get("root") == str(root) else None
+            if dirs is None:
+                dirs = self._walk(root)[1]
+            dirs_sig = self._dirs_signature(root, dirs)
+        return dirs_sig + "\n" + self._meta_files_signature()
+
+    @staticmethod
+    def _dirs_signature(root: Path, dirs: list) -> str:
+        """Zeitstempel der Bibliotheksordner (Vorfilter fuer Neuzugang/Entfernung)."""
+        parts: list[str] = []
+        for d in dirs:
+            try:
+                parts.append(f"{d.relative_to(root)}|{d.stat().st_mtime_ns}")
+            except (OSError, ValueError, TypeError):
+                parts.append(f"{d}|?")
+        return "\n".join(parts)
+
+    def _meta_files_signature(self) -> str:
+        parts: list[str] = []
+        for name in _META_FILES:
+            f = self._dir / name
+            try:
+                parts.append(f"{name}|{f.stat().st_mtime_ns}" if f.exists() else f"{name}|-")
+            except OSError:
+                parts.append(f"{name}|?")
+        return "\n".join(parts)
 
     @staticmethod
     def _origin_date(meta: dict, title: str) -> str:
@@ -762,25 +915,13 @@ class Jukebox:
 
     def library_signature(self) -> str:
         """Fingerabdruck der Bibliothek (Dateien + Groesse + mtime, library.json, styles.json):
-        aendert er sich, hat sich der Ordner geaendert -> Tasten neu ableiten."""
-        cfg = self.config()
-        root = Path(str(cfg.get("library_dir") or ""))
-        parts: list[str] = []
-        if root.is_dir():
-            for p in sorted(root.rglob("*")):
-                if p.is_file() and (_published(p, self._exts) or (not p.name.startswith('_') and p.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'))):
-                    try:
-                        st = p.stat()
-                        parts.append(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}")
-                    except OSError:
-                        continue
-        for name in ("library.json", "styles.json", "config.json"):
-            f = self._dir / name
-            try:
-                parts.append(f"{name}|{f.stat().st_mtime_ns}" if f.exists() else f"{name}|-")
-            except OSError:
-                parts.append(f"{name}|?")
-        return "\n".join(parts)
+        aendert er sich, hat sich der Ordner geaendert -> Tasten neu ableiten. Der Lauf erneuert
+        zugleich den Katalog (``scan``) — der Waechter laeuft den Ordner so einmal je Takt, und
+        ``library()``/``track()`` dahinter lesen nur noch den Stand."""
+        cat = self.scan()
+        if cat is not None:
+            return cat["sig"]
+        return self._meta_files_signature()
 
     def meta_signature(self) -> str:
         """Billiger Fingerabdruck NUR der Metadaten (``library.json``-Zeitstempel) — fuer Hosts,
@@ -828,9 +969,10 @@ class Jukebox:
         lib = Path(str(cfg.get("library_dir") or ""))
         return lib.with_name(lib.name + "_papierkorb")
 
-    @staticmethod
-    def _move_files(pairs: list) -> None:
-        """Alle oder keine: bei einem Fehler werden die schon bewegten Dateien zurueckgelegt."""
+    def _move_files(self, pairs: list) -> None:
+        """Alle oder keine: bei einem Fehler werden die schon bewegten Dateien zurueckgelegt.
+        Jeder Dateischritt veraltet den Katalog (auch ein halber)."""
+        self.invalidate()
         done = []
         try:
             for src, dst in pairs:
@@ -1081,10 +1223,10 @@ class Jukebox:
         return {"ok": True, "track_id": rec.get("track_id"), "note": rec.get("note") or {}}
 
     def track(self, track_id: str) -> Optional[dict]:
-        for t in self.library():
-            if t["id"] == track_id:
-                return t
-        return None
+        """Nachschlag ueber den Index des Katalogs (vorher ein voller Ordnerlauf je Aufruf)."""
+        cat = self._current_catalog()
+        t = (cat or {}).get("index", {}).get(str(track_id)) if cat else None
+        return {**t, "meta": dict(t["meta"])} if t else None
 
     # -- Zustand -------------------------------------------------------------------------
     def status(self) -> dict:

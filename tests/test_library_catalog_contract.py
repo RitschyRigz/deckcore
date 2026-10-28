@@ -1,0 +1,255 @@
+"""Bibliotheksvertrag der Mediathek-Maschine (Tor G, Richards Entscheidung ueber Codex R5 C1/C2):
+ein vorbereiteter Katalog je Mediathek (Liste + Index + Fingerabdruck) aus EINEM Ordnerlauf;
+``library()``/``track()`` lesen daraus. Neuzugaenge/Entfernungen erkennt der billige Vorfilter
+(Ordner-Zeitstempel), Metadaten werden ohne Ordnerlauf neu aufgelegt, geaenderte Inhalte
+bestehender Dateien erst der naechste volle Lauf. Ein Host-Tor haelt den vollen Lauf des
+Ordnerwaechters an (nur Vorfilter), bis sich der Ordner aendert."""
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import jukebox as jb  # noqa: E402
+import deckcore.service as ds  # noqa: E402
+from deckcore.service import DeckCoreService  # noqa: E402
+
+
+class Bus:
+    def publish(self, *a, **k):
+        pass
+
+
+def _lib(tmp_path: Path) -> tuple[jb.Jukebox, Path]:
+    music = tmp_path / "music"
+    (music / "metal").mkdir(parents=True)
+    (music / "metal" / "A.wav").write_bytes(b"RIFF")
+    (music / "metal" / "B.wav").write_bytes(b"RIFF")
+    lib = jb.Jukebox(tmp_path / "rt", mpv_resolver=lambda p: "", run_actions=lambda a, v: {}, publish=None)
+    lib.set_config(library_dir=str(music))
+    return lib, music
+
+
+def _count_walks(monkeypatch, lib: jb.Jukebox) -> list:
+    walks = []
+    orig = lib._walk
+
+    def counted(root):
+        walks.append(str(root))
+        return orig(root)
+    monkeypatch.setattr(lib, "_walk", counted)
+    return walks
+
+
+def test_library_and_track_read_the_prepared_catalog_without_walking(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    walks = _count_walks(monkeypatch, lib)
+    first = lib.library()
+    assert {t["id"] for t in first} == {"metal_a", "metal_b"} and len(walks) == 1
+    for _ in range(20):
+        lib.library()
+        lib.track("metal_a")
+    assert len(walks) == 1, "Lesen laeuft den Ordner nicht mehr ab"
+    assert lib.track("metal_a")["file"].endswith("A.wav") and lib.track("nope") is None
+    got = lib.track("metal_a")
+    got["meta"]["x"] = 1                                   # Kopie, nie der Katalog selbst
+    assert lib.track("metal_a")["meta"] == {}
+
+
+def test_new_and_removed_files_are_seen_through_the_cheap_prefilter(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    walks = _count_walks(monkeypatch, lib)
+    lib.library()
+    (music / "metal" / "C.wav").write_bytes(b"RIFF")
+    assert "metal_c" in {t["id"] for t in lib.library()} and len(walks) == 2
+    (music / "dj").mkdir()
+    (music / "dj" / "D.wav").write_bytes(b"RIFF")          # neuer Unterordner = Wurzel geaendert
+    assert lib.track("dj_d") is not None and len(walks) == 3
+    (music / "metal" / "A.wav").unlink()
+    assert "metal_a" not in {t["id"] for t in lib.library()} and len(walks) == 4
+    lib.library(); lib.library()
+    assert len(walks) == 4
+
+
+def test_metadata_changes_relayer_without_a_walk(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    walks = _count_walks(monkeypatch, lib)
+    lib.library()
+    lib.update_track_meta("metal_a", {"title": "Riff", "favorite": True, "game": "Alters"})
+    t = lib.track("metal_a")
+    assert t["title"] == "Riff" and t["favorite"] is True and t["meta"]["game"] == "Alters"
+    assert len(walks) == 1
+    lib.update_track_meta("metal_b", {"hidden": True})
+    assert {t["id"] for t in lib.library()} == {"metal_a"} and len(walks) == 1
+
+
+def test_changed_contents_need_a_full_run_and_tree_signature_documents_that(tmp_path, monkeypatch):
+    """Codex R5 C2: die Ordner-mtime ist keine Aenderungskennung fuer Inhalte — der Vorfilter
+    sieht ein ersetztes Cover nicht, der volle Lauf (library_signature/scan) schon."""
+    lib, music = _lib(tmp_path)
+    cover = music / "metal" / "A.png"
+    cover.write_bytes(b"\x89PNG old")
+    walks = _count_walks(monkeypatch, lib)
+    url = lib.track("metal_a")["cover_url"]
+    assert "?v=" in url and len(walks) == 1
+    tree_before, sig_before = lib.tree_signature(), lib.library_signature()
+    assert len(walks) == 2                                 # library_signature = voller Lauf
+    cover.write_bytes(b"\x89PNG new and longer")
+    os.utime(cover, ns=(cover.stat().st_atime_ns, cover.stat().st_mtime_ns + 5_000_000))
+    assert lib.tree_signature() == tree_before             # Vorfilter: kein Neuzugang
+    assert lib.track("metal_a")["cover_url"] == url and len(walks) == 2
+    assert lib.library_signature() != sig_before           # voller Lauf sieht den Inhalt
+    assert lib.track("metal_a")["cover_url"] != url and len(walks) == 3
+    (music / "metal" / "Z.wav").write_bytes(b"RIFF")
+    assert lib.tree_signature() != tree_before             # Neuzugang aendert den Ordner
+
+
+def test_own_file_steps_invalidate_the_catalog(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    (music / "dj").mkdir()
+    lib.library()
+    walks = _count_walks(monkeypatch, lib)
+    res = lib.move_track("metal_a", "dj")
+    assert res["ok"] and res["new_id"] == "dj_a"
+    assert lib.track("dj_a") is not None and lib.track("metal_a") is None
+    assert len(walks) >= 1
+    res = lib.trash_track("dj_a")
+    assert res["ok"] and lib.track("dj_a") is None
+
+
+def test_populate_runs_the_folder_once_deliberately(tmp_path, monkeypatch):
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": [], "items": []}]
+    lib = svc.jukebox()
+    music = tmp_path / "music"
+    (music / "metal").mkdir(parents=True)
+    (music / "metal" / "A.wav").write_bytes(b"RIFF")
+    lib.set_config(library_dir=str(music))
+    lib.library()
+    walks = _count_walks(monkeypatch, lib)
+    svc.populate_jukebox("main")
+    assert len(walks) == 1, "Tasten ableiten = ein bewusster voller Lauf"
+    assert any(b.get("_jukebox_track") == "metal_a" for b in svc._buttons)
+
+
+def _watch_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(ds, "_JUKEBOX_WATCH_SEC", 0)
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": [], "items": []}]
+    lib = svc.jukebox()
+    music = tmp_path / "music"
+    (music / "metal").mkdir(parents=True)
+    (music / "metal" / "A.wav").write_bytes(b"RIFF")
+    lib.set_config(library_dir=str(music), deck_id="main")
+    full = []
+    orig_sig = lib.library_signature
+
+    def counted_sig():
+        full.append(1)
+        return orig_sig()
+    monkeypatch.setattr(lib, "library_signature", counted_sig)
+    return svc, lib, music, full
+
+
+def test_watch_loop_runs_only_the_prefilter_while_the_host_gate_pauses(tmp_path, monkeypatch):
+    svc, lib, music, full = _watch_setup(tmp_path, monkeypatch)
+    ticks = []
+    populates = []
+    state = {"paused": "Live-Fenster: Test"}
+    svc.set_library_scan_gate(lambda: state["paused"])
+
+    def populate(deck_id=""):
+        populates.append(deck_id)
+        return svc.populate_jukebox(deck_id)
+
+    orig_tree = lib.tree_signature
+
+    def counted_tree():
+        ticks.append(1)
+        if len(ticks) == 4:
+            (music / "metal" / "B.wav").write_bytes(b"RIFF")   # Neuzugang im Live-Fenster
+        if len(ticks) >= 7:
+            svc._stop.set()
+        return orig_tree()
+    monkeypatch.setattr(lib, "tree_signature", counted_tree)
+    svc.register_library("jukebox", svc.jukebox, populate, fallback_label="Jukebox")
+    svc._stop.clear()
+    asyncio.run(asyncio.wait_for(svc._library_watch_loop("jukebox"), 5))
+    # Takt 1: Vorfilter unbekannt -> ein voller Lauf (Erststand); Takt 2-3: nur Vorfilter;
+    # Takt 4: Neuzugang -> voller Lauf + Tasten; danach wieder nur Vorfilter.
+    assert len(full) == 2, full
+    assert populates and any(b.get("_jukebox_track") == "metal_b" for b in svc._buttons)
+    assert svc._libraries["jukebox"].get("paused_reason") == "Live-Fenster: Test"
+
+
+def test_watch_loop_runs_fully_without_a_gate_and_after_the_gate_opens(tmp_path, monkeypatch):
+    svc, lib, music, full = _watch_setup(tmp_path, monkeypatch)
+    state = {"paused": "Live-Fenster: Test"}
+    svc.set_library_scan_gate(lambda: state["paused"])
+    ticks = []
+    orig_tree = lib.tree_signature
+
+    def counted_tree():
+        ticks.append(1)
+        return orig_tree()
+    monkeypatch.setattr(lib, "tree_signature", counted_tree)
+    calls = []
+
+    def populate(deck_id=""):
+        calls.append(1)
+        return svc.populate_jukebox(deck_id)
+    orig_sig = lib.library_signature
+
+    def sig_and_stop():
+        out = orig_sig()
+        if state["paused"] is None and len(full) >= 4:
+            svc._stop.set()
+        if len(full) == 2:
+            state["paused"] = None                          # Tor oeffnet sich
+        return out
+    monkeypatch.setattr(lib, "library_signature", sig_and_stop)
+    svc.register_library("jukebox", svc.jukebox, populate, fallback_label="Jukebox")
+    svc._stop.clear()
+
+    async def run():
+        task = asyncio.ensure_future(svc._library_watch_loop("jukebox"))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if len(full) == 1 and state["paused"]:
+                (music / "metal" / "B.wav").write_bytes(b"RIFF")    # loest Lauf 2 aus
+            if task.done():
+                break
+        await asyncio.wait_for(task, 5)
+    asyncio.run(run())
+    assert len(full) >= 4 and state["paused"] is None
+    assert svc._libraries["jukebox"].get("paused_reason") is None   # offen = wieder voll je Takt
+
+
+def test_foreign_library_without_prefilter_keeps_the_full_run(tmp_path, monkeypatch):
+    """Eine Fremd-Mediathek (nur library/library_signature) kennt keinen Vorfilter: im Tor laeuft
+    sie wie bisher voll — kein stiller Stillstand."""
+    monkeypatch.setattr(ds, "_JUKEBOX_WATCH_SEC", 0)
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc.set_library_scan_gate(lambda: "Live-Fenster: Test")
+    sigs = []
+
+    class Foreign:
+        def config(self):
+            return {"library_dir": str(tmp_path)}
+
+        def library(self):
+            return []
+
+        def library_signature(self):
+            sigs.append(1)
+            if len(sigs) >= 3:
+                svc._stop.set()
+            return "same"
+    svc.register_library("foreign", lambda: Foreign(), lambda deck_id="": {}, prefix="fx_")
+    svc._stop.clear()
+    asyncio.run(asyncio.wait_for(svc._library_watch_loop("foreign"), 5))
+    assert len(sigs) == 3
