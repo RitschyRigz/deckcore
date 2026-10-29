@@ -882,6 +882,34 @@ function DeckTile({ sig, render }) {
   return useMemo(render, [sig])
 }
 
+// Suchfeld einer Mediathek (Richard 29.10.2026): eine Pool-Taste mit ``render: "search"``. Tippen = Druck
+// auf diese Taste mit dem Text als Anzeigewert (``shown``) — derselbe Pfad wie jede andere Taste, kein
+// eigener Endpunkt im Panel. Eingaben werden gebuendelt (250 ms), ein laufender Druck sammelt den naechsten
+// Text statt ihn zu verwerfen. Der Wert aus dem Deck-Push (Suchstand des Hosts) fuellt das Feld, solange
+// niemand tippt — Tablet und Elgato desselben Hosts sehen so denselben Suchtext.
+function SearchTile({ id, v, extraClass, place, onSearch }) {
+  const [text, setText] = useState(String(v.value ?? ''))
+  const focused = useRef(false)
+  const timer = useRef(0)
+  useEffect(() => { if (!focused.current) setText(String(v.value ?? '')) }, [v.value])
+  const fire = (val, now = false) => {
+    clearTimeout(timer.current)
+    if (now) onSearch(id, val)
+    else timer.current = setTimeout(() => onSearch(id, val), 250)
+  }
+  const stop = (e) => e.stopPropagation()
+  return (
+    <div key={id} data-button-id={id} class={'t-key t-search spanned' + extraClass} style={place}
+         onPointerDown={stop} onTouchStart={stop} onClick={stop}>
+      <input type="search" class="t-search-input" value={text} placeholder={(v.icon || '🔍') + ' ' + (v.label || 'Suche')}
+             enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck={false} aria-label={v.label || 'Suche'}
+             onFocus={() => { focused.current = true }} onBlur={() => { focused.current = false }}
+             onInput={(e) => { setText(e.currentTarget.value); fire(e.currentTarget.value) }}
+             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fire(e.currentTarget.value, true) } }} />
+    </div>
+  )
+}
+
 export function TouchDeck() {
   const [decks, setDecks] = useState([])        // volle Templates [{id,label,icon,layout,categories,items}]
   const [defaultDeck, setDefaultDeck] = useState('main')
@@ -890,6 +918,25 @@ export function TouchDeck() {
   const [pressed, setPressed] = useState('')
   const [holding, setHolding] = useState('')          // Taste, die gerade für einen langen Druck gehalten wird
   const [pressError, setPressError] = useState('')
+  // Suchfeld (render: "search"): Text als Anzeigewert an die Taste schicken; waehrend ein Druck laeuft,
+  // wird nur der juengste Text gemerkt und danach geschickt (nie verworfen, nie gestapelt).
+  const searchRef = useRef({})
+  const onSearch = useCallback(async (id, text) => {
+    const s = searchRef.current[id] || (searchRef.current[id] = { busy: false, next: null })
+    if (s.busy) { s.next = text; return }
+    s.busy = true
+    let t = text
+    try {
+      for (;;) {
+        const r = await postJSON('/api/streamdeck/press/' + encodeURIComponent(id), { src: 'panel', shown: String(t) })
+        if (r && r.success === false) setPressError(r.message || 'Suche nicht angenommen.')
+        if (s.next === null) break
+        t = s.next; s.next = null
+      }
+    } catch {
+      setPressError('Suche: keine Bestaetigung erhalten.')
+    } finally { s.busy = false }
+  }, [])
   const navigationRef = useRef(0)
   const pendingRef = useRef(new Set())
   const [longById, setLongById] = useState({})       // button-id → long_action (langer Druck; Ordner navigiert im Client)
@@ -1250,6 +1297,10 @@ export function TouchDeck() {
     const statSty = isStat ? statStyle(v, o) : ''
     // Graph-Verlaufsfenster in Sekunden: pro Kachel (opts.window) vor globalem Look-Default (_effLook.graphWindow).
     const gWin = isGraph ? (o.window > 0 ? o.window : (_effLook.graphWindow || 135)) : 0
+    if (render === 'search') {
+      // Suchfeld der Mediathek: Eingabe statt Druck; Bildschirmtastatur kommt vom Geraet.
+      return <SearchTile key={id} id={id} v={v} extraClass={categoryClass} place={place} onSearch={onSearch} />
+    }
     if (isFader) {
       // Fader-Kachel: eigenes Touch-Handling (Ziehen=Level, Tippen=Mute) statt Button-onClick.
       return (

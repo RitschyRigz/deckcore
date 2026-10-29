@@ -276,6 +276,21 @@ def build_streamdeck_router(
         return JSONResponse(res)
 
     # ── Media-Player (mpv) — play_media-Aktion „Video im Fenster (Fensterquelle)" ──────────────
+    # ── Mediathek-Suche (Richard 29.10.2026): Suchstand je Mediathek, Treffer auf festen Plaetzen ──
+    @r.get("/api/streamdeck/library/{key}/search")
+    def streamdeck_library_search_state(key: str, request: Request) -> JSONResponse:
+        """Suchstand einer Mediathek: {q, gen, total, slots, hits}."""
+        return JSONResponse(get_service(request).library_search_state(key))
+
+    @r.post("/api/streamdeck/library/{key}/search")
+    async def streamdeck_library_search(key: str, request: Request, body: dict = Body(default={})) -> JSONResponse:
+        """Suchtext setzen (``{"q": "..."}``, leer = loeschen) — derselbe Weg wie das Suchfeld am Deck."""
+        svc = get_service(request)
+        res = await asyncio.to_thread(svc.library_search, key, "", str((body or {}).get("q") or ""))
+        if not res.get("ok"):
+            raise HTTPException(status_code=404, detail=str(res.get("reason") or "unknown_library"))
+        return JSONResponse(res)
+
     # ── Jukebox (Soundbibliothek + Audio-Player) ───────────────────────────────────────────
     @r.get("/api/jukebox/status")
     def jukebox_status(request: Request) -> JSONResponse:

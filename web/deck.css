@@ -888,3 +888,11 @@ body[data-frame="off"] .t-fader::before, body[data-frame="off"] .t-fader::after,
 .sd-eq-lbl { flex: 0 0 78px; font-size: 12px; color: var(--muted); }
 .sd-eq-row input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent2); }
 .sd-eq-val { flex: 0 0 34px; text-align: right; font: 600 12px/1 ui-monospace, monospace; color: var(--fg); }
+
+/* Suchfeld einer Mediathek (Pool-Taste render: "search") — Eingabe statt Druck; nimmt zwei Zellen (w: 2). */
+.t-key.t-search { padding: 8px; cursor: text; background: var(--bg3); aspect-ratio: auto; min-height: 56px; }
+.t-search-input { width: 100%; height: 100%; min-height: 40px; box-sizing: border-box; font: inherit;
+  font-size: calc(16px * var(--sd-font)); font-weight: 600; border-radius: 10px; padding: 6px 12px;
+  border: 1px solid rgba(255,255,255,.25); background: rgba(0,0,0,.35); color: var(--fg); outline: none; }
+.t-search-input:focus { border-color: var(--acc, #6cf); box-shadow: 0 0 0 2px rgba(255,255,255,.12); }
+.t-search-input::-webkit-search-cancel-button { filter: invert(1); }

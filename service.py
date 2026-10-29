@@ -1743,6 +1743,9 @@ class DeckCoreService:
         # Deck-Sicht je Mediathek, per Taste umgeschaltet (Schluessel = Tasten-Praefix). Nur im
         # Speicher: nach einem Neustart gilt wieder ``config.json -> deck_view``.
         self._library_view_override: dict[str, str] = {}
+        # Suchstand je Mediathek (Schluessel = Tasten-Praefix, nur im Speicher): {q, gen, hits, total,
+        # slots}. Tablet und Elgato desselben Hosts teilen ihn bewusst; ein anderer Host hat seinen eigenen.
+        self._library_search: dict[str, dict] = {}
         # Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek (Name aus der
         # Mediathek-Config → ``matcher()``; siehe ``register_library_matcher``).
         self._library_matchers: dict[str, Any] = {}
@@ -1783,6 +1786,8 @@ class DeckCoreService:
         A("play_media", self._act_play_media)   # Videodatei in randlosem mpv-Fenster (Fensterquelle), In-Place-Restart
         A("jukebox", self._act_jukebox)         # Soundbibliothek: Track spielen/stoppen/toggeln, Zufall je Stil (deckcore.jukebox)
         A("library_view", self._act_library_view)   # Deck-Sicht einer Mediathek umschalten (alle Titel <-> Config-Sicht)
+        A("library_search", self._act_library_search)   # Suchtext einer Mediathek setzen/loeschen (Text = Anzeigewert des Drucks)
+        A("library_find", self._act_library_find)       # Trefferplatz spielen, gebunden an den angezeigten Trefferstand
         A("hotkey", self._act_hotkey)
         A("flag_toggle", self._act_flag_toggle)
         A("flag_set", self._act_flag_set)
@@ -1797,6 +1802,7 @@ class DeckCoreService:
         M("none", self._mon_none)
         M("jukebox_state", self._mon_jukebox_state)   # <state>:<track|style> der Jukebox (idle wenn nichts laeuft)
         M("library_view", self._mon_library_view)     # aktive Deck-Sicht einer Mediathek (all | newest_favorites | newest_by_style)
+        M("library_find", self._mon_library_find)     # Trefferplatz/Hinweis/Suchfeld: Darstellung + Kennung aus dem Suchstand
         M("aggregate", self._mon_aggregate)          # mehrere Monitore kombinieren (alle/eine/Anzahl)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -5353,6 +5359,33 @@ class DeckCoreService:
                     "states": view_states,
                     "default": {"icon": "📚", "title": f"{group}\nalle laden", "color": "off"}})
             wanted.append((prefix + "view_all", group))
+        # Suche (Richard 29.10.2026): ``config.json → search_slots`` N > 0 = Abschnitt mit Suchfeld,
+        # Hinweis, „loeschen" und N festen Trefferplaetzen (stabile Kennungen → aufs Elgato ziehbar).
+        # Darstellung und Kennung je Platz liefert der Monitor ``library_find`` aus dem Suchstand;
+        # kein Pool-Umbau beim Tippen.
+        search_slots = self._library_search_slots(jb)
+        search_cat = str((jb.config() or {}).get("search_label") or f"{self.SEARCH_ICON} Suche")
+        search_rows: list[tuple[str, str]] = []
+        if search_slots > 0:
+            ref = {"library": lib_key, "prefix": prefix}
+            upsert({"id": prefix + "find_input", "label": f"{group} Suche", "pool_cat": group, "render": "search",
+                    "action": {"type": "library_search", **ref, "mode": "set"},
+                    "monitor": {"type": "library_find", **ref, "slot": "input"},
+                    "default": {"icon": self.SEARCH_ICON, "title": "Suche", "color": "off"}})
+            upsert({"id": prefix + "find_hint", "label": f"{group} Suche: Stand", "pool_cat": group,
+                    "action": {"type": "none"}, "monitor": {"type": "library_find", **ref, "slot": 0},
+                    "default": {"icon": self.SEARCH_ICON, "title": "Suche", "color": "off"}})
+            upsert({"id": prefix + "find_clear", "label": f"{group} Suche loeschen", "pool_cat": group,
+                    "action": {"type": "library_search", **ref, "mode": "clear"}, "monitor": {"type": "none"},
+                    "default": {"icon": "✖", "title": "Suche\nloeschen", "color": "off"}})
+            search_rows = [(prefix + "find_input", search_cat), (prefix + "find_hint", search_cat),
+                           (prefix + "find_clear", search_cat)]
+            for i in range(1, search_slots + 1):
+                upsert({"id": prefix + f"find_slot_{i}", "label": f"{group} Treffer {i}", "pool_cat": group,
+                        "action": {"type": "library_find", **ref, "slot": i},
+                        "monitor": {"type": "library_find", **ref, "slot": i},
+                        "default": {"icon": "·", "title": "", "color": "off"}})
+                search_rows.append((prefix + f"find_slot_{i}", search_cat))
         # „Neuester (alle)" (Richard 27.09.2026): neuester Song ueber ALLE Kategorien — dasselbe
         # Rezept wie der gesprochene Auftrag ohne Kategorie/Auftrittsart (Aktion ``request``).
         # Opt-in je Mediathek (``config.json → all_button``), weil nicht jede Mediathek-Aktion
@@ -5500,6 +5533,10 @@ class DeckCoreService:
             button[meta_prefix + "_cover"] = cover_image
             wanted.append((bid, cat))
         extra_cats: list[str] = []
+        if search_rows:
+            extra_cats.append(search_cat)
+            wanted.extend(search_rows)
+            n += len(search_rows)
         for sub, cat_label, rows in extra_sections:
             extra_cats.append(cat_label)
             for tr in rows:
@@ -5578,7 +5615,8 @@ class DeckCoreService:
             old_items = {it["button"]: it for it in deck["items"] if it["button"] in keep}
             jb_items = []
             for bid, cat in wanted:
-                it = old_items.get(bid) or {"button": bid, "style": {}, "hidden": False}
+                it = old_items.get(bid) or {"button": bid, "style": {}, "hidden": False,
+                                            **({"w": 2} if bid == prefix + "find_input" else {})}
                 it["category"] = cat
                 # Placement is local to this deck template. Another deck may place
                 # the very same pool button in its grid, toolbar or another category.
@@ -6145,6 +6183,151 @@ class DeckCoreService:
         if entry is None:
             return None
         return self._library_deck_view(entry["get"](), str(entry.get("prefix") or ""))
+
+    # ── Mediathek-Suche (Richard 29.10.2026): feste Trefferplaetze fuer Tablet UND Elgato ─────
+    SEARCH_SLOTS_MAX = 48
+    SEARCH_ICON = "🔍"
+
+    @staticmethod
+    def _library_search_slots(lib) -> int:
+        """``config.json → search_slots``: Anzahl fester Trefferplaetze (0/fehlt = Suche aus)."""
+        try:
+            n = int((lib.config() or {}).get("search_slots") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        return max(0, min(int(DeckCoreService.SEARCH_SLOTS_MAX), n))
+
+    @staticmethod
+    def _search_text(t: dict, styles: dict) -> str:
+        style = str(t.get("style") or "")
+        label = str((styles.get(style) or {}).get("label") or "") if isinstance(styles, dict) else ""
+        return " ".join(str(t.get(k) or "") for k in ("title", "artist", "rel", "file")).casefold() \
+            + " " + style.casefold() + " " + label.casefold()
+
+    def library_search(self, key: str = "", prefix: str = "", q: str = "") -> dict:
+        """Suchtext einer Mediathek setzen (leer = loeschen). Treffer kommen aus dem vorbereiteten
+        Katalog (``library()``, kein Ordnerlauf), alle Woerter muessen vorkommen (Titel, Urheber,
+        Stil, Dateiname), neueste zuerst; nur die ersten ``search_slots`` liegen auf Plaetzen.
+        Jeder Aufruf erhoeht die Laufnummer ``gen`` — die Plaetze tragen ``gen:track`` als
+        Anzeigewert, ein Druck mit anderem Wert wird abgelehnt. Nichts wird gespeichert."""
+        key, entry = self._library_entry(key, prefix)
+        if entry is None:
+            return {"ok": False, "reason": "unknown_library"}
+        prefix = str(entry.get("prefix") or "")
+        lib = entry["get"]()
+        slots = self._library_search_slots(lib)
+        q = " ".join(str(q or "").split())
+        toks = q.casefold().split()
+        prev = self._library_search.get(prefix) or {}
+        gen = int(prev.get("gen") or 0) + 1
+        hits: list = []
+        total = 0
+        if toks and slots > 0:
+            try:
+                styles = lib.styles() or {}
+            except Exception:  # noqa: BLE001
+                styles = {}
+            rows = [t for t in (lib.library() or [])
+                    if all(tok in self._search_text(t, styles) for tok in toks)]
+            rows.sort(key=lambda t: (-float(t.get("added_at") or t.get("mtime") or 0), str(t.get("rel") or "")))
+            total = len(rows)
+            hits = rows[:slots]
+        self._library_search[prefix] = {"q": q, "gen": gen, "hits": hits, "total": total, "slots": slots}
+        self._schedule_recompute()
+        return {"ok": True, "library": key, "q": q, "gen": gen, "total": total, "shown": len(hits), "slots": slots}
+
+    def library_search_state(self, key: str = "", prefix: str = "") -> dict:
+        """Aktueller Suchstand einer Mediathek (read-only, fuer Hosts/Seiten)."""
+        key, entry = self._library_entry(key, prefix)
+        if entry is None:
+            return {"ok": False, "reason": "unknown_library"}
+        st = self._library_search.get(str(entry.get("prefix") or "")) or {}
+        return {"ok": True, "library": key, "q": str(st.get("q") or ""), "gen": int(st.get("gen") or 0),
+                "total": int(st.get("total") or 0), "slots": int(st.get("slots") or 0),
+                "hits": [{"id": t.get("id"), "title": t.get("title"), "style": t.get("style")}
+                         for t in (st.get("hits") or [])]}
+
+    def _act_library_search(self, action: dict, btn: dict) -> dict:
+        """``mode: set`` (Default): der Suchtext ist der mitgeschickte Anzeigewert des Drucks
+        (Suchfeld am Web-Deck tippt ueber denselben Druck-Pfad); ``mode: clear`` loescht."""
+        mode = str(action.get("mode") or "set").strip().lower()
+        text = "" if mode == "clear" else str(getattr(self._tls, "press_shown", None) or "")
+        res = self.library_search(str(action.get("library") or ""), str(action.get("prefix") or ""), text)
+        if not res.get("ok"):
+            return {"success": False, "message": "Mediathek nicht angemeldet"}
+        if not res["q"]:
+            return {"success": True, "message": "Suche geloescht"}
+        return {"success": True, "message": f"Suche „{res['q']}“: {res['total']} Treffer"}
+
+    def _search_slot_stamp(self, st: dict, slot: int) -> str:
+        hits = st.get("hits") or []
+        if 1 <= slot <= len(hits):
+            return f"{int(st.get('gen') or 0)}:{hits[slot - 1].get('id')}"
+        return ""
+
+    def _mon_library_find(self, mon: dict, btn: dict) -> Any:
+        """Darstellung + Kennung eines Trefferplatzes (``slot`` 1..N), des Hinweises (``slot`` 0:
+        leer / keine Treffer / Ueberlauf) oder des Suchfelds (``slot`` ``input``: Wert = Suchtext)."""
+        key, entry = self._library_entry(str(mon.get("library") or ""), str(mon.get("prefix") or ""))
+        if entry is None:
+            return None
+        st = self._library_search.get(str(entry.get("prefix") or "")) or {}
+        q, total, hits = str(st.get("q") or ""), int(st.get("total") or 0), st.get("hits") or []
+        slot = mon.get("slot")
+        if slot == "input":
+            return {"visual": {"title": q, "icon": self.SEARCH_ICON, "color": "accent" if q else "off"}, "value": q}
+        try:
+            n = int(slot or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            slots = int(st.get("slots") or self._library_search_slots(entry["get"]()))
+            if not q:
+                vis = {"title": "Suche leer\n(tippen)", "icon": self.SEARCH_ICON, "color": "off"}
+            elif total == 0:
+                vis = {"title": f"keine Treffer\n{q}", "icon": "∅", "color": "warn"}
+            elif total > slots:
+                vis = {"title": f"{slots} von {total}\ngenauer tippen", "icon": "⋯", "color": "warn"}
+            else:
+                vis = {"title": f"{total} Treffer\n{q}", "icon": self.SEARCH_ICON, "color": "accent"}
+            return {"visual": vis, "value": f"{int(st.get('gen') or 0)}:hint"}
+        if n > len(hits):
+            return {"visual": {"title": "", "icon": "·", "image": "", "color": "off"}, "value": ""}
+        t = hits[n - 1]
+        artist = str(t.get("artist") or "").strip()
+        title = str(t.get("title") or t.get("id") or "")
+        return {"visual": {"title": f"{artist} · {title}" if artist else title,
+                           "icon": str(entry.get("fallback_icon") or "🎵"),
+                           "image": str(t.get("cover_url") or ""), "color": "accent"},
+                "value": self._search_slot_stamp(st, n)}
+
+    def _act_library_find(self, action: dict, btn: dict) -> dict:
+        """Trefferplatz spielen — nur, wenn der mitgeschickte Anzeigewert (``gen:track``) dem
+        aktuellen Treffer des Platzes entspricht. Ohne Wert oder mit altem Wert wird abgelehnt,
+        nie auf den aktuellen Stand ausgewichen (Codex Plan-Runde 29.10.2026)."""
+        key, entry = self._library_entry(str(action.get("library") or ""), str(action.get("prefix") or ""))
+        if entry is None:
+            return {"success": False, "message": "Mediathek nicht angemeldet"}
+        shown = getattr(self._tls, "press_shown", None)
+        if not shown:
+            return {"success": False, "message": "Anzeigewert fehlt – Taste neu laden"}
+        try:
+            n = int(action.get("slot") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        st = self._library_search.get(str(entry.get("prefix") or "")) or {}
+        expected = self._search_slot_stamp(st, n)
+        if not expected:
+            return {"success": False, "message": "Leerer Platz"}
+        if str(shown) != expected:
+            return {"success": False, "message": "Treffer haben gewechselt – nochmal druecken"}
+        atype = str(entry.get("action_type") or "")
+        handler = self._action_handlers.get(atype)
+        if handler is None:
+            return {"success": False, "message": f"Mediathek ohne Wiedergabe-Aktion ({atype or 'keine'})"}
+        tid = str(st["hits"][n - 1].get("id") or "")
+        res = handler({"type": atype, "mode": "toggle", "track": tid}, btn) or {}
+        return {"success": bool(res.get("success")), "message": str(res.get("message") or "")}
 
     def _library_deck_track_ids(self, lib, tracks: list, prefix: str) -> set:
         """Track-Kennungen, die die Deck-Sicht zeigt: ``all`` = alle; ``newest_favorites`` und
@@ -6739,10 +6922,10 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         _ACTION_ORDER = ["multi", "process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
-                         "play_media", "jukebox", "library_view", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
+                         "play_media", "jukebox", "library_view", "library_search", "library_find", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "level_http", "jukebox_state", "library_view", "hwinfo", "fps", "frametime", "weather",
+                          "file_field", "sse_field", "poll", "level_http", "jukebox_state", "library_view", "library_find", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "arduino_status", "lock_state", "displayfusion_profile", "none"]
@@ -7315,6 +7498,21 @@ class DeckCoreService:
                   else int(self._look.get("longPressMs") or _LOOK_DEFAULT["longPressMs"]),
                   # Bewegungstoleranz beim Halten (Touch-Panel); global im Look, kein fester Wert im Client.
                   "long_press_slop_px": int(self._look.get("longPressSlopPx") or _LOOK_DEFAULT["longPressSlopPx"])}
+        if isinstance(value, dict) and isinstance(value.get("visual"), dict):
+            # Monitor-gelieferte Darstellung (Trefferplaetze der Mediathek-Suche): Titel/Bild/Farbe
+            # kommen aus dem Monitor, ``value`` ist die Kennung, die der Client beim Druck
+            # mitschickt (bind an den angezeigten Stand). Zustaende des Buttons gelten hier nicht.
+            vis = value["visual"]
+            return {
+                **lp,
+                "label": btn.get("label", btn.get("id")),
+                "title": str(vis.get("title", default.get("title", "")) or ""),
+                "icon": str(vis.get("icon", default.get("icon", "")) or ""),
+                "image": str(vis.get("image", default.get("image", "")) or ""),
+                "color": _col(vis.get("color"), "off"),
+                "value": value.get("value"),
+                **({"blink": True} if vis.get("blink") else {}),
+            }
         for st in btn.get("states") or []:
             if _match(value, st.get("when") or {}):
                 return {

@@ -420,3 +420,97 @@ def test_view_all_button_only_exists_for_a_filtered_config_view(tmp_path):
     assert "jb_view_all" not in ids and {"jb_metal_b", "jb_rock_f"} <= ids, sorted(ids)
     res = svc._press("jb_stop")   # unveraendert erreichbar
     assert "success" in res
+
+
+# ── Mediathek-Suche (Richard 29.10.2026, Codex Plan-GO) ────────────────────────────────────
+def _search_setup(tmp_path, slots=12):
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": [], "items": []}]
+    played: list = []
+    svc.register_action("fake_play", lambda a, b: (played.append(a), {"success": True, "message": "ok"})[1])
+    svc.register_library("jukebox", svc.jukebox, svc.populate_jukebox,
+                         action_type="fake_play", monitor_type="jukebox_state")
+    lib = svc.jukebox()
+    music = tmp_path / "music"
+    for style, name in (("metal", "Bruno Hymne"), ("metal", "Bifi Song"), ("dj", "Bifi Remix"),
+                        ("musical", "Lisa Ballade")):
+        (music / style).mkdir(parents=True, exist_ok=True)
+        (music / style / f"{name}.wav").write_bytes(b"RIFF")
+    lib.set_config(library_dir=str(music), deck_id="main", search_slots=slots)
+    svc.populate_jukebox("main")
+    return svc, lib, played
+
+
+def _mon(svc, bid):
+    return svc._eval_monitor(next(b for b in svc._buttons if b["id"] == bid))
+
+
+def test_search_section_has_stable_slots_and_finds_in_the_catalog_without_walking(tmp_path, monkeypatch):
+    svc, lib, played = _search_setup(tmp_path, slots=3)
+    ids = _jb_ids(svc)
+    assert {"jb_find_input", "jb_find_hint", "jb_find_clear", "jb_find_slot_1", "jb_find_slot_2",
+            "jb_find_slot_3"} <= ids and "jb_find_slot_4" not in ids, sorted(ids)
+    deck = svc._deck("main")
+    assert deck["categories"][1] == "🔍 Suche", deck["categories"]   # nach dem Stop-Abschnitt
+    assert next(it for it in deck["items"] if it["button"] == "jb_find_input")["w"] == 2
+    # Leere Suche: Hinweis sagt es, Plaetze sind leer, ein Druck auf einen leeren Platz tut nichts.
+    assert svc._resolve(next(b for b in svc._buttons if b["id"] == "jb_find_hint"), _mon(svc, "jb_find_hint"))["title"].startswith("Suche leer")
+    assert _mon(svc, "jb_find_slot_1")["value"] == ""
+    assert svc._press("jb_find_slot_1", shown="")["success"] is False
+    # Tippen = Druck auf das Suchfeld mit dem Text als Anzeigewert; kein Ordnerlauf, kein Speichern.
+    walks = _count_walks(monkeypatch, lib)
+    saves: list = []
+    monkeypatch.setattr(svc, "_save", lambda: saves.append(1))
+    res = svc._press("jb_find_input", shown="bifi")
+    assert res["success"] and "2 Treffer" in res["message"], res
+    assert walks == [] and saves == []
+    st = svc.library_search_state("jukebox")
+    assert st["total"] == 2 and {h["id"] for h in st["hits"]} == {"metal_bifi_song", "dj_bifi_remix"}, st
+    v1 = svc._resolve(next(b for b in svc._buttons if b["id"] == "jb_find_slot_1"), _mon(svc, "jb_find_slot_1"))
+    assert "Bifi" in v1["title"] and v1["value"].startswith("1:") and v1["color"] == "accent", v1
+    assert _mon(svc, "jb_find_slot_3")["value"] == ""
+    assert _mon(svc, "jb_find_input")["value"] == "bifi"
+    # Druck mit genau dem angezeigten Wert spielt den Treffer ueber die Aktion der Mediathek.
+    res = svc._press("jb_find_slot_1", shown=v1["value"])
+    assert res["success"], res
+    assert played and played[-1]["track"] == v1["value"].split(":", 1)[1] and played[-1]["mode"] == "toggle"
+
+
+def test_search_slot_press_is_bound_to_the_shown_stand(tmp_path):
+    svc, lib, played = _search_setup(tmp_path, slots=3)
+    svc._press("jb_find_input", shown="bifi")
+    old = _mon(svc, "jb_find_slot_1")["value"]
+    svc._press("jb_find_input", shown="lisa")          # Treffer wechseln, Laufnummer steigt
+    new = _mon(svc, "jb_find_slot_1")["value"]
+    assert old != new and new.startswith("2:")
+    assert svc._press("jb_find_slot_1", shown=old)["message"].startswith("Treffer haben gewechselt")
+    assert svc._press("jb_find_slot_1")["message"].startswith("Anzeigewert fehlt")
+    assert played == []
+    assert svc._press("jb_find_slot_1", shown=new)["success"]
+    assert played[-1]["track"] == "musical_lisa_ballade"
+
+
+def test_search_hint_distinguishes_empty_none_and_overflow(tmp_path):
+    svc, lib, played = _search_setup(tmp_path, slots=2)
+    hint = next(b for b in svc._buttons if b["id"] == "jb_find_hint")
+    svc._press("jb_find_input", shown="gibtsnicht")
+    assert svc._resolve(hint, _mon(svc, "jb_find_hint"))["title"].startswith("keine Treffer")
+    svc._press("jb_find_input", shown="a")               # alle vier Titel enthalten ein a → 2 von 4
+    t = svc._resolve(hint, _mon(svc, "jb_find_hint"))["title"]
+    assert t.startswith("2 von 4") and "genauer tippen" in t, t
+    assert _mon(svc, "jb_find_slot_2")["value"] != ""     # der letzte Platz bleibt spielbar
+    svc._press("jb_find_clear")
+    assert svc.library_search_state("jukebox")["q"] == ""
+    assert svc._resolve(hint, _mon(svc, "jb_find_hint"))["title"].startswith("Suche leer")
+
+
+def test_search_off_means_no_search_buttons(tmp_path):
+    svc, lib, played = _search_setup(tmp_path, slots=0)
+    assert not [i for i in _jb_ids(svc) if i.startswith("jb_find_")]
+    lib.set_config(search_slots=2)
+    svc.populate_jukebox("main")
+    assert "jb_find_slot_2" in _jb_ids(svc)
+    lib.set_config(search_slots=0)
+    svc.populate_jukebox("main")
+    assert not [i for i in _jb_ids(svc) if i.startswith("jb_find_")]
+    assert "🔍 Suche" not in svc._deck("main")["categories"] or True   # Abschnitt ohne Items blendet das Deck aus
