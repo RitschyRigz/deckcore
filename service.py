@@ -1740,6 +1740,9 @@ class DeckCoreService:
         # Die Musik-Jukebox registriert sich beim Start selbst; ein Host haengt weitere
         # Mediatheken (z.B. eine Videobox) ueber ``register_library`` an — kein Sondercode.
         self._libraries: dict[str, dict] = {}
+        # Deck-Sicht je Mediathek, per Taste umgeschaltet (Schluessel = Tasten-Praefix). Nur im
+        # Speicher: nach einem Neustart gilt wieder ``config.json -> deck_view``.
+        self._library_view_override: dict[str, str] = {}
         # Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek (Name aus der
         # Mediathek-Config → ``matcher()``; siehe ``register_library_matcher``).
         self._library_matchers: dict[str, Any] = {}
@@ -1779,6 +1782,7 @@ class DeckCoreService:
         A("media", self._act_media)
         A("play_media", self._act_play_media)   # Videodatei in randlosem mpv-Fenster (Fensterquelle), In-Place-Restart
         A("jukebox", self._act_jukebox)         # Soundbibliothek: Track spielen/stoppen/toggeln, Zufall je Stil (deckcore.jukebox)
+        A("library_view", self._act_library_view)   # Deck-Sicht einer Mediathek umschalten (alle Titel <-> Config-Sicht)
         A("hotkey", self._act_hotkey)
         A("flag_toggle", self._act_flag_toggle)
         A("flag_set", self._act_flag_set)
@@ -1792,6 +1796,7 @@ class DeckCoreService:
         A("multi", self._act_multi)                  # mehrere Aktionen auf EINEM Button (generisch, jede Art)
         M("none", self._mon_none)
         M("jukebox_state", self._mon_jukebox_state)   # <state>:<track|style> der Jukebox (idle wenn nichts laeuft)
+        M("library_view", self._mon_library_view)     # aktive Deck-Sicht einer Mediathek (all | newest_favorites | newest_by_style)
         M("aggregate", self._mon_aggregate)          # mehrere Monitore kombinieren (alle/eine/Anzahl)
         M("flag", self._mon_flag)
         M("file_field", self._mon_file_field)
@@ -5249,6 +5254,19 @@ class DeckCoreService:
         pick_label, pick_icon = self.PICK_PRESENTATION.get(
             category_pick, (category_pick.capitalize(), "🎲"))
         other_picks = [v for k, v in self.PICK_PRESENTATION.items() if k != category_pick]
+        try:
+            recent_n = int(jb.config().get("recent_section") or 0)
+        except (TypeError, ValueError):
+            recent_n = 0
+        # ``newest_by_style`` (Richard 29.10.2026) = Neueste + Favoriten, aber einsortiert in ihre
+        # Kategorien; Kategorien ohne Treffer verschwinden samt Wuerfel. Die Taste
+        # ``<prefix>view_all`` (Werkzeugleiste, nur bei gefilterter Config-Sicht) laedt auf Klick
+        # alle Titel und schaltet beim naechsten Klick zurueck (``_library_view_override``).
+        deck_view = self._library_deck_view(jb, prefix)
+        config_view = self._library_config_view(jb)
+        if deck_view != "all" and recent_n <= 0:
+            recent_n = int(self.DECK_VIEW_RECENT_DEFAULT)
+        shown_ids = self._library_deck_track_ids(jb, tracks, prefix) if deck_view == "newest_by_style" else None
         if deck_id:
             try:
                 if str(jb.config().get("deck_id") or "") != str(deck_id):
@@ -5310,6 +5328,11 @@ class DeckCoreService:
                  if isinstance(spec, dict) and spec.get("tracks")}
         order = ([s for s in styles.keys() if s in present or loans.get(s) in present]
                  + sorted(s for s in present if s not in styles))
+        if shown_ids is not None:
+            # Deck-Sicht nach Kategorien: nur Stile, die einen gezeigten Titel haben (Leih-Stile:
+            # der Verleiher). Alle anderen Kategorien fallen samt Wuerfel weg.
+            shown_styles = {t["style"] for t in tracks if t["id"] in shown_ids}
+            order = [s for s in order if s in shown_styles or loans.get(s) in shown_styles]
         wanted: list[tuple[str, str]] = []   # (button_id, deck-kategorie) in Zielreihenfolge
         upsert({"id": prefix + "stop", "label": f"{group} Stop", "pool_cat": group,
                 "action": {"type": action_type, "mode": "stop"},
@@ -5318,6 +5341,18 @@ class DeckCoreService:
                            {"when": {"op": "any"}, "icon": "⏹", "title": f"{group}\nSTOP", "color": "accent", "blink": False}],
                 "default": {"icon": "⏹", "title": f"{group}\nStop", "color": "off"}})
         wanted.append((prefix + "stop", group))
+        lib_key, _entry = self._library_entry(prefix=prefix)
+        if config_view != "all":
+            view_states = [
+                {"when": {"op": "eq", "value": "all"}, "icon": "📚", "title": f"{group}\nalle geladen", "color": "accent", "blink": False},
+                {"when": {"op": "any"}, "icon": "📚", "title": f"{group}\nalle laden", "color": "off"},
+            ]
+            upsert({"id": prefix + "view_all", "label": f"{group} alle laden", "pool_cat": group,
+                    "action": {"type": "library_view", "library": lib_key, "prefix": prefix, "mode": "toggle"},
+                    "monitor": {"type": "library_view", "library": lib_key, "prefix": prefix},
+                    "states": view_states,
+                    "default": {"icon": "📚", "title": f"{group}\nalle laden", "color": "off"}})
+            wanted.append((prefix + "view_all", group))
         # „Neuester (alle)" (Richard 27.09.2026): neuester Song ueber ALLE Kategorien — dasselbe
         # Rezept wie der gesprochene Auftrag ohne Kategorie/Auftrittsart (Aktion ``request``).
         # Opt-in je Mediathek (``config.json → all_button``), weil nicht jede Mediathek-Aktion
@@ -5331,7 +5366,7 @@ class DeckCoreService:
             wanted.append((prefix + "random_all", group))
         elif prefix + "random_all" in pool_by_id:
             self._pool_remove(prefix + "random_all", remember=False)
-        n = 1
+        n = 1 + (1 if config_view != "all" else 0)
         # Neuzugaenge kennzeichnen (17.09.2026, Punkt 12): Tasten nach ``added_at`` (Aufnahme in
         # die Bibliothek = Dateigeburt, nie „produziert") sortiert; juengere als
         # ``new_badge_days`` tragen das Abzeichen im Titel, die Herkunft (``source_date`` =
@@ -5370,17 +5405,10 @@ class DeckCoreService:
         # (eigene Kennung ``<prefix>fav_<id>`` / ``<prefix>new_<id>``) auf dieselbe Aktion —
         # der Track bleibt zusaetzlich in seinem Stil-Abschnitt. Kein Stern, keine Taste.
         fav_label = str(jb.config().get("favorites_label") or "⭐ Favoriten")
-        try:
-            recent_n = int(jb.config().get("recent_section") or 0)
-        except (TypeError, ValueError):
-            recent_n = 0
         # Deck-Sicht (``config.json → deck_view``, Bibliotheksvertrag): ``all`` (Default) = je
         # Track eine Taste in seinem Stil-Abschnitt wie bisher; ``newest_favorites`` = das Deck
         # zeigt nur Stop, Wuerfel je Stil, Favoriten und Neueste — der volle Katalog bleibt fuer
         # Suche, Auftraege und gezielte Wiedergabe. Umschalten ist ein bewusster Config-Schritt.
-        deck_view = self._library_deck_view(jb)
-        if deck_view == "newest_favorites" and recent_n <= 0:
-            recent_n = int(self.DECK_VIEW_RECENT_DEFAULT)
         recent_label = str(jb.config().get("recent_label") or "🆕 Neueste")
         by_added = sorted(tracks, key=lambda x: (-float(x.get("added_at") or x.get("mtime") or 0), x["rel"]))
         extra_sections: list[tuple[str, str, list]] = []   # (tasten-praefix, kategorie, tracks)
@@ -5509,10 +5537,13 @@ class DeckCoreService:
             n += 1
             if deck_view == "newest_favorites":
                 continue   # keine Track-Tasten je Stil: Deck = Neueste + Favoriten (+ Wuerfel)
+            style_tracks = [x for x in tracks if x["style"] == sid]
+            if shown_ids is not None:
+                style_tracks = [x for x in style_tracks if x["id"] in shown_ids]
             # Neuzugang zuerst (Minutenraster der Aufnahme), innerhalb derselben Minute wie
             # bisher nach Dateizeit — so bleibt „Neuester" auch bei gleichzeitig kopierten
             # Dateien nachvollziehbar.
-            for tr in sorted((x for x in tracks if x["style"] == sid),
+            for tr in sorted(style_tracks,
                              key=lambda x: (-int(float(x.get("added_at") or x.get("mtime") or 0) // 60),
                                             -float(x.get("mtime") or 0), x["rel"])):
                 if prefix + tr["id"] in self._removed:
@@ -5551,7 +5582,7 @@ class DeckCoreService:
                 it["category"] = cat
                 # Placement is local to this deck template. Another deck may place
                 # the very same pool button in its grid, toolbar or another category.
-                placement = "toolbar" if bid == prefix + "stop" else "category" if bid.startswith(prefix + "random_") else "grid"
+                placement = "toolbar" if bid in (prefix + "stop", prefix + "view_all") else "category" if bid.startswith(prefix + "random_") else "grid"
                 it.setdefault("style", {}).setdefault("placement", placement)
                 if placement != "grid":
                     it["style"].setdefault("label", "off")
@@ -5570,6 +5601,12 @@ class DeckCoreService:
                 elif queue:
                     merged.append(queue.pop(0))
             deck["items"] = merged + queue
+            if shown_ids is not None:
+                # Kategorien dieser Mediathek ohne Treffer verschwinden vom Deck (Richard
+                # 29.10.2026); fremde Abschnitte und die Sammel-Abschnitte bleiben.
+                used = {it.get("category") for it in deck["items"]}
+                mine_cats = {style_label(s) for s in styles} | {style_label(s) for s in present}
+                deck["categories"] = [c for c in deck["categories"] if c not in mine_cats or c in used]
         self._save(); self._schedule_recompute(); self._publish_cfg()
         return {"ok": True, "buttons": n, "removed": len(removed), "styles": order, "deck": deck_id or None}
 
@@ -6040,10 +6077,10 @@ class DeckCoreService:
         """Kompatibilitaet: der Waechter der Musik-Jukebox (Key ``jukebox``)."""
         await self._library_watch_loop("jukebox")
 
-    DECK_VIEWS = ("all", "newest_favorites")
+    DECK_VIEWS = ("all", "newest_favorites", "newest_by_style")
     DECK_VIEW_RECENT_DEFAULT = 5     # ``newest_favorites`` ohne ``recent_section``: so viele Neueste
 
-    def _library_deck_view(self, lib) -> str:
+    def _library_config_view(self, lib) -> str:
         """``config.json → deck_view`` der Mediathek; Unbekanntes = ``all`` (wie bisher)."""
         try:
             view = str((lib.config() or {}).get("deck_view") or "all").strip().lower()
@@ -6051,10 +6088,71 @@ class DeckCoreService:
             view = "all"
         return view if view in self.DECK_VIEWS else "all"
 
+    def _library_deck_view(self, lib, prefix: str = "") -> str:
+        """Aktive Deck-Sicht: die per Taste umgeschaltete (``library_view``, nur im Speicher),
+        sonst die aus der Config."""
+        over = self._library_view_override.get(str(prefix or ""))
+        if over in self.DECK_VIEWS:
+            return over
+        return self._library_config_view(lib)
+
+    def _library_entry(self, key: str = "", prefix: str = "") -> "tuple[str, Optional[dict]]":
+        """Angemeldete Mediathek per Schluessel, sonst per Tasten-Praefix."""
+        if key and key in self._libraries:
+            return key, self._libraries[key]
+        for k, e in self._libraries.items():
+            if prefix and str(e.get("prefix") or "") == str(prefix):
+                return k, e
+        return "", None
+
+    DECK_VIEW_LABELS = {"all": "alle Titel", "newest_favorites": "Neueste + Favoriten",
+                        "newest_by_style": "Neueste in Kategorien"}
+
+    def _act_library_view(self, action: dict, btn: dict) -> dict:
+        """Deck-Sicht einer Mediathek umschalten (Richard 29.10.2026): ``mode: toggle`` (Default)
+        wechselt zwischen „alle Titel" und der Config-Sicht, ``mode: set`` + ``view`` setzt eine
+        Sicht, ``mode: reset`` kehrt zur Config zurueck. Jeder Wechsel zieht die Tasten sofort
+        nach (bewusster Klick = voller Abgleich erlaubt). Gilt bis zum naechsten Wechsel oder
+        Neustart — die Config bleibt die Wahrheit fuer den Normalfall."""
+        key, entry = self._library_entry(str(action.get("library") or ""), str(action.get("prefix") or ""))
+        if entry is None:
+            return {"success": False, "message": "Mediathek nicht angemeldet"}
+        prefix = str(entry.get("prefix") or "")
+        lib = entry["get"]()
+        mode = str(action.get("mode") or "toggle").strip().lower()
+        base = self._library_config_view(lib)
+        if mode == "reset":
+            self._library_view_override.pop(prefix, None)
+        elif mode == "set":
+            view = str(action.get("view") or "all").strip().lower()
+            if view not in self.DECK_VIEWS:
+                return {"success": False, "message": f"Unbekannte Deck-Sicht: {view}"}
+            self._library_view_override[prefix] = view
+        elif self._library_view_override.get(prefix):
+            self._library_view_override.pop(prefix, None)
+        else:
+            self._library_view_override[prefix] = "all" if base != "all" else base
+        active = self._library_deck_view(lib, prefix)
+        try:
+            entry["populate"](str((lib.config() or {}).get("deck_id") or ""))
+        except Exception as e:  # noqa: BLE001 — die Sicht ist umgeschaltet, nur die Tasten hinken
+            log.warning("Deck-Sicht %s: Abgleich fehlgeschlagen: %s", key, e)
+            return {"success": False, "message": f"Deck-Sicht {active}, Abgleich fehlgeschlagen: {e}"}
+        return {"success": True, "message": f"Deck-Sicht: {self.DECK_VIEW_LABELS.get(active, active)}", "view": active}
+
+    def _mon_library_view(self, mon: dict, btn: dict) -> Any:
+        key, entry = self._library_entry(str(mon.get("library") or ""), str(mon.get("prefix") or ""))
+        if entry is None:
+            return None
+        return self._library_deck_view(entry["get"](), str(entry.get("prefix") or ""))
+
     def _library_deck_track_ids(self, lib, tracks: list, prefix: str) -> set:
-        """Track-Kennungen, die die Deck-Sicht zeigt: ``all`` = alle; ``newest_favorites`` =
-        Favoriten + die juengsten N (wie ``populate_library``)."""
-        if self._library_deck_view(lib) != "newest_favorites":
+        """Track-Kennungen, die die Deck-Sicht zeigt: ``all`` = alle; ``newest_favorites`` und
+        ``newest_by_style`` = Favoriten + die juengsten N (wie ``populate_library``); in
+        ``newest_by_style`` behalten Stile aus ``recent_exclude_styles`` alle ihre Titel
+        (Festbestand wie Ansagen, kein Strom von Neuem)."""
+        view = self._library_deck_view(lib, prefix)
+        if view == "all":
             return {t["id"] for t in tracks}
         cfg = lib.config() or {}
         try:
@@ -6068,6 +6166,8 @@ class DeckCoreService:
         recents = [t for t in by_added if prefix + t["id"] not in self._removed
                    and t.get("style") not in skip][:recent_n]
         ids |= {t["id"] for t in recents}
+        if view == "newest_by_style":
+            ids |= {t["id"] for t in tracks if t.get("style") in skip and prefix + t["id"] not in self._removed}
         return ids
 
     def _library_needs_sync(self, lib, entry: dict) -> bool:
@@ -6639,10 +6739,10 @@ class DeckCoreService:
         except Exception:  # noqa: BLE001
             pass
         _ACTION_ORDER = ["multi", "process_action", "launch", "open_folder", "open_deck", "displayfusion", "media",
-                         "play_media", "jukebox", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
+                         "play_media", "jukebox", "library_view", "hotkey", "flag_toggle", "flag_set", "http", "manual_event", "alert", "obs",
                          "obsbot", "wavelink", "winaudio", "app_audio", "events_action", "none"]
         _MONITOR_ORDER = ["aggregate", "process_alive", "flag", "manual_count", "bot_mode", "bot_state",
-                          "file_field", "sse_field", "poll", "level_http", "jukebox_state", "hwinfo", "fps", "frametime", "weather",
+                          "file_field", "sse_field", "poll", "level_http", "jukebox_state", "library_view", "hwinfo", "fps", "frametime", "weather",
                           "wavelink_meter", "wavelink_level", "wavelink_mute", "wavelink_main_output",
                           "winaudio_default", "winaudio_volume", "app_volume", "obs_source_visible", "obs_scene",
                           "scene_suggest", "obsbot_cam", "obsbot_track", "interception_status", "arduino_status", "lock_state", "displayfusion_profile", "none"]

@@ -333,7 +333,7 @@ def test_deck_view_newest_favorites_shows_only_recent_and_starred(tmp_path):
     svc.populate_jukebox("main")
     ids = sorted(b["id"] for b in svc._buttons if b["id"].startswith("jb_"))
     # Neueste = juengster Neuzugang (Dateigeburt, nicht mtime): genau EINE Neueste-Taste.
-    assert [i for i in ids if not i.startswith("jb_new_")] == ["jb_fav_metal_a", "jb_random_metal", "jb_stop"], ids
+    assert [i for i in ids if not i.startswith("jb_new_")] == ["jb_fav_metal_a", "jb_random_metal", "jb_stop", "jb_view_all"], ids
     assert len([i for i in ids if i.startswith("jb_new_")]) == 1, ids
     entry = {"prefix": "jb_", "meta_prefix": "_jukebox"}
     assert not svc._library_needs_sync(lib, entry), "Deck-Sicht und Pool stimmen ueberein"
@@ -341,3 +341,82 @@ def test_deck_view_newest_favorites_shows_only_recent_and_starred(tmp_path):
     assert svc._library_needs_sync(lib, entry)
     svc.populate_jukebox("main")
     assert {"jb_metal_a", "jb_metal_b", "jb_metal_c"} <= {b["id"] for b in svc._buttons}
+
+
+def _by_style_setup(tmp_path):
+    """Sechs Stile, Dateien in Geburtsreihenfolge: ansagen_g (aeltester Festbestand), rock_f,
+    metal_a/b/c, dj_d, musical_e (juengste). ``recent_section=2`` -> Neueste = musical_e, dj_d;
+    Favorit = metal_a; ``ansagen`` ist aus „Neueste" ausgenommen (Festbestand)."""
+    import time
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": ["Fremd"], "items": []}]
+    svc.register_library("jukebox", svc.jukebox, svc.populate_jukebox,
+                         action_type="jukebox", monitor_type="jukebox_state")
+    lib = svc.jukebox()
+    music = tmp_path / "music"
+    for style, name in (("ansagen", "G"), ("rock", "F"), ("metal", "A"), ("metal", "B"),
+                        ("metal", "C"), ("dj", "D"), ("musical", "E")):
+        (music / style).mkdir(parents=True, exist_ok=True)
+        (music / style / f"{name}.wav").write_bytes(b"RIFF")
+        time.sleep(0.02)
+    lib.set_config(library_dir=str(music), deck_id="main", recent_section=2,
+                   recent_exclude_styles=["ansagen"], deck_view="newest_by_style")
+    lib.update_track_meta("metal_a", {"favorite": True})
+    return svc, lib
+
+
+def _jb_ids(svc) -> set:
+    return {b["id"] for b in svc._buttons if b["id"].startswith("jb_")}
+
+
+def test_deck_view_newest_by_style_sorts_recent_and_starred_into_their_categories(tmp_path):
+    svc, lib = _by_style_setup(tmp_path)
+    svc.populate_jukebox("main")
+    ids = _jb_ids(svc)
+    # Treffer in ihrer Kategorie: Favorit metal_a, Neueste dj_d + musical_e; Festbestand ansagen.
+    assert {"jb_metal_a", "jb_random_metal", "jb_dj_d", "jb_random_dj", "jb_musical_e",
+            "jb_random_musical", "jb_ansagen_g", "jb_random_ansagen", "jb_stop", "jb_view_all",
+            "jb_fav_metal_a", "jb_new_dj_d", "jb_new_musical_e"} <= ids, sorted(ids)
+    # Keine alten Titel, keine Kategorie ohne Treffer (rock faellt samt Wuerfel weg).
+    assert not {"jb_metal_b", "jb_metal_c", "jb_rock_f", "jb_random_rock", "jb_new_ansagen_g"} & ids, sorted(ids)
+    deck = svc._deck("main")
+    assert "rock" not in deck["categories"] and "Fremd" in deck["categories"], deck["categories"]
+    assert {"metal", "dj", "musical", "ansagen"} <= set(deck["categories"]), deck["categories"]
+    tb = next(it for it in deck["items"] if it["button"] == "jb_view_all")
+    assert tb["style"]["placement"] == "toolbar"
+    entry = {"prefix": "jb_", "meta_prefix": "_jukebox"}
+    assert not svc._library_needs_sync(lib, entry), "Deck-Sicht und Pool stimmen ueberein"
+
+
+def test_view_all_button_loads_everything_and_switches_back_without_persisting(tmp_path):
+    svc, lib = _by_style_setup(tmp_path)
+    svc.populate_jukebox("main")
+    btn = next(b for b in svc._buttons if b["id"] == "jb_view_all")
+    assert svc._eval_monitor(btn) == "newest_by_style"
+    res = svc._press("jb_view_all")
+    assert res["success"], res
+    ids = _jb_ids(svc)
+    assert {"jb_metal_b", "jb_metal_c", "jb_rock_f", "jb_random_rock", "jb_view_all"} <= ids, sorted(ids)
+    assert "rock" in svc._deck("main")["categories"]
+    assert svc._eval_monitor(btn) == "all"
+    entry = {"prefix": "jb_", "meta_prefix": "_jukebox"}
+    assert not svc._library_needs_sync(lib, entry), "auch in der Alles-Sicht stimmen Pool und Deck"
+    res = svc._press("jb_view_all")
+    assert res["success"], res
+    ids = _jb_ids(svc)
+    assert not {"jb_metal_b", "jb_metal_c", "jb_rock_f", "jb_random_rock"} & ids, sorted(ids)
+    assert "rock" not in svc._deck("main")["categories"]
+    assert svc._eval_monitor(btn) == "newest_by_style"
+    assert not svc._library_view_override, "Umschaltung gilt nur bis zum naechsten Klick"
+    # Die Config bleibt die Wahrheit: nichts geschrieben.
+    assert lib.config().get("deck_view") == "newest_by_style"
+
+
+def test_view_all_button_only_exists_for_a_filtered_config_view(tmp_path):
+    svc, lib = _by_style_setup(tmp_path)
+    lib.set_config(deck_view="all")
+    svc.populate_jukebox("main")
+    ids = _jb_ids(svc)
+    assert "jb_view_all" not in ids and {"jb_metal_b", "jb_rock_f"} <= ids, sorted(ids)
+    res = svc._press("jb_stop")   # unveraendert erreichbar
+    assert "success" in res
