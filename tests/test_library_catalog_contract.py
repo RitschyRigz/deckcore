@@ -514,3 +514,63 @@ def test_search_off_means_no_search_buttons(tmp_path):
     svc.populate_jukebox("main")
     assert not [i for i in _jb_ids(svc) if i.startswith("jb_find_")]
     assert "🔍 Suche" not in svc._deck("main")["categories"] or True   # Abschnitt ohne Items blendet das Deck aus
+
+
+# ── Codex R18 (F54–F56) ─────────────────────────────────────────────────────────────────────
+def test_r18_f54_view_toggle_and_search_never_walk_even_with_a_stale_catalog(tmp_path, monkeypatch):
+    svc, lib = _by_style_setup(tmp_path)
+    lib.set_config(search_slots=3)
+    svc.populate_jukebox("main")
+    lib.invalidate()                                   # veraltet markiert (eigener Dateischritt)
+    (tmp_path / "music" / "metal" / "Z.wav").write_bytes(b"RIFF")   # Vorfilter wuerde anschlagen
+    walks = _count_walks(monkeypatch, lib)
+    scans: list = []
+    orig_scan = lib.scan
+    monkeypatch.setattr(lib, "scan", lambda *a, **k: (scans.append(1), orig_scan(*a, **k))[1])
+    assert svc._press("jb_view_all")["success"]
+    assert {"jb_metal_b", "jb_rock_f"} <= _jb_ids(svc), "Alle-Sicht aus dem vorbereiteten Stand"
+    assert "jb_metal_z" not in _jb_ids(svc), "Neuzugang erst nach Waechter/Abgleich"
+    assert svc._press("jb_find_input", shown="metal")["success"]
+    assert svc.library_search_state("jukebox")["total"] >= 3
+    assert svc._press("jb_view_all")["success"]
+    assert walks == [] and scans == [], (walks, scans)
+    # Der bewusste Abgleich laeuft weiterhin voll und sieht den Neuzugang.
+    svc.populate_jukebox("main")
+    assert scans == [1], scans
+    assert "jb_metal_z" in _jb_ids(svc)
+
+
+def test_r18_f55_an_older_search_never_overwrites_a_newer_one(tmp_path, monkeypatch):
+    import threading
+    svc, lib, played = _search_setup(tmp_path, slots=3)
+    gate = threading.Event()
+    calls: list = []
+    orig = lib.library
+
+    def blocking(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            gate.wait(5)                                # erste Anfrage haengt (z. B. hinter einer Sperre)
+        return orig(*a, **k)
+    monkeypatch.setattr(lib, "library", blocking)
+    results: dict = {}
+    t = threading.Thread(target=lambda: results.setdefault("first", svc.library_search("jukebox", q="bifi")))
+    t.start()
+    while len(calls) < 1:
+        pass
+    second = svc.library_search("jukebox", q="lisa")   # zweite Anfrage laeuft durch
+    gate.set(); t.join(5)
+    first = results["first"]
+    assert first["gen"] == 1 and second["gen"] == 2, (first, second)
+    assert first.get("superseded") is True
+    st = svc.library_search_state("jukebox")
+    assert st["q"] == "lisa" and st["gen"] == 2, st
+
+
+def test_r18_f56_editor_save_keeps_the_search_field(tmp_path):
+    svc, lib, played = _search_setup(tmp_path, slots=2)
+    btn = dict(next(b for b in svc._buttons if b["id"] == "jb_find_input"))
+    svc.upsert_button(btn)
+    saved = next(b for b in svc._buttons if b["id"] == "jb_find_input")
+    assert saved.get("render") == "search", saved
+    assert svc._press("jb_find_input", shown="bifi")["success"]

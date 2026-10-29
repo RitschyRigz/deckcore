@@ -1746,6 +1746,8 @@ class DeckCoreService:
         # Suchstand je Mediathek (Schluessel = Tasten-Praefix, nur im Speicher): {q, gen, hits, total,
         # slots}. Tablet und Elgato desselben Hosts teilen ihn bewusst; ein anderer Host hat seinen eigenen.
         self._library_search: dict[str, dict] = {}
+        self._search_lock = threading.Lock()
+        self._search_gen: dict[str, int] = {}     # je Praefix: zuletzt RESERVIERTE Laufnummer (Codex R18 F55)
         # Host-Matcher fuer den Sammel-Abschnitt ``match_section`` einer Mediathek (Name aus der
         # Mediathek-Config → ``matcher()``; siehe ``register_library_matcher``).
         self._library_matchers: dict[str, Any] = {}
@@ -4808,7 +4810,7 @@ class DeckCoreService:
         else:
             button.pop("pool_cat", None)
         # Darstellung (render: graph|gauge|bar|stat|text|clock|fader|readout; 'value'/leer = Standard) + Widget-Settings (opts) absichern.
-        if button.get("render") not in ("graph", "gauge", "bar", "stat", "text", "clock", "fader", "readout"):
+        if button.get("render") not in ("graph", "gauge", "bar", "stat", "text", "clock", "fader", "readout", "search"):
             button.pop("render", None)
         if "opts" in button:
             o = _sanitize_opts(button.get("opts"))
@@ -5186,9 +5188,9 @@ class DeckCoreService:
     def _mon_jukebox_state(self, mon: dict, btn: dict) -> Any:
         return self.jukebox().deck_state(str(mon.get("track") or ""), str(mon.get("style") or ""))
 
-    def populate_jukebox(self, deck_id: str = "", *, group: str = "Jukebox") -> dict:
+    def populate_jukebox(self, deck_id: str = "", *, group: str = "Jukebox", **kw) -> dict:
         """Musik-Jukebox: siehe ``populate_library`` (Prefix ``jb_``, Aktion ``jukebox``)."""
-        return self.populate_library(self.jukebox(), deck_id, group=group)
+        return self.populate_library(self.jukebox(), deck_id, group=group, **kw)
 
     @staticmethod
     def library_category(lib, fallback: str = "Jukebox") -> str:
@@ -5227,7 +5229,7 @@ class DeckCoreService:
     def _populate_library_locked(self, lib, deck_id: str = "", *, group: Optional[str] = None,
                          prefix: str = "jb_", action_type: str = "jukebox",
                          monitor_type: str = "jukebox_state", meta_prefix: str = "_jukebox",
-                         track_icon: str = "🎵") -> dict:
+                         track_icon: str = "🎵", rescan: bool = True) -> dict:
         """Pool-Buttons aus einer Mediathek ableiten — der Ordner ist die Wahrheit:
         je Track ``<prefix><id>`` (Toggle), je Stil MIT Tracks ``<prefix>random_<stil>``, plus
         ``<prefix>stop``. Tasten verschwundener Tracks/Stile werden entfernt. Auf dem Deck:
@@ -5247,10 +5249,12 @@ class DeckCoreService:
         group = self.library_category(jb, group or "Jukebox")
         # Tasten ableiten ist ein bewusster Abgleich: einmal den Ordner laufen (nimmt auch
         # geaenderte Inhalte bestehender Dateien auf, z. B. ein ersetztes Cover), dann lesen.
-        rescan = getattr(jb, "scan", None)
-        if callable(rescan):
-            rescan()
-        tracks = jb.library()
+        # ``rescan=False`` (Codex R18 F54: Ansichtswechsel per Taste) = nur aus dem vorbereiteten
+        # Stand ableiten — „Bibliothek neu einlesen" bleibt der bewusste Abgleich (``populate``).
+        scan = getattr(jb, "scan", None)
+        if rescan and callable(scan):
+            scan()
+        tracks = jb.library() if rescan else self._library_rows(jb, refresh=False)
         styles = jb.styles()
         # Auswahlart des Kategorie-Wuerfels = Mediathek-Config (``category_pick``); die Taste
         # reicht sie als ``pick`` an die Aktion der Mediathek durch. Die Anzeige kommt aus
@@ -6134,6 +6138,23 @@ class DeckCoreService:
             return over
         return self._library_config_view(lib)
 
+    @staticmethod
+    def _library_rows(lib, refresh: bool = True) -> list:
+        """``lib.library(refresh=…)`` — Fremd-Mediatheken ohne den Parameter liefern wie bisher."""
+        try:
+            return lib.library(refresh=refresh) or []
+        except TypeError:
+            return lib.library() or []
+
+    def _library_populate(self, entry: dict, deck_id: str, *, rescan: bool) -> dict:
+        """``populate`` der Mediathek ohne Ordnerlauf (``rescan=False``); ein Host-``populate``,
+        das den Parameter nicht kennt, laeuft wie bisher (dann mit Lauf, sichtbar im Log)."""
+        try:
+            return entry["populate"](deck_id, rescan=rescan) or {}
+        except TypeError:
+            log.info("populate %s kennt rescan nicht - voller Abgleich", entry.get("prefix"))
+            return entry["populate"](deck_id) or {}
+
     def _library_entry(self, key: str = "", prefix: str = "") -> "tuple[str, Optional[dict]]":
         """Angemeldete Mediathek per Schluessel, sonst per Tasten-Praefix."""
         if key and key in self._libraries:
@@ -6172,7 +6193,8 @@ class DeckCoreService:
             self._library_view_override[prefix] = "all" if base != "all" else base
         active = self._library_deck_view(lib, prefix)
         try:
-            entry["populate"](str((lib.config() or {}).get("deck_id") or ""))
+            # Ansichtswechsel = Tasten aus dem vorbereiteten Stand ableiten, kein Ordnerlauf (R18 F54).
+            self._library_populate(entry, str((lib.config() or {}).get("deck_id") or ""), rescan=False)
         except Exception as e:  # noqa: BLE001 — die Sicht ist umgeschaltet, nur die Tasten hinken
             log.warning("Deck-Sicht %s: Abgleich fehlgeschlagen: %s", key, e)
             return {"success": False, "message": f"Deck-Sicht {active}, Abgleich fehlgeschlagen: {e}"}
@@ -6218,8 +6240,11 @@ class DeckCoreService:
         slots = self._library_search_slots(lib)
         q = " ".join(str(q or "").split())
         toks = q.casefold().split()
-        prev = self._library_search.get(prefix) or {}
-        gen = int(prev.get("gen") or 0) + 1
+        # Laufnummer beim EINGANG reservieren (Codex R18 F55): eine aeltere Anfrage, die spaeter
+        # fertig wird, darf eine neuere nie ueberschreiben — sie wird verworfen, nicht veroeffentlicht.
+        with self._search_lock:
+            gen = int(self._search_gen.get(prefix) or 0) + 1
+            self._search_gen[prefix] = gen
         hits: list = []
         total = 0
         if toks and slots > 0:
@@ -6227,12 +6252,17 @@ class DeckCoreService:
                 styles = lib.styles() or {}
             except Exception:  # noqa: BLE001
                 styles = {}
-            rows = [t for t in (lib.library() or [])
+            # Nur der vorbereitete Stand (R18 F54): kein Vorfilter, kein Lauf beim Tippen.
+            rows = [t for t in self._library_rows(lib, refresh=False)
                     if all(tok in self._search_text(t, styles) for tok in toks)]
             rows.sort(key=lambda t: (-float(t.get("added_at") or t.get("mtime") or 0), str(t.get("rel") or "")))
             total = len(rows)
             hits = rows[:slots]
-        self._library_search[prefix] = {"q": q, "gen": gen, "hits": hits, "total": total, "slots": slots}
+        with self._search_lock:
+            if gen < int(self._search_gen.get(prefix) or 0):
+                return {"ok": True, "library": key, "q": q, "gen": gen, "total": total, "shown": len(hits),
+                        "slots": slots, "superseded": True}
+            self._library_search[prefix] = {"q": q, "gen": gen, "hits": hits, "total": total, "slots": slots}
         self._schedule_recompute()
         return {"ok": True, "library": key, "q": q, "gen": gen, "total": total, "shown": len(hits), "slots": slots}
 
@@ -6255,6 +6285,8 @@ class DeckCoreService:
         res = self.library_search(str(action.get("library") or ""), str(action.get("prefix") or ""), text)
         if not res.get("ok"):
             return {"success": False, "message": "Mediathek nicht angemeldet"}
+        if res.get("superseded"):
+            return {"success": True, "message": "Suche ueberholt - neuerer Text gilt"}
         if not res["q"]:
             return {"success": True, "message": "Suche geloescht"}
         return {"success": True, "message": f"Suche „{res['q']}“: {res['total']} Treffer"}

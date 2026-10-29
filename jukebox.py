@@ -850,7 +850,7 @@ class Jukebox:
             return "ready"
         return "not_loaded" if self._scan_paused() else "ready"
 
-    def _current_catalog(self) -> Optional[dict]:
+    def _current_catalog(self, refresh: bool = True) -> Optional[dict]:
         """Katalog fuer Leser: fehlt er im Speicher, kommt der vorbereitete Stand von der Platte;
         fehlt auch der, laeuft der Ordner einmal — ausser das Host-Tor pausiert (dann ``None`` =
         „noch nicht geladen", kein automatischer Lauf im geschuetzten Fenster). Ein veraltet
@@ -870,17 +870,21 @@ class Jukebox:
             if self._scan_paused():
                 return None                   # noch nicht geladen: kein Lauf im Tor
             return self.scan(persist=False)
-        if self._catalog_dirty or self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig"):
+        if refresh and (self._catalog_dirty or self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig")):
             return self.scan(persist=False)   # eigener Schritt / Neuzugang / Entfernung: einmal laufen
         if cat.get("meta_stamp") != self._meta_stamp():
             cat = self._decorate(cat)        # nur Metadaten neu auflegen, kein Ordnerlauf
             self._catalog = cat
         return cat
 
-    def library(self) -> list[dict]:
+    def library(self, refresh: bool = True) -> list[dict]:
         """Tracks aus dem vorbereiteten Katalog; Stil aus library.json, sonst aus dem
-        Unterordnernamen; sonst leer. Ohne Katalog laeuft der Ordner einmal (``scan``)."""
-        cat = self._current_catalog()
+        Unterordnernamen; sonst leer. Ohne Katalog laeuft der Ordner einmal (``scan``).
+        ``refresh=False`` (Codex R18 F54: Suche, Ansichtswechsel) = der vorbereitete Stand, wie
+        er ist — kein Vorfilter, kein Lauf, auch nicht bei veraltet markiertem Katalog; nur
+        Metadaten werden neu aufgelegt. Ein Neuzugang erscheint dort erst nach dem naechsten
+        Waechter-Takt oder einem bewussten Abgleich."""
+        cat = self._current_catalog(refresh=refresh)
         if cat is None:
             return []
         return [{**t, "meta": dict(t["meta"])} for t in cat["tracks"]]
