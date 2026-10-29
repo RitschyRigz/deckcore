@@ -60,3 +60,11 @@
   .catalog-command { padding:7px 10px; }
   .catalog-category { font-size:12px; }
 }
+
+/* Suche: kompakte Leiste oben (Tastatur verdeckt nur den unteren Teil), Trefferzeilen scrollbar darunter. */
+.catalog-search { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.catalog-search-bar { flex: none; display: flex; align-items: center; gap: 12px; }
+.catalog-search-bar .t-key.t-search { flex: 1 1 260px; width: auto; max-width: none; height: 52px; min-height: 52px; padding: 0; background: transparent; border: 0; box-shadow: none; }
+.catalog-search-bar .t-search-input { min-height: 48px; font-size: 18px; }
+.catalog-search-hint { flex: none; max-width: 42%; color: var(--muted); font-size: 13px; line-height: 1.25; }
+.catalog-hits { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; align-content: start; touch-action: pan-y; padding-bottom: 14px; }

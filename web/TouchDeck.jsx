@@ -899,13 +899,13 @@ function SearchTile({ id, v, extraClass, place, onSearch }) {
   }
   const stop = (e) => e.stopPropagation()
   return (
-    <div key={id} data-button-id={id} class={'t-key t-search spanned' + extraClass} style={place}
+    <div key={id} data-button-id={id} class={'t-key t-search' + extraClass} style={place}
          onPointerDown={stop} onTouchStart={stop} onClick={stop}>
       <input type="search" class="t-search-input" value={text} placeholder={(v.icon || '🔍') + ' ' + (v.label || 'Suche')}
              enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck={false} aria-label={v.label || 'Suche'}
              onFocus={() => { focused.current = true }} onBlur={() => { focused.current = false }}
              onInput={(e) => { setText(e.currentTarget.value); fire(e.currentTarget.value) }}
-             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fire(e.currentTarget.value, true) } }} />
+             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fire(e.currentTarget.value, true); e.currentTarget.blur() } }} />
     </div>
   )
 }
@@ -1163,9 +1163,9 @@ export function TouchDeck() {
   // Ref-stabil (useCallback []): liest den aktuellen State über _liveRef → eine memoizte (übersprungene)
   // Kachel tappt NIE mit veralteter Closure (sonst falsches actionById/overlay/navStack nach einem Push).
   const _liveRef = useRef({})
-  _liveRef.current = { actionById, longById, overlay, navStack, vis }
+  _liveRef.current = { actionById, longById, overlay, navStack, vis, decks }
   const onTap = useCallback(async (id, evt, variant = 'short', shownOverride) => {
-    const { actionById, longById, overlay, navStack, vis } = _liveRef.current
+    const { actionById, longById, overlay, navStack, vis, decks } = _liveRef.current
     if (Date.now() - swipeAtRef.current < 350) {        // gerade gewischt → diesen Tap verwerfen (kein Fehl-Press)
       reportGesture({ bid: id, event: 'ignored', reason: 'swipe', variant })
       return
@@ -1219,7 +1219,11 @@ export function TouchDeck() {
     const opener = inRadial ? overlay.opener : navStack[navStack.length - 1]
     if (opener) {
       const auto = (opener && typeof opener.close_on_action === 'boolean') ? opener.close_on_action : inRadial
-      if (auto) { navigationRef.current++; setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
+      // Steuertasten der Kategorie-Ansicht (Werkzeugleiste: Stop, „alle laden“ …) lassen den Ordner
+      // offen — nur eine Taste IM Inhalt (Titel, Wuerfel, Treffer) verlaesst ihn (Richard 29.10.2026).
+      const openDeck = decks.find((d) => d.id === (opener && opener.deck))
+      const control = ((openDeck && openDeck.items) || []).some((x) => x.button === id && (x.style || {}).placement === 'toolbar')
+      if (auto && !control) { navigationRef.current++; setOverlay(null); setNavStack([]) }   // direkt zurück zum Original-Deck
     } else {
       setOverlay(null)
     }
@@ -1233,6 +1237,15 @@ export function TouchDeck() {
   const layout = { ...DECK_LAYOUT_DEF, ...(active.layout || {}) }
   const groups = groupDeckItems(active.items || [], active.categories || [], false)
     .filter((g) => g.items.length)
+  // Rolle einer Taste in der Kategorie-Ansicht (Praesentationsdaten, keine Host-Namen): Suchfeld, Hinweis,
+  // Trefferzeile oder die ueberfluessige „Suche loeschen“-Taste (das Suchfeld loescht selbst).
+  const catalogKind = (it) => {
+    const m = monById[it.button] || {}, a = actionById[it.button] || {}
+    if (renderById[it.button] === 'search') return 'search'
+    if (m.type === 'library_find') return m.slot === 0 ? 'hint' : (Number(m.slot) > 0 ? 'hit' : '')
+    if (a.type === 'library_search' && a.mode === 'clear') return 'clear'
+    return ''
+  }
 
   const size = Math.round((layout.button_size || 116) * scale) + 'px'
   const gridCols = (layout.cols > 0) ? `repeat(${layout.cols}, 1fr)` : `repeat(auto-fill, minmax(${size}, 1fr))`
@@ -1297,6 +1310,22 @@ export function TouchDeck() {
     const statSty = isStat ? statStyle(v, o) : ''
     // Graph-Verlaufsfenster in Sekunden: pro Kachel (opts.window) vor globalem Look-Default (_effLook.graphWindow).
     const gWin = isGraph ? (o.window > 0 ? o.window : (_effLook.graphWindow || 135)) : 0
+    const findMon = monById[id] || {}
+    if (findMon.type === 'library_find' && Number(findMon.slot) > 0) {
+      // Trefferzeile der Mediathek-Suche: Titel gross, Herkunft darunter, leere Plaetze fehlen ganz.
+      // Der Druck traegt den angezeigten Trefferstand (v.value) mit, wie jede Taste.
+      if (!v.value) return null
+      return (
+        <button key={id} data-button-id={id} aria-label={v.label || id}
+                aria-busy={pendingRef.current.has(id) ? 'true' : undefined}
+                class={'t-key t-hit' + (v.blink ? ' blink' : '') + holdClass(v) + (pressed === id ? ' pressed' : '') + (pendingRef.current.has(id) ? ' is-pending' : '') + (holding === id ? ' holding' : '')}
+                style={holdStyle(v)}
+                {...holdHandlers(id, v, onTap, { setHolding })}>
+          <KeyImg image={v.image} icon={v.icon} />
+          <span class="t-hit-text"><strong>{v.meta ? (v.label || v.title) : (v.title || v.label)}</strong>{v.meta ? <small>{v.meta}</small> : null}</span>
+        </button>
+      )
+    }
     if (render === 'search') {
       // Suchfeld der Mediathek: Eingabe statt Druck; Bildschirmtastatur kommt vom Geraet.
       return <SearchTile key={id} id={id} v={v} extraClass={categoryClass} place={place} onSearch={onSearch} />
@@ -1373,7 +1402,7 @@ export function TouchDeck() {
     <div class={'t-deck' + (catalogMode ? ' is-catalog' : '')} style={deckStyle} onTouchStart={onTouchStart} onTouchMove={onTouchMove}
          onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
       {fullscreen && deckFlash && <div class="t-deck-flash">{deckFlash}</div>}
-      {catalogMode ? <CatalogDeck key={shownId} groups={groups} layout={layout} renderItem={tile}
+      {catalogMode ? <CatalogDeck key={shownId} groups={groups} layout={layout} renderItem={tile} kindOf={catalogKind} textOf={(it) => (vis[it.button] || {}).title || ''}
         scale={scale} back={navStack.length ? goBack : null}
         title={active.label || active.id} extra={<>{!navStack.length && visibleDecks.length > 1 && <select aria-label="Hauptdeck wählen" value={tabSel} onChange={e => switchDeck(e.currentTarget.value)}>{visibleDecks.map(d => <option value={d.id}>{d.label || d.id}</option>)}</select>}<FsBtn /></>} error={pressError} /> : <>
       {pressError && <div class="t-press-error" role="alert">{pressError}</div>}

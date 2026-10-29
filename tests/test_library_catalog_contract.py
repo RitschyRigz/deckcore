@@ -595,3 +595,19 @@ def test_r20_f54_scanfree_read_without_a_stand_stays_empty_and_the_view_toggle_c
     # Normales Lesen laeuft offline wie bisher einmal und stellt den Stand wieder her.
     assert lib.library() and walks == [str(tmp_path / "music")]
     assert svc._press("jb_view_all")["success"]
+
+
+def test_search_hit_visual_carries_title_origin_and_short_key_text(tmp_path):
+    svc, lib, played = _search_setup(tmp_path, slots=2)
+    lib.update_track_meta("metal_bifi_song", {"favorite": True, "game": "The Alters", "occasion": "Pause",
+                                              "source_date": "2026-09-13"})
+    svc._press("jb_find_input", shown="bifi song")
+    btn = next(b for b in svc._buttons if b["id"] == "jb_find_slot_1")
+    vis = svc._resolve(btn, svc._eval_monitor(btn))
+    assert vis["label"] == "⭐ Bifi Song", vis                      # Titel statt „Treffer 1" (grosse Zeile im Panel)
+    assert "The Alters" in vis["meta"] and "Pause" in vis["meta"], vis   # Herkunft in einer Zeile
+    assert vis["title"].startswith("⭐ Bifi Song"), vis                  # kurzer Tastentext fuers echte Deck
+    assert vis["value"].startswith("1:metal_bifi_song")
+    empty = svc._resolve(next(b for b in svc._buttons if b["id"] == "jb_find_slot_2"),
+                         svc._eval_monitor(next(b for b in svc._buttons if b["id"] == "jb_find_slot_2")))
+    assert empty["value"] == "" and not empty.get("meta")

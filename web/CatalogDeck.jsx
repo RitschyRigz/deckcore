@@ -10,7 +10,7 @@ export function catalogLabel(label) {
   return { title: full, date: '' }
 }
 
-export function CatalogDeck({ groups, renderItem, layout, scale = 1, back, title, extra, error }) {
+export function CatalogDeck({ groups, renderItem, layout, scale = 1, back, title, extra, error, kindOf, textOf }) {
   const [selected, setSelected] = useState('')
   const [page, setPage] = useState(0)
   const [categoryPage, setCategoryPage] = useState(0)
@@ -30,6 +30,14 @@ export function CatalogDeck({ groups, renderItem, layout, scale = 1, back, title
   const categories = groups.map(g => ({ ...g, items: g.items.filter(it => role(it) !== 'toolbar') }))
     .filter(g => g.items.length)
   const current = categories.find(g => g.name === selected) || categories[0]
+  // Suche (Mediathek): eine Kategorie mit Suchfeld zeigt kompakt Leiste + Trefferzeilen statt Kachelraster.
+  const kind = it => (kindOf ? kindOf(it) : '')
+  const searchIt = current?.items.find(it => kind(it) === 'search')
+  const hintIt = searchIt ? current.items.find(it => kind(it) === 'hint') : null
+  const hits = searchIt ? current.items.filter(it => kind(it) === 'hit') : []
+  const countOf = g => g.items.some(it => kind(it) === 'search')
+    ? g.items.filter(it => kind(it) === 'hit' && textOf && textOf(it)).length
+    : g.items.filter(it => role(it) !== 'category').length
   const shortcuts = current?.items.filter(it => role(it) === 'category') || []
   const items = current?.items.filter(it => role(it) !== 'category') || []
   const gap = (layout.gap ?? 12) * scale
@@ -59,7 +67,7 @@ export function CatalogDeck({ groups, renderItem, layout, scale = 1, back, title
             <button key={g.name} class={'catalog-category' + (g.name === current?.name ? ' active' : '')}
               aria-pressed={g.name === current?.name}
               onClick={() => { setSelected(g.name); setPage(0) }}>
-              <span>{g.name}</span><small>{g.items.filter(it => role(it) !== 'category').length}</small>
+              <span>{g.name}</span><small>{countOf(g)}</small>
             </button>)}
         </nav>
         {categoryPages > 1 && <div class="catalog-category-pages">
@@ -73,15 +81,21 @@ export function CatalogDeck({ groups, renderItem, layout, scale = 1, back, title
           <div>{shortcuts.map(it => renderItem(it, true))}</div>
         </div>
         <div class="catalog-grid-space" ref={bodyRef}>
-          <div class="catalog-grid" style={{ gap, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
+          {searchIt ? <div class="catalog-search">
+            <div class="catalog-search-bar">{renderItem(searchIt, true)}
+              {hintIt && <span class="catalog-search-hint">{String((textOf && textOf(hintIt)) || '').split('\n').join(' · ')}</span>}</div>
+            <div class="catalog-hits">{hits.map(it => renderItem(it))}</div>
+          </div> : <div class="catalog-grid" style={{ gap, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
             {items.slice(shownPage * perPage, (shownPage + 1) * perPage).map(it => renderItem(it))}
-          </div>
+          </div>}
         </div>
         <footer class="catalog-pages">
-          <span>{items.length} Einträge</span>
-          <div><button aria-label="Vorige Seite" disabled={!shownPage} onClick={() => setPage(shownPage - 1)}>‹ Zurück</button>
-            <span aria-live="polite">{shownPage + 1} / {pageCount}</span>
-            <button aria-label="Nächste Seite" disabled={shownPage + 1 === pageCount} onClick={() => setPage(shownPage + 1)}>Weiter ›</button></div>
+          {searchIt ? <span>{countOf(current)} Treffer</span> : <>
+            <span>{items.length} Einträge</span>
+            <div><button aria-label="Vorige Seite" disabled={!shownPage} onClick={() => setPage(shownPage - 1)}>‹ Zurück</button>
+              <span aria-live="polite">{shownPage + 1} / {pageCount}</span>
+              <button aria-label="Nächste Seite" disabled={shownPage + 1 === pageCount} onClick={() => setPage(shownPage + 1)}>Weiter ›</button></div>
+          </>}
         </footer>
       </main>
     </div>

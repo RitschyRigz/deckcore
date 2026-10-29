@@ -6268,11 +6268,13 @@ class DeckCoreService:
             rows.sort(key=lambda t: (-float(t.get("added_at") or t.get("mtime") or 0), str(t.get("rel") or "")))
             total = len(rows)
             hits = rows[:slots]
+        visuals = [self._search_hit_visual(entry, t, styles if toks and slots > 0 else {}) for t in hits]
         with self._search_lock:
             if gen < int(self._search_gen.get(prefix) or 0):
                 return {"ok": True, "library": key, "q": q, "gen": gen, "total": total, "shown": len(hits),
                         "slots": slots, "superseded": True}
-            self._library_search[prefix] = {"q": q, "gen": gen, "hits": hits, "total": total, "slots": slots}
+            self._library_search[prefix] = {"q": q, "gen": gen, "hits": hits, "visuals": visuals,
+                                            "total": total, "slots": slots}
         self._schedule_recompute()
         return {"ok": True, "library": key, "q": q, "gen": gen, "total": total, "shown": len(hits), "slots": slots}
 
@@ -6300,6 +6302,24 @@ class DeckCoreService:
         if not res["q"]:
             return {"success": True, "message": "Suche geloescht"}
         return {"success": True, "message": f"Suche „{res['q']}“: {res['total']} Treffer"}
+
+    def _search_hit_visual(self, entry: dict, t: dict, styles: dict) -> dict:
+        """Darstellung eines Trefferplatzes, einmal je Suche berechnet (nicht je Takt): ``label`` =
+        Titel (gross im Panel), ``meta`` = Herkunft in einer Zeile (Stream-Datum, Spiel, Anlass,
+        Stil), ``title`` = kurzer Tastentext fuer das echte Stream Deck (Titel + Stream-Datum)."""
+        name = _artist_title(t)
+        src = str(t.get("source_date") or "")
+        stream = f"Stream {src[8:10]}.{src[5:7]}." if len(src) >= 10 else ""
+        m = t.get("meta") or {}
+        style = str(t.get("style") or "")
+        style_label = str((styles.get(style) or {}).get("label") or style) if isinstance(styles, dict) else style
+        meta = " · ".join(p for p in (stream, str(m.get("game") or "").strip(),
+                                      str(m.get("occasion") or "").strip(), style_label) if p)
+        star = "⭐ " if t.get("favorite") else ""
+        return {"label": star + name, "meta": meta,
+                "title": star + name[:26] + (f"\n{stream}" if stream else ""),
+                "icon": str(entry.get("fallback_icon") or "🎵"),
+                "image": str(t.get("cover_url") or ""), "color": "accent"}
 
     def _search_slot_stamp(self, st: dict, slot: int) -> str:
         hits = st.get("hits") or []
@@ -6335,13 +6355,9 @@ class DeckCoreService:
             return {"visual": vis, "value": f"{int(st.get('gen') or 0)}:hint"}
         if n > len(hits):
             return {"visual": {"title": "", "icon": "·", "image": "", "color": "off"}, "value": ""}
-        t = hits[n - 1]
-        artist = str(t.get("artist") or "").strip()
-        title = str(t.get("title") or t.get("id") or "")
-        return {"visual": {"title": f"{artist} · {title}" if artist else title,
-                           "icon": str(entry.get("fallback_icon") or "🎵"),
-                           "image": str(t.get("cover_url") or ""), "color": "accent"},
-                "value": self._search_slot_stamp(st, n)}
+        visuals = st.get("visuals") or []
+        vis = visuals[n - 1] if n - 1 < len(visuals) else self._search_hit_visual(entry, hits[n - 1], {})
+        return {"visual": vis, "value": self._search_slot_stamp(st, n)}
 
     def _act_library_find(self, action: dict, btn: dict) -> dict:
         """Trefferplatz spielen — nur, wenn der mitgeschickte Anzeigewert (``gen:track``) dem
@@ -7547,7 +7563,8 @@ class DeckCoreService:
             vis = value["visual"]
             return {
                 **lp,
-                "label": btn.get("label", btn.get("id")),
+                "label": str(vis.get("label") or btn.get("label", btn.get("id"))),
+                **({"meta": str(vis["meta"])} if vis.get("meta") else {}),
                 "title": str(vis.get("title", default.get("title", "")) or ""),
                 "icon": str(vis.get("icon", default.get("icon", "")) or ""),
                 "image": str(vis.get("image", default.get("image", "")) or ""),
