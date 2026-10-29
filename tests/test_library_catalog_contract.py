@@ -145,6 +145,7 @@ def _watch_setup(tmp_path, monkeypatch):
     (music / "metal").mkdir(parents=True)
     (music / "metal" / "A.wav").write_bytes(b"RIFF")
     lib.set_config(library_dir=str(music), deck_id="main")
+    lib.library()                     # vorbereiteter Stand vorhanden (Speicher + catalog.json)
     full = []
     orig_sig = lib.library_signature
 
@@ -253,3 +254,90 @@ def test_foreign_library_without_prefilter_keeps_the_full_run(tmp_path, monkeypa
     svc._stop.clear()
     asyncio.run(asyncio.wait_for(svc._library_watch_loop("foreign"), 5))
     assert len(sigs) == 3
+
+
+# -- Codex R13 (F52/F53): vorbereiteter Stand auf der Platte, kein Start-Scan im Tor, Deck-Sicht --
+
+def test_persisted_catalog_serves_a_new_instance_without_a_walk(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    lib.library()                                           # Lesen schreibt nie
+    assert not (tmp_path / "rt" / "jukebox" / "catalog.json").exists()
+    lib.library_signature()                                 # Waechter-/Populate-Lauf legt ab
+    assert (tmp_path / "rt" / "jukebox" / "catalog.json").is_file()
+    fresh = jb.Jukebox(tmp_path / "rt", mpv_resolver=lambda p: "", run_actions=lambda a, v: {}, publish=None)
+    walks = _count_walks(monkeypatch, fresh)
+    assert {t["id"] for t in fresh.library()} == {"metal_a", "metal_b"}
+    assert fresh.track("metal_a")["file"].endswith("A.wav") and walks == []
+    assert fresh.tree_signature() is not None and fresh.catalog_state() == "ready"
+
+
+def test_without_a_prepared_stand_the_gate_blocks_any_automatic_walk(tmp_path, monkeypatch):
+    lib, music = _lib(tmp_path)
+    lib.set_scan_gate(lambda: "Live-Fenster: Test")
+    walks = _count_walks(monkeypatch, lib)
+    assert lib.tree_signature() is None                     # Vorfilter laeuft nie selbst
+    assert lib.library() == [] and lib.track("metal_a") is None
+    assert lib.catalog_state() == "not_loaded" and walks == []
+    assert lib.scan() is not None and walks == [str(music)]  # bewusster Lauf bleibt moeglich
+    assert lib.catalog_state() == "ready" and len(lib.library()) == 2
+    lib.set_scan_gate(lambda: None)
+    fresh = jb.Jukebox(tmp_path / "rt2", mpv_resolver=lambda p: "", run_actions=lambda a, v: {}, publish=None)
+    fresh.set_config(library_dir=str(music))
+    fresh.set_scan_gate(lambda: None)
+    assert len(fresh.library()) == 2                        # offenes Tor: erster Zugriff laeuft
+
+
+def test_watch_loop_in_the_gate_without_a_stand_scans_nothing_and_says_so(tmp_path, monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(ds, "_JUKEBOX_WATCH_SEC", 0)
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": [], "items": []}]
+    svc.set_library_scan_gate(lambda: "Live-Fenster: Test")
+    lib = svc.jukebox()
+    music = tmp_path / "music"
+    (music / "metal").mkdir(parents=True)
+    (music / "metal" / "A.wav").write_bytes(b"RIFF")
+    lib.set_config(library_dir=str(music), deck_id="main")
+    walks = _count_walks(monkeypatch, lib)
+    ticks = []
+    orig_tree = lib.tree_signature
+
+    def counted_tree():
+        ticks.append(1)
+        if len(ticks) >= 3:
+            svc._stop.set()
+        return orig_tree()
+    monkeypatch.setattr(lib, "tree_signature", counted_tree)
+    populates = []
+    svc.register_library("jukebox", svc.jukebox, lambda deck_id="": populates.append(1) or {}, fallback_label="Jukebox")
+    svc._stop.clear()
+    with caplog.at_level(logging.WARNING, logger="deckcore.service"):
+        asyncio.run(asyncio.wait_for(svc._library_watch_loop("jukebox"), 5))
+    assert walks == [] and populates == []
+    assert "kein vorbereiteter Stand" in caplog.text
+    assert svc._buttons == [] or all(not b.get("_jukebox_track") for b in svc._buttons)
+
+
+def test_deck_view_newest_favorites_shows_only_recent_and_starred(tmp_path):
+    svc = DeckCoreService(Bus(), runtime_dir=tmp_path / "deck", default_buttons=[])
+    svc._decks = [{"id": "main", "label": "Main", "layout": {}, "categories": [], "items": []}]
+    lib = svc.jukebox()
+    music = tmp_path / "music" / "metal"
+    music.mkdir(parents=True)
+    for name, stamp in (("A.wav", 100), ("B.wav", 200), ("C.wav", 300)):
+        p = music / name
+        p.write_bytes(b"RIFF")
+        os.utime(p, (stamp, stamp))
+    lib.set_config(library_dir=str(music.parent), recent_section=1, deck_view="newest_favorites")
+    lib.update_track_meta("metal_a", {"favorite": True})
+    svc.populate_jukebox("main")
+    ids = sorted(b["id"] for b in svc._buttons if b["id"].startswith("jb_"))
+    # Neueste = juengster Neuzugang (Dateigeburt, nicht mtime): genau EINE Neueste-Taste.
+    assert [i for i in ids if not i.startswith("jb_new_")] == ["jb_fav_metal_a", "jb_random_metal", "jb_stop"], ids
+    assert len([i for i in ids if i.startswith("jb_new_")]) == 1, ids
+    entry = {"prefix": "jb_", "meta_prefix": "_jukebox"}
+    assert not svc._library_needs_sync(lib, entry), "Deck-Sicht und Pool stimmen ueberein"
+    lib.set_config(deck_view="all")
+    assert svc._library_needs_sync(lib, entry)
+    svc.populate_jukebox("main")
+    assert {"jb_metal_a", "jb_metal_b", "jb_metal_c"} <= {b["id"] for b in svc._buttons}

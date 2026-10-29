@@ -5374,6 +5374,13 @@ class DeckCoreService:
             recent_n = int(jb.config().get("recent_section") or 0)
         except (TypeError, ValueError):
             recent_n = 0
+        # Deck-Sicht (``config.json → deck_view``, Bibliotheksvertrag): ``all`` (Default) = je
+        # Track eine Taste in seinem Stil-Abschnitt wie bisher; ``newest_favorites`` = das Deck
+        # zeigt nur Stop, Wuerfel je Stil, Favoriten und Neueste — der volle Katalog bleibt fuer
+        # Suche, Auftraege und gezielte Wiedergabe. Umschalten ist ein bewusster Config-Schritt.
+        deck_view = self._library_deck_view(jb)
+        if deck_view == "newest_favorites" and recent_n <= 0:
+            recent_n = int(self.DECK_VIEW_RECENT_DEFAULT)
         recent_label = str(jb.config().get("recent_label") or "🆕 Neueste")
         by_added = sorted(tracks, key=lambda x: (-float(x.get("added_at") or x.get("mtime") or 0), x["rel"]))
         extra_sections: list[tuple[str, str, list]] = []   # (tasten-praefix, kategorie, tracks)
@@ -5500,6 +5507,8 @@ class DeckCoreService:
                     for old_pick, old_icon in other_picks])
             wanted.append((prefix + "random_" + _slug(sid), cat))
             n += 1
+            if deck_view == "newest_favorites":
+                continue   # keine Track-Tasten je Stil: Deck = Neueste + Favoriten (+ Wuerfel)
             # Neuzugang zuerst (Minutenraster der Aufnahme), innerhalb derselben Minute wie
             # bisher nach Dateizeit — so bleibt „Neuester" auch bei gleichzeitig kopierten
             # Dateien nachvollziehbar.
@@ -5653,6 +5662,7 @@ class DeckCoreService:
                                 "fallback_label": str(fallback_label or key), "fallback_icon": str(fallback_icon or "🎵"),
                                 "description": str(description or "")}
         self.register_owner_prefix(str(prefix), key)
+        self._pass_scan_gate(self._libraries[key])
         if action_type:
             self._register_library_integration(key)
         if self._loop is not None and (task is None or task.done()):
@@ -5886,6 +5896,21 @@ class DeckCoreService:
         den Ordner erst, wenn der sich aendert (Neuzugang, Entfernung, Metadaten). ``None`` = wie
         bisher. Der Kern kennt die Bedeutung des Grundes nicht."""
         self._library_scan_gate = gate
+        for entry in self._libraries.values():
+            self._pass_scan_gate(entry)
+
+    def _pass_scan_gate(self, entry: dict) -> None:
+        """Das Host-Tor auch der Mediathek-Instanz geben (``set_scan_gate``): ohne vorbereiteten
+        Stand laeuft im Tor kein automatischer Ordnerlauf beim Lesen (Codex R13 F52)."""
+        if self._library_scan_gate is None:
+            return
+        try:
+            lib = entry["get"]()
+            setter = getattr(lib, "set_scan_gate", None)
+            if callable(setter):
+                setter(self._library_scan_gate)
+        except Exception as e:  # noqa: BLE001
+            log.debug("library scan gate weiterreichen: %s", e)
 
     def _library_scan_paused(self) -> Optional[str]:
         gate = self._library_scan_gate
@@ -5899,12 +5924,16 @@ class DeckCoreService:
         return str(reason) if reason else None
 
     def _library_tree_sig(self, lib) -> Optional[str]:
-        """Billiger Vorfilter der Mediathek (+ Sammel-Abschnitt); ``None`` = die Instanz kennt
-        keinen (Fremd-Mediathek) -> immer voller Lauf."""
+        """Billiger Vorfilter der Mediathek (+ Sammel-Abschnitt). ``None`` = die Instanz kennt
+        keinen (Fremd-Mediathek -> voller Lauf wie bisher) ODER sie hat noch keinen
+        vorbereiteten Stand (``tree_signature() is None`` -> im Tor kein Lauf, siehe Waechter)."""
         fn = getattr(lib, "tree_signature", None)
         if not callable(fn):
             return None
-        return str(fn()) + self._library_match_sig(lib)
+        tree = fn()
+        if tree is None:
+            return None
+        return str(tree) + self._library_match_sig(lib)
 
     def _library_match_sig(self, lib) -> str:
         """Teil des Waechter-Fingerabdrucks: der aktuelle Vergleichswert des Sammel-Abschnitts.
@@ -5936,6 +5965,16 @@ class DeckCoreService:
                     if entry.get("paused_reason") != paused:
                         entry["paused_reason"] = paused
                         log.info("Mediathek %s: Ordnerwaechter nur Vorfilter (%s)", key, paused)
+                    if tree is None and callable(getattr(lib, "tree_signature", None)):
+                        # Kein vorbereiteter Stand (Speicher/Platte) im geschuetzten Fenster:
+                        # kein automatischer Lauf, sichtbar gemeldet; ein bewusster Abgleich
+                        # (populate) oder das offene Tor holt den Stand (Codex R13 F52).
+                        if not entry.get("not_loaded_logged"):
+                            entry["not_loaded_logged"] = True
+                            log.warning("Mediathek %s: kein vorbereiteter Stand, im Tor nicht gescannt (%s)",
+                                        key, paused)
+                        continue
+                    entry["not_loaded_logged"] = False
                     if (tree is not None and tree == entry.get("tree_sig")
                             and not entry.get("hook_pending")):
                         continue
@@ -6001,17 +6040,49 @@ class DeckCoreService:
         """Kompatibilitaet: der Waechter der Musik-Jukebox (Key ``jukebox``)."""
         await self._library_watch_loop("jukebox")
 
+    DECK_VIEWS = ("all", "newest_favorites")
+    DECK_VIEW_RECENT_DEFAULT = 5     # ``newest_favorites`` ohne ``recent_section``: so viele Neueste
+
+    def _library_deck_view(self, lib) -> str:
+        """``config.json → deck_view`` der Mediathek; Unbekanntes = ``all`` (wie bisher)."""
+        try:
+            view = str((lib.config() or {}).get("deck_view") or "all").strip().lower()
+        except Exception:  # noqa: BLE001
+            view = "all"
+        return view if view in self.DECK_VIEWS else "all"
+
+    def _library_deck_track_ids(self, lib, tracks: list, prefix: str) -> set:
+        """Track-Kennungen, die die Deck-Sicht zeigt: ``all`` = alle; ``newest_favorites`` =
+        Favoriten + die juengsten N (wie ``populate_library``)."""
+        if self._library_deck_view(lib) != "newest_favorites":
+            return {t["id"] for t in tracks}
+        cfg = lib.config() or {}
+        try:
+            recent_n = int(cfg.get("recent_section") or 0)
+        except (TypeError, ValueError):
+            recent_n = 0
+        recent_n = recent_n if recent_n > 0 else int(self.DECK_VIEW_RECENT_DEFAULT)
+        skip = {str(x) for x in (cfg.get("recent_exclude_styles") or [])}
+        by_added = sorted(tracks, key=lambda x: (-float(x.get("added_at") or x.get("mtime") or 0), x["rel"]))
+        ids = {t["id"] for t in by_added if t.get("favorite") and prefix + t["id"] not in self._removed}
+        recents = [t for t in by_added if prefix + t["id"] not in self._removed
+                   and t.get("style") not in skip][:recent_n]
+        ids |= {t["id"] for t in recents}
+        return ids
+
     def _library_needs_sync(self, lib, entry: dict) -> bool:
         """True, wenn Pool und Bibliothek auseinanderliegen (Track ohne Taste / Taste ohne Track /
         Taste in veralteter Pool-Kategorie). Bewusst abgewaehlte Tracks (``_removed``) zaehlen nicht
-        als fehlend."""
+        als fehlend. In der Deck-Sicht ``newest_favorites`` zaehlen nur deren Tracks."""
         prefix = str(entry.get("prefix") or "jb_")
         meta = str(entry.get("meta_prefix") or "_jukebox")
         try:
             mine = [b for b in self._buttons if str(b.get("id") or "").startswith(prefix)]
             have = {str(b.get(meta + "_track") or "") for b in mine if b.get(meta + "_track")}
-            tracks = {t["id"]: t for t in lib.library()}
-            want = {tid for tid in tracks if prefix + tid not in self._removed}
+            all_tracks = lib.library()
+            tracks = {t["id"]: t for t in all_tracks}
+            shown = self._library_deck_track_ids(lib, all_tracks, prefix)
+            want = {tid for tid in tracks if tid in shown and prefix + tid not in self._removed}
             if have != want or any(meta + "_cover" not in b for b in mine if b.get(meta + "_track")):
                 return True
             # Titel oder Cover geaendert, waehrend niemand zusah (z. B. vor dem ersten Takt nach

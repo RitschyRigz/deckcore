@@ -492,7 +492,12 @@ class Jukebox:
         # aufgelegt, ohne Ordnerlauf. Ersetzt wird der Katalog als Ganzes (atomar), nie geaendert.
         self._catalog: Optional[dict] = None
         self._catalog_dirty = False
+        self._catalog_loaded = False          # catalog.json einmal je Instanz gelesen
         self._scan_lock = threading.Lock()
+        # Host-Tor (optional): liefert es einen Grund, laeuft ohne vorbereiteten Stand KEIN
+        # automatischer Ordnerlauf (Lesen meldet „noch nicht geladen"); ``scan()`` selbst
+        # (bewusster Abgleich, Waechter bei erkannter Aenderung) bleibt moeglich.
+        self._scan_gate: Optional[Callable[[], Optional[str]]] = None
         # Mitsing-Cues des laufenden Auftrags: (request_id, cues). ``lyrics()`` scannt die ganze
         # Bibliothek (~35 ms) und darf nicht je time-pos-Meldung laufen (Stream 07.10.2026).
         self._progress_cues: tuple = (None, [])
@@ -760,10 +765,13 @@ class Jukebox:
             })
         return {**cat, "meta_stamp": stamp, "tracks": tracks, "index": {t["id"]: t for t in tracks}}
 
-    def scan(self) -> Optional[dict]:
+    def scan(self, *, persist: bool = True) -> Optional[dict]:
         """Voller Ordnerlauf -> neuer Katalog (der einzige Weg, neue/entfernte/geaenderte
-        Mediendateien aufzunehmen). ``None`` ohne nutzbaren Ordner. Laeuft im Ordnerwaechter
-        (``library_signature``), beim ersten Zugriff und nach eigenen Dateischritten."""
+        Mediendateien aufzunehmen), mit ``persist`` zugleich als ``catalog.json`` im Laufzeit-
+        ordner abgelegt (vorbereiteter lokaler Stand fuer den naechsten Start). ``None`` ohne
+        nutzbaren Ordner. Laeuft im Ordnerwaechter (``library_signature``) und bei ``populate``
+        (beide legen ab); der Lesepfad (``library``/``track`` bei fehlendem Stand oder erkannter
+        Aenderung) laeuft ohne Ablage — Lesen schreibt nie (Codex R1 F29)."""
         root = self._library_root()
         if root is None:
             self._catalog = None
@@ -774,6 +782,39 @@ class Jukebox:
             cat = self._build_catalog(root, files, dirs)
             cat["dirs_sig"] = self._dirs_signature(root, dirs)
             self._catalog = cat
+            self._catalog_loaded = True
+            if persist:
+                self._persist_catalog(cat)
+        return cat
+
+    def _persist_catalog(self, cat: dict) -> None:
+        root = Path(cat["root"])
+        try:
+            self._write_json("catalog.json", {
+                "root": cat["root"], "sig": cat["sig"], "dirs_sig": cat["dirs_sig"],
+                "dirs": [str(d.relative_to(root)).replace("\\", "/") for d in cat["dirs"]],
+                "files": [[str(f["rel"]).replace("\\", "/"), f["size"], f["mtime_ns"], f["mtime"],
+                           f["added_at"], bool(f["media"]), bool(f["image"])] for f in cat["files"]],
+            })
+        except Exception as e:  # noqa: BLE001 - der Stand im Speicher gilt, die Ablage ist Komfort
+            log.warning("%s/catalog.json nicht geschrieben: %s", self._dir.name, e)
+
+    def _load_catalog(self, root: Path) -> Optional[dict]:
+        """Vorbereiteter Stand von der Platte (``catalog.json`` des letzten Laufs), wenn er zu
+        diesem Ordner gehoert; sonst ``None``. Kein Ordnerlauf."""
+        self._catalog_loaded = True
+        raw = self._json_strict("catalog.json")
+        if not raw or raw.get("root") != str(root) or not isinstance(raw.get("files"), list):
+            return None
+        try:
+            files = [{"rel": Path(rel), "path": root / rel, "size": int(size), "mtime_ns": int(mns),
+                      "mtime": float(mt), "added_at": float(added), "media": bool(media), "image": bool(image)}
+                     for rel, size, mns, mt, added, media, image in raw["files"]]
+            dirs = [root if d in (".", "") else root / d for d in raw.get("dirs") or ["."]]
+        except (TypeError, ValueError):
+            return None
+        cat = self._decorate({"root": str(root), "sig": str(raw.get("sig") or ""), "files": files, "dirs": dirs})
+        cat["dirs_sig"] = str(raw.get("dirs_sig") or "")
         return cat
 
     def invalidate(self) -> None:
@@ -781,20 +822,56 @@ class Jukebox:
         Hosts nach einem Import). Der naechste Zugriff laeuft den Ordner einmal."""
         self._catalog_dirty = True
 
+    def set_scan_gate(self, gate) -> None:
+        """Host-Tor ``gate() -> str | None`` (siehe ``_scan_gate``)."""
+        self._scan_gate = gate
+
+    def _scan_paused(self) -> Optional[str]:
+        gate = self._scan_gate
+        if gate is None:
+            return None
+        try:
+            reason = gate()
+        except Exception:  # noqa: BLE001
+            return None
+        return str(reason) if reason else None
+
+    def catalog_state(self) -> str:
+        """``ready`` (Stand im Speicher oder von der Platte), ``not_loaded`` (kein Stand und das
+        Tor erlaubt keinen Lauf), ``no_library`` (kein nutzbarer Ordner)."""
+        root = self._library_root()
+        if root is None:
+            return "no_library"
+        cat = self._catalog
+        if cat is None and not self._catalog_loaded:
+            cat = self._load_catalog(root)
+            self._catalog = cat
+        if cat is not None and cat.get("root") == str(root):
+            return "ready"
+        return "not_loaded" if self._scan_paused() else "ready"
+
     def _current_catalog(self) -> Optional[dict]:
-        """Katalog fuer Leser: fehlt er, ist er veraltet markiert oder zeigt der Vorfilter
-        (``tree_signature``: Ordner-Zeitstempel = Neuzugang/Entfernung) eine Aenderung, laeuft
-        der Ordner einmal; geaenderte Metadaten werden nur neu aufgelegt. Geaenderte Inhalte
-        bestehender Dateien (Cover ersetzt, Datei neu exportiert) sieht erst der naechste volle
-        Lauf (``scan``/``library_signature``: Waechter ausserhalb des Live-Fensters, ``populate``)."""
+        """Katalog fuer Leser: fehlt er im Speicher, kommt der vorbereitete Stand von der Platte;
+        fehlt auch der, laeuft der Ordner einmal — ausser das Host-Tor pausiert (dann ``None`` =
+        „noch nicht geladen", kein automatischer Lauf im geschuetzten Fenster). Ein veraltet
+        markierter Stand oder ein geaenderter Vorfilter (Ordner-Zeitstempel = Neuzugang/
+        Entfernung) laeuft den Ordner einmal; geaenderte Metadaten werden nur neu aufgelegt.
+        Geaenderte Inhalte bestehender Dateien (Cover ersetzt, Datei neu exportiert) sieht erst
+        der naechste volle Lauf (``scan``/``library_signature``: Waechter ausserhalb des
+        Live-Fensters, ``populate``)."""
         root = self._library_root()
         if root is None:
             return None
         cat = self._catalog
-        if cat is None or self._catalog_dirty or cat.get("root") != str(root):
-            return self.scan()
-        if self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig"):
-            return self.scan()                # Neuzugang/Entfernung: einmal laufen
+        if cat is None and not self._catalog_loaded:
+            cat = self._load_catalog(root)
+            self._catalog = cat
+        if cat is None or cat.get("root") != str(root):
+            if self._scan_paused():
+                return None                   # noch nicht geladen: kein Lauf im Tor
+            return self.scan(persist=False)
+        if self._catalog_dirty or self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig"):
+            return self.scan(persist=False)   # eigener Schritt / Neuzugang / Entfernung: einmal laufen
         if cat.get("meta_stamp") != self._meta_stamp():
             cat = self._decorate(cat)        # nur Metadaten neu auflegen, kein Ordnerlauf
             self._catalog = cat
@@ -808,19 +885,23 @@ class Jukebox:
             return []
         return [{**t, "meta": dict(t["meta"])} for t in cat["tracks"]]
 
-    def tree_signature(self) -> str:
+    def tree_signature(self) -> Optional[str]:
         """Billiger Vorfilter fuer das Live-Fenster (Tor G, Codex R5 C2): Zeitstempel der
         Bibliotheksordner (eine neue oder entfernte Datei aendert ihren Ordner) plus der
         Metadaten-Dateien. Geaenderte INHALTE bestehender Dateien erkennt er bewusst nicht —
-        dafuer gibt es ``library_signature`` (voller Ordnerlauf). Kostet ein ``stat`` je Ordner."""
+        dafuer gibt es ``library_signature`` (voller Ordnerlauf). Kostet ein ``stat`` je Ordner.
+        ``None`` = kein vorbereiteter Stand (Speicher/Platte): der Vorfilter laeuft NIE selbst
+        den Ordner (Codex R13 F52) — der Aufrufer entscheidet, ob ein voller Lauf erlaubt ist."""
         root = self._library_root()
         dirs_sig = ""
         if root is not None:
             cat = self._catalog
-            dirs = cat["dirs"] if cat is not None and cat.get("root") == str(root) else None
-            if dirs is None:
-                dirs = self._walk(root)[1]
-            dirs_sig = self._dirs_signature(root, dirs)
+            if cat is None and not self._catalog_loaded:
+                cat = self._load_catalog(root)
+                self._catalog = cat
+            if cat is None or cat.get("root") != str(root):
+                return None
+            dirs_sig = self._dirs_signature(root, cat["dirs"])
         return dirs_sig + "\n" + self._meta_files_signature()
 
     @staticmethod
