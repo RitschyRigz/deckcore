@@ -574,3 +574,24 @@ def test_r18_f56_editor_save_keeps_the_search_field(tmp_path):
     saved = next(b for b in svc._buttons if b["id"] == "jb_find_input")
     assert saved.get("render") == "search", saved
     assert svc._press("jb_find_input", shown="bifi")["success"]
+
+
+def test_r20_f54_scanfree_read_without_a_stand_stays_empty_and_the_view_toggle_changes_nothing(tmp_path, monkeypatch):
+    svc, lib = _by_style_setup(tmp_path)
+    svc.populate_jukebox("main")
+    before = _jb_ids(svc)
+    # Kein vorbereiteter Stand (Speicher + Platte weg), Tor offen: scanfreies Lesen scannt trotzdem nie.
+    lib._catalog = None; lib._catalog_loaded = False
+    for p in (lib._dir).glob("catalog.json"):
+        p.unlink()
+    walks = _count_walks(monkeypatch, lib)
+    assert lib.has_catalog() is False
+    assert lib.library(refresh=False) == [] and walks == []
+    res = svc._press("jb_view_all")
+    assert res["success"] is False and "Kein vorbereiteter Stand" in res["message"], res
+    assert _jb_ids(svc) == before, "ohne Stand wird keine Taste entfernt"
+    assert not svc._library_view_override, "Sicht zurueckgenommen"
+    assert walks == []
+    # Normales Lesen laeuft offline wie bisher einmal und stellt den Stand wieder her.
+    assert lib.library() and walks == [str(tmp_path / "music")]
+    assert svc._press("jb_view_all")["success"]

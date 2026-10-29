@@ -867,8 +867,8 @@ class Jukebox:
             cat = self._load_catalog(root)
             self._catalog = cat
         if cat is None or cat.get("root") != str(root):
-            if self._scan_paused():
-                return None                   # noch nicht geladen: kein Lauf im Tor
+            if not refresh or self._scan_paused():
+                return None                   # noch nicht geladen: kein Lauf im Tor / im scanfreien Lesen
             return self.scan(persist=False)
         if refresh and (self._catalog_dirty or self._dirs_signature(root, cat["dirs"]) != cat.get("dirs_sig")):
             return self.scan(persist=False)   # eigener Schritt / Neuzugang / Entfernung: einmal laufen
@@ -876,6 +876,18 @@ class Jukebox:
             cat = self._decorate(cat)        # nur Metadaten neu auflegen, kein Ordnerlauf
             self._catalog = cat
         return cat
+
+    def has_catalog(self) -> bool:
+        """True, wenn ein vorbereiteter Stand fuer den aktuellen Ordner im Speicher oder auf der
+        Platte liegt (scanfreies Lesen liefert dann Inhalt, sonst leer)."""
+        root = self._library_root()
+        if root is None:
+            return False
+        cat = self._catalog
+        if cat is None and not self._catalog_loaded:
+            cat = self._load_catalog(root)
+            self._catalog = cat
+        return cat is not None and cat.get("root") == str(root)
 
     def library(self, refresh: bool = True) -> list[dict]:
         """Tracks aus dem vorbereiteten Katalog; Stil aus library.json, sonst aus dem

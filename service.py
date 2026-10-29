@@ -5254,6 +5254,12 @@ class DeckCoreService:
         scan = getattr(jb, "scan", None)
         if rescan and callable(scan):
             scan()
+        if not rescan:
+            has = getattr(jb, "has_catalog", None)
+            if callable(has) and not has():
+                # Ohne vorbereiteten Stand gibt es nichts abzuleiten — und nichts zu entfernen
+                # (ein leeres Ergebnis wuerde sonst alle Tasten der Mediathek loeschen).
+                return {"ok": False, "reason": "catalog_not_loaded", "removed": 0}
         tracks = jb.library() if rescan else self._library_rows(jb, refresh=False)
         styles = jb.styles()
         # Auswahlart des Kategorie-Wuerfels = Mediathek-Config (``category_pick``); die Taste
@@ -6194,10 +6200,14 @@ class DeckCoreService:
         active = self._library_deck_view(lib, prefix)
         try:
             # Ansichtswechsel = Tasten aus dem vorbereiteten Stand ableiten, kein Ordnerlauf (R18 F54).
-            self._library_populate(entry, str((lib.config() or {}).get("deck_id") or ""), rescan=False)
+            res = self._library_populate(entry, str((lib.config() or {}).get("deck_id") or ""), rescan=False)
         except Exception as e:  # noqa: BLE001 — die Sicht ist umgeschaltet, nur die Tasten hinken
             log.warning("Deck-Sicht %s: Abgleich fehlgeschlagen: %s", key, e)
             return {"success": False, "message": f"Deck-Sicht {active}, Abgleich fehlgeschlagen: {e}"}
+        if res.get("reason") == "catalog_not_loaded":
+            # Kein vorbereiteter Stand (R20 F54): Sicht zuruecknehmen, Anzeige bleibt wahr.
+            self._library_view_override.pop(prefix, None)
+            return {"success": False, "message": "Kein vorbereiteter Stand – erst Abgleich (Bibliothek neu einlesen)"}
         return {"success": True, "message": f"Deck-Sicht: {self.DECK_VIEW_LABELS.get(active, active)}", "view": active}
 
     def _mon_library_view(self, mon: dict, btn: dict) -> Any:
