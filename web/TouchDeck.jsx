@@ -901,7 +901,7 @@ function SearchTile({ id, v, extraClass, place, onSearch }) {
   return (
     <div key={id} data-button-id={id} class={'t-key t-search' + extraClass} style={place}
          onPointerDown={stop} onTouchStart={stop} onClick={stop}>
-      <input type="search" class="t-search-input" value={text} placeholder={(v.icon || '🔍') + ' ' + (v.label || 'Suche')}
+      <input type="search" class="t-search-input" value={text} placeholder="Suchen …"
              enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck={false} aria-label={v.label || 'Suche'}
              onFocus={() => { focused.current = true }} onBlur={() => { focused.current = false }}
              onInput={(e) => { setText(e.currentTarget.value); fire(e.currentTarget.value) }}
