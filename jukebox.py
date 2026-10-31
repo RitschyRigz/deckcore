@@ -486,6 +486,10 @@ class Jukebox:
         # In-Prozess-Zuhoerer fuer Zustandswechsel (Hosts), zusaetzlich zum Bus-``publish``.
         self.listeners: list[Callable[[dict], None]] = []
         self._lyrics_cache: dict[str, tuple] = {}
+        # Tracks, deren SRT-Lesen zuletzt mit einer AUSNAHME endete (Datei liegt daneben, ist
+        # aber nicht lesbar). Nur daran haengt die Nachlese im laufenden Auftrag; eine fehlende
+        # oder leer geparste Datei ist KEIN Fehler und loescht den Merker wieder.
+        self._lyrics_failed: set[str] = set()
         # Vorbereiteter Katalog (Bibliotheksvertrag, Tor G): EIN Ordnerlauf liefert Liste, Index
         # ``id -> Track`` und Fingerabdruck; ``library()``/``track()`` lesen daraus, statt je
         # Aufruf den Ordner abzulaufen. Metadaten (library.json) werden je Dateistand neu
@@ -500,6 +504,9 @@ class Jukebox:
         self._scan_gate: Optional[Callable[[], Optional[str]]] = None
         # Mitsing-Cues des laufenden Auftrags: (request_id, cues). ``lyrics()`` scannt die ganze
         # Bibliothek (~35 ms) und darf nicht je time-pos-Meldung laufen (Stream 07.10.2026).
+        # Einzige Ausnahme: steht fuer den laufenden Track ein Lesefehler an (``_lyrics_failed``),
+        # liest der 1-s-Takt scanfrei (``refresh=False``) nach — hoechstens ein Versuch je Takt,
+        # sonst blieb der Text nach einem kurzen Fehler bis zum Songende weg.
         self._progress_cues: tuple = (None, [])
         self._state: dict = {"state": "idle", "request_id": None, "track": None, "style": None,
                              "position": 0.0, "duration": 0.0, "reason": None, "lyric": {},
@@ -979,13 +986,16 @@ class Jukebox:
         pool = [t for t in self.library() if not pool_style or t.get("style") == pool_style]
         return pool, pool_style
 
-    def lyrics(self, track_id: str) -> list[dict]:
+    def lyrics(self, track_id: str, refresh: bool = True) -> list[dict]:
         """Mitsing-Text eines Tracks: ``<audio-stem>.srt`` neben der Datei (oder ``lyrics`` in
         library.json, relativ zur Bibliothek). ``lyrics_offset`` (Sekunden, +/-) verschiebt alle
-        Cues. Ohne Datei: leere Liste. Gecacht nach Pfad+mtime."""
-        tr = self.track(track_id)
+        Cues. Ohne Datei: leere Liste. Gecacht nach Pfad+mtime_ns+Groesse+Offset.
+        Voruebergehende Lesefehler werden nicht als leerer Erfolg gespeichert, sondern unter
+        ``_lyrics_failed`` vermerkt — daran haengt die Nachlese des laufenden Auftrags.
+        ``refresh=False`` wie bei ``library()``: Tracksuche im vorbereiteten Stand, kein Lauf."""
+        tr = self.track(track_id, refresh=refresh)
         if not tr:
-            return []
+            return []   # kein Katalogtreffer sagt nichts ueber die Datei: Merker bleibt, wie er ist
         cfg = self.config()
         root = Path(str(cfg.get("library_dir") or ""))
         meta = (self._json("library.json").get("tracks") or {}).get(track_id) or {}
@@ -994,19 +1004,25 @@ class Jukebox:
         if meta.get("lyrics"):
             srt = root / str(meta["lyrics"])
         if not srt.is_file():
+            self._lyrics_failed.discard(track_id)   # keine Datei ist kein Fehler: nichts nachzulesen
             return []
         try:
-            key = (str(srt), int(srt.stat().st_mtime), float(meta.get("lyrics_offset") or 0))
+            stat = srt.stat()
+            key = (str(srt), stat.st_mtime_ns, stat.st_size, float(meta.get("lyrics_offset") or 0))
         except OSError:
+            self._lyrics_failed.add(track_id)
             return []
+        self._lyrics_failed.discard(track_id)       # Stand bestimmt: kein offener Lesefehler
         cached = self._lyrics_cache.get(track_id)
         if cached and cached[0] == key:
             return cached[1]
         try:
-            cues = parse_srt(srt.read_text(encoding="utf-8-sig"), offset=key[2])
+            cues = parse_srt(srt.read_text(encoding="utf-8-sig"), offset=key[3])
         except Exception as e:  # noqa: BLE001
             log.warning("SRT %s unlesbar: %s", srt, e)
-            cues = []
+            self._lyrics_cache.pop(track_id, None)
+            self._lyrics_failed.add(track_id)
+            return []
         self._lyrics_cache[track_id] = (key, cues)
         return cues
 
@@ -1319,9 +1335,10 @@ class Jukebox:
         log.info("Jukebox: %s aus dem Papierkorb zurueck", rec.get("track_id"))
         return {"ok": True, "track_id": rec.get("track_id"), "note": rec.get("note") or {}}
 
-    def track(self, track_id: str) -> Optional[dict]:
-        """Nachschlag ueber den Index des Katalogs (vorher ein voller Ordnerlauf je Aufruf)."""
-        cat = self._current_catalog()
+    def track(self, track_id: str, refresh: bool = True) -> Optional[dict]:
+        """Nachschlag ueber den Index des Katalogs (vorher ein voller Ordnerlauf je Aufruf).
+        ``refresh=False`` wie bei ``library()``: der vorbereitete Stand, kein Ordnerlauf."""
+        cat = self._current_catalog(refresh=refresh)
         t = (cat or {}).get("index", {}).get(str(track_id)) if cat else None
         return {**t, "meta": dict(t["meta"])} if t else None
 
@@ -1837,9 +1854,17 @@ class Jukebox:
                 now = time.monotonic()
                 heavy = now - self._last_progress_publish >= 1.0
                 position = float(ev.get("position") or 0)
+                track_id = str(snap.get("track") or "")
                 cached_rid, cues = self._progress_cues
                 if cached_rid != rid:
-                    cues = self.lyrics(str(snap.get("track") or ""))
+                    cues = self.lyrics(track_id)
+                    self._progress_cues = (rid, cues)
+                elif heavy and not cues and track_id in self._lyrics_failed:
+                    # Nachlese fuer den LAUFENDEN Song: scheiterte das Lesen beim Auftragsbeginn,
+                    # stand hier bis zum Songende (rid-gebunden) ein leerer Text. Nur im 1-s-Takt,
+                    # nur scanfrei, nur solange ein Lesefehler ansteht — fehlende oder leer
+                    # gelesene Datei loescht den Merker und beendet die Nachlese von selbst.
+                    cues = self.lyrics(track_id, refresh=False)
                     self._progress_cues = (rid, cues)
                 lyric = lyric_at(cues, position)
                 if lyric.get("index") != (snap.get("lyric") or {}).get("index"):
