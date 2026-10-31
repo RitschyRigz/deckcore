@@ -122,10 +122,30 @@ _AUDIO_PUSH_SEC = 1.0 / 15.0   # ~15 Hz: Live-Audio-Push (VU/Pegel) über SSE-To
 _AUDIO_SUB_TTL = 12.0     # s — eine Panel-Audio-Subscription gilt so lange ohne Keepalive-Refresh
 _REFRESH_MIN, _REFRESH_MAX = 0.3, 600.0   # Klemmgrenzen für den Pro-Button-Override
 _HTTP_TIMEOUT = 4.0       # Sekunden für poll/http
+# Abgelehnter Verbindungsaufbau (Dienst laeuft noch nicht): dasselbe Ziel (Schema/Host/Port) so
+# lange nicht erneut anfragen. Unter Windows kostet jede Ablehnung auf 127.0.0.1 rund 2 s; zehn
+# Tasten auf denselben Dienst hielten den Takt vor dem Stack-Start 20 s fest (Stream 30.10., F54).
+_REFUSED_BACKOFF_SEC = 10.0
 # Stream 30.09. (F10): eine Neuberechnung aller Tasten dauerte im Stream 3-6 s und hing am
 # Druck-Rueckweg. Ab dieser Dauer wird ein periodischer Takt mit Aufschluesselung geloggt
 # (Druck-Laeufe immer) — die Messung entscheidet, welche Monitor-Art korrigiert wird.
 _RECOMPUTE_LOG_MS = 500.0
+
+
+def _http_endpoint(url: str) -> str:
+    """Ziel einer URL fuer die Ablehnungs-Pause: Schema, Host, Port (Pfad egal)."""
+    try:
+        parts = urllib.parse.urlsplit(str(url))
+        return f"{parts.scheme}://{parts.hostname}:{parts.port or ''}"
+    except ValueError:
+        return str(url)
+
+
+def _is_refused(exc: BaseException) -> bool:
+    """Verbindungsaufbau abgelehnt (urllib verpackt ihn in URLError.reason)."""
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason if isinstance(exc.reason, BaseException) else exc
+    return isinstance(exc, ConnectionRefusedError)
 _JUKEBOX_WATCH_SEC = 5.0  # Ordnerwaechter der Jukebox-Bibliothek (Fingerabdruck, kein Dateiwatcher)
 _LIBRARY_HOOK_MAX_WRITES = 3   # Host-Haken-Schreibrunden je Aenderung, dann gleicht der Waechter ab
 _PROC_CACHE_TTL = 1.0     # Sekunden: streamdeck-interner Prozess-Status-Cache (Anti-tasklist-Sturm)
@@ -1669,6 +1689,7 @@ class DeckCoreService:
         self._last_eval: dict[str, float] = {}    # button-id → monotonic der letzten Auswertung
         self._sse_cache: dict[str, Any] = {}      # topic → letztes Payload
         self._poll_cache: dict[str, Any] = {}     # button-id → (value, last_fetch_ts)
+        self._refused_until: dict[str, float] = {}  # Ziel (scheme://host:port) → monotonic Ende der Pause
         # Per-Thread-Flag „nur Cache, kein Live-IO": die FORCIERTE Recompute nach einem Press
         # (_schedule_recompute, läuft SYNCHRON im Press-Thread) setzt ihn → blockierende Monitore
         # (poll-Self-HTTP, obs-Scene-WS) liefern den letzten Cache-Wert statt zu fetchen, damit ein
@@ -7225,13 +7246,15 @@ class DeckCoreService:
             return cached[0] if cached is not None else dict(_LEVEL_UNAVAILABLE)
         state = dict(_LEVEL_UNAVAILABLE)
         url = mon.get("get_url")
-        if url:
+        if url and not self._refused_skip(url):
             try:
                 req = urllib.request.Request(url, method="GET")
                 with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                     state = _level_state(json.loads(resp.read().decode("utf-8")), mon)
+                self._note_http_outcome(url)
             except Exception as e:  # noqa: BLE001
                 log.debug("level_http(%s) Fehler: %s", bid, e)
+                self._note_http_outcome(url, e)
         # {label} im Titel (z. B. physisches Deck) aus derselben Abfrage.
         if state.get("label"):
             self._poll_labels[bid] = state["label"]
@@ -7509,6 +7532,12 @@ class DeckCoreService:
         if getattr(self._tls, "cache_only", False):
             return cached[0] if cached is not None else None
         value = None
+        url = str(mon.get("url") or "")
+        if url and self._refused_skip(url):
+            # Dienst lehnte eben ab: wie ein Fehler behandeln, ohne erneut 2 s zu warten (F54).
+            self._poll_labels.pop(bid, None)
+            self._poll_cache[bid] = (value, now)
+            return value
         try:
             req = urllib.request.Request(mon["url"], method="GET")
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
@@ -7517,11 +7546,30 @@ class DeckCoreService:
                 if mon.get("label_path"):
                     # Zweite Anzeigezeile {label} aus derselben Antwort (z. B. Kennung als Wert, Name als Titel).
                     self._poll_labels[bid] = _dig(obj, mon["label_path"])
+            self._note_http_outcome(url)
         except Exception as e:  # noqa: BLE001
             log.debug("poll(%s) Fehler: %s", bid, e)
+            self._note_http_outcome(url, e)
             self._poll_labels.pop(bid, None)
         self._poll_cache[bid] = (value, now)
         return value
+
+    def _refused_skip(self, url: str) -> bool:
+        """True, solange das Ziel der URL zuletzt die Verbindung abgelehnt hat (Pause laeuft)."""
+        until = self.__dict__.setdefault("_refused_until", {}).get(_http_endpoint(url))
+        return until is not None and time.monotonic() < until
+
+    def _note_http_outcome(self, url: str, exc: Optional[BaseException] = None) -> None:
+        """Ablehnung startet die Pause fuer das Ziel; jede andere Antwort (auch ein Fehler nach
+        dem Verbindungsaufbau) beendet sie."""
+        if not url:
+            return
+        refused = self.__dict__.setdefault("_refused_until", {})
+        key = _http_endpoint(url)
+        if exc is not None and _is_refused(exc):
+            refused[key] = time.monotonic() + _REFUSED_BACKOFF_SEC
+        else:
+            refused.pop(key, None)
 
     def _resolve(self, btn: dict, value: Any) -> dict:
         # {value} im Titel → aktueller Monitor-Wert (z.B. Manual-Event-Zähler); {label} → zweite Anzeigezeile
